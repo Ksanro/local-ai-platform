@@ -1,4 +1,8 @@
-"""Configuration management for Local AI Platform."""
+"""Configuration management for Local AI Platform.
+
+Provides utilities for loading YAML configuration files from multiple
+search paths and resolving environment variable overrides.
+"""
 
 import os
 from pathlib import Path
@@ -15,8 +19,16 @@ _CONFIG_PATHS = [
 def load_config(filename: str = "config.yaml") -> dict[str, Any]:
     """Load configuration from YAML file.
 
-    Searches multiple directories for the config file.
-    Falls back to empty dict if not found.
+    Searches multiple directories for the config file in order:
+    the directory containing this module, then the current working
+    directory. Falls back to an empty dict if not found.
+
+    Args:
+        filename: Name of the YAML config file to load.
+            Defaults to ``"config.yaml"``.
+
+    Returns:
+        Parsed config dict, or empty dict if file not found.
     """
     for config_dir in _CONFIG_PATHS:
         config_file = config_dir / filename
@@ -26,10 +38,23 @@ def load_config(filename: str = "config.yaml") -> dict[str, Any]:
     return {}
 
 
-def get_env_or_config(key: str, default: Any = None, config: dict[str, Any] | None = None) -> Any:
+def get_env_or_config(
+    key: str,
+    default: Any = None,
+    config: dict[str, Any] | None = None,
+) -> Any:
     """Get value from environment variables or config dict.
 
-    Priority: environment variable > config file > default.
+    Priority order: environment variable > config file value > default.
+
+    Args:
+        key: The environment variable or config key to look up.
+        default: Value to return if neither env var nor config has the key.
+        config: Optional config dict to search. If ``None``, only the
+            environment variable is checked.
+
+    Returns:
+        The resolved value, or ``default`` if not found.
     """
     env_value = os.environ.get(key)
     if env_value is not None:

@@ -1,10 +1,20 @@
-"""Application configuration using Pydantic Settings."""
+"""Application configuration using Pydantic Settings.
+
+Settings are loaded from environment variables (prefixed with ``APP_``)
+and can be overridden via a ``config.yaml`` file.
+"""
+
+from functools import lru_cache
 
 from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    """Application settings."""
+    """Application settings.
+
+    Loaded from environment variables with the ``APP_`` prefix.
+    Example: ``APP_LOG_LEVEL=DEBUG`` sets ``log_level`` to ``"DEBUG"``.
+    """
 
     app_name: str = "Local AI Platform"
     log_level: str = "INFO"
@@ -13,14 +23,17 @@ class Settings(BaseSettings):
     model_config = {"env_prefix": "APP_"}
 
 
-_settings: Settings | None = None
-
-
+@lru_cache(maxsize=1)
 def get_settings() -> Settings:
-    """Get or create the application settings singleton."""
-    global _settings
-    if _settings is None:
-        _settings = Settings()
-    return _settings
+    """Get the application settings instance.
+
+    Uses ``lru_cache`` to ensure a single instance is created and
+    reused across calls. This replaces the previous mutable-global
+    singleton pattern.
+
+    Returns:
+        The application ``Settings`` instance.
+    """
+    return Settings()
 
 

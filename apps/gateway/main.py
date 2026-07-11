@@ -1,4 +1,8 @@
-"""FastAPI gateway application entry point."""
+"""FastAPI gateway application entry point.
+
+Provides a ``create_app`` factory function and a module-level ``app``
+instance for development servers and production WSGI servers.
+"""
 
 from contextlib import asynccontextmanager
 
@@ -15,14 +19,29 @@ from apps.gateway.middleware import RequestMiddleware, TimingMiddleware
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application lifespan context manager."""
+    """Application lifespan context manager.
+
+    Runs once at startup: loads settings and configures logging.
+    No cleanup is needed on shutdown.
+
+    Args:
+        app: The FastAPI application instance.
+    """
     settings = get_settings()
     setup_logging(level=settings.log_level)
     yield
 
 
 def create_app() -> FastAPI:
-    """Create and configure the FastAPI application."""
+    """Create and configure the FastAPI application.
+
+    Sets up CORS, request ID middleware, timing middleware, and
+    mounts all API routers. Returns a fully configured ``FastAPI``
+    instance ready for a server to serve.
+
+    Returns:
+        A configured FastAPI application instance.
+    """
     settings = get_settings()
 
     app = FastAPI(

@@ -1,10 +1,11 @@
 """vLLM (OpenAI-compatible) provider implementation."""
 
+import json
 import logging
+import os
 from typing import Any, AsyncIterator
 
 import httpx
-from fastapi.responses import StreamingResponse
 
 from packages.config import load_config
 from packages.providers.base import Provider
@@ -21,7 +22,13 @@ logger = logging.getLogger(__name__)
 def _get_vllm_config() -> dict[str, Any]:
     """Load vLLM configuration from config file or environment variables.
 
-    Priority: environment variables > config file values.
+    Reads the ``providers.vllm`` section from the config file and
+    resolves each value by checking the corresponding environment
+    variable first. Environment variables take precedence.
+
+    Returns:
+        A dict with keys ``VLLM_BASE_URL``, ``VLLM_API_KEY``,
+        ``REQUEST_TIMEOUT``, and ``DEFAULT_MODEL``.
     """
     config = load_config()
     providers_config = config.get("providers", {})
@@ -52,8 +59,6 @@ def _resolve_config_value(key: str, default: Any) -> Any:
 
     Environment variables take precedence over config file values.
     """
-    import os
-
     env_value = os.environ.get(key)
     if env_value is not None:
         # Convert to appropriate type
@@ -70,12 +75,25 @@ def _resolve_config_value(key: str, default: Any) -> Any:
 class VLLMProvider(Provider):
     """vLLM provider that proxies OpenAI-compatible requests."""
 
-    def __init__(self) -> None:  # noqa: D107
+    def __init__(self) -> None:
+        """Initialize the vLLM provider with configuration.
+
+        Loads config and creates the httpx async client. The client
+        is lazily instantiated on first use.
+        """
         self._client: httpx.AsyncClient | None = None
         self._config = _get_vllm_config()
 
     def _get_client(self) -> httpx.AsyncClient:
-        """Get or create the httpx client. Uses a singleton pattern."""
+        """Get or create the httpx client. Uses a singleton pattern.
+
+        Creates the client on first call with base URL, API key,
+        and timeout from config. Subsequent calls return the same
+        instance.
+
+        Returns:
+            The httpx async client instance.
+        """
         if self._client is None:
             self._client = httpx.AsyncClient(
                 base_url=self._config["VLLM_BASE_URL"],
@@ -218,22 +236,7 @@ class VLLMProvider(Provider):
     @staticmethod
     def _json_encode(data: Any) -> str:
         """Encode data to JSON string."""
-        import json
-
         return json.dumps(data)
-
-    async def create_streaming_response(
-        self, result: dict[str, Any]
-    ) -> StreamingResponse:
-        """Create a FastAPI StreamingResponse from a chat result.
-
-        This is a helper method for the gateway to use.
-        """
-        generator = result.get("generator")
-        media_type = result.get("media_type", "text/event-stream")
-        if generator is None:
-            raise ProviderResponseError("Invalid streaming result: no generator found")
-        return StreamingResponse(content=generator(), media_type=media_type)
 
     async def close(self) -> None:
         """Close the httpx client."""

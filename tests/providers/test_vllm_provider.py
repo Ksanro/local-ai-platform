@@ -52,22 +52,6 @@ def _make_mock_config(
     }
 
 
-@pytest.fixture
-def mock_httpx_client() -> Any:
-    """Provide a mocked httpx.AsyncClient.
-
-    Patches httpx.AsyncClient at the top-level httpx module so that
-    the vllm module still has access to real httpx exception classes
-    (httpx.ConnectError, httpx.HTTPStatusError, etc.).
-    """
-    # Save original reference BEFORE entering patch context
-    original_async_client = httpx.AsyncClient
-    with patch("httpx.AsyncClient") as MockClient:  # noqa: SIM115
-        client_instance = AsyncMock(spec=original_async_client)
-        MockClient.return_value = client_instance  # noqa: SIM103
-        yield client_instance  # noqa: SIM103
-
-
 class TestVLLMProviderRegistration:
     """Test vLLM provider registration."""
 
@@ -441,43 +425,6 @@ class TestVLLMProviderStreaming:
 
         error_found = any('"error"' in event for event in events)
         assert error_found is True
-
-
-class TestVLLMProviderCreateStreamingResponse:
-    """Test create_streaming_response helper method."""
-
-    @pytest.mark.asyncio
-    async def test_create_streaming_response_success(self, mock_httpx_client: AsyncMock) -> None:
-        """Test creating a StreamingResponse from streaming result."""
-        # fixture provides mock but this test doesn't need it
-        from packages.providers.vllm import VLLMProvider
-
-        provider = VLLMProvider()
-
-        async def dummy_generator() -> AsyncGenerator[str, None]:
-            yield 'data: {"test": true}\n'
-
-        result: dict[str, Any] = {"generator": dummy_generator, "media_type": "text/event-stream"}
-
-        response = await provider.create_streaming_response(result)
-
-        from fastapi.responses import StreamingResponse
-
-        assert isinstance(response, StreamingResponse)
-
-    @pytest.mark.asyncio
-    async def test_create_streaming_response_no_generator(
-        self, mock_httpx_client: AsyncMock
-    ) -> None:
-        """Test create_streaming_response without generator raises error."""
-        # fixture provides mock but this test doesn't need it
-        from packages.providers.vllm import VLLMProvider
-
-        provider = VLLMProvider()
-        result: dict[str, Any] = {"media_type": "text/event-stream"}
-
-        with pytest.raises(ProviderResponseError):
-            await provider.create_streaming_response(result)
 
 
 class TestVLLMProviderClose:
