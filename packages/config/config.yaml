@@ -1,0 +1,32 @@
+# Local AI Platform Configuration
+# All provider settings are loaded from this file at runtime.
+# Environment variables take precedence over file values.
+
+app:
+  name: local-ai-platform
+  env: development
+  debug: true
+  port: 8000
+
+database:
+  url: "postgresql://user:password@localhost:5432/ai_platform"
+
+redis:
+  url: "redis://localhost:6379/0"
+
+telemetry:
+  otel_service_name: local-ai-platform
+  otlp_endpoint: "http://localhost:4317"
+  otlp_protocol: grpc
+
+logging:
+  level: INFO
+  format: json
+
+providers:
+  default: vllm
+  vllm:
+    base_url: "http://localhost:8000/v1"
+    api_key: "empty"
+    request_timeout: 60.0
+    default_model: "default-model"

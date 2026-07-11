@@ -100,6 +100,82 @@ tests/providers/
 
 ---
 
+## Commit #0004 - vLLM Provider
+
+### Goal
+Implement the first real provider: vLLM (OpenAI-compatible). POST /v1/chat/completions must proxy requests to the configured vLLM server.
+
+### Files Created
+```
+packages/providers/
+└── vllm.py              # VLLMProvider implementation
+
+tests/providers/
+└── test_vllm_provider.py  # 25 tests for vLLM provider
+
+packages/config/
+├── __init__.py          # Config loading with env var override
+└── config.yaml          # vLLM configuration
+```
+
+### Configuration
+Read from `config.yaml` with environment variable override:
+- `VLLM_BASE_URL` - vLLM server URL (default: `http://localhost:8000/v1`)
+- `VLLM_API_KEY` - API key (default: `empty`)
+- `REQUEST_TIMEOUT` - Request timeout in seconds (default: `60.0`)
+- `DEFAULT_MODEL` - Default model name (default: `default-model`)
+
+### Implementation
+```python
+class VLLMProvider(Provider):
+    def __init__(self) -> None
+    def _get_client(self) -> httpx.AsyncClient
+    async def _ensure_client(self) -> httpx.AsyncClient
+    async def health(self) -> dict[str, Any]
+    async def models(self) -> list[str]
+    async def chat(self, **kwargs: Any) -> dict[str, Any]
+    async def _stream_chat(self, client, kwargs) -> dict[str, Any]
+    async def create_streaming_response(self, result) -> StreamingResponse
+    async def close(self) -> None
+```
+
+### HTTP Client
+- Uses `httpx.AsyncClient` with singleton pattern (created once, reused)
+- Sets `Authorization: Bearer {API_KEY}` header
+- Configures timeout from `REQUEST_TIMEOUT`
+
+### chat()
+- Accepts OpenAI-compatible payload
+- Forwards payload unchanged to `/chat/completions` endpoint
+- Returns response unchanged (no JSON transformation)
+- Supports `stream=true` (returns dict with generator for StreamingResponse)
+
+### Error Handling
+- `401` → `ProviderAuthenticationError`
+- `5xx` → `ProviderResponseError`
+- Timeout → `ProviderConnectionError`
+- Connection refused → `ProviderConnectionError`
+
+### Auto-Registration
+- Automatically registers as "vllm" via `register("vllm", VLLMProvider)`
+
+### Tests (25 total)
+- Registration: `test_vllm_registered`, `test_vllm_provider_class`
+- Health: `test_health_healthy`, `test_health_unhealthy_status`, `test_health_connect_error`, `test_health_timeout`
+- Models: `test_models_success`, `test_models_empty`, `test_models_response_error`, `test_models_timeout`
+- Chat: `test_chat_success`, `test_chat_forwards_payload_unchanged`, `test_chat_401`, `test_chat_500`, `test_chat_timeout`, `test_chat_connection_error`
+- Streaming: `test_streaming_returns_generator`, `test_streaming_error_handling`, `test_streaming_connection_error`
+- Helpers: `test_create_streaming_response_success`, `test_create_streaming_response_no_generator`
+- Close: `test_close_client`
+- Config: `test_config_loads_from_file`, `test_env_overrides_config`, `test_config_with_float_conversion`
+
+### Verification
+- `pytest tests/providers/test_vllm_provider.py` - ✅ 25 passed
+- `ruff check packages/providers/vllm.py tests/providers/test_vllm_provider.py` - ✅ All checks passed
+- `mypy packages/providers/vllm.py tests/providers/test_vllm_provider.py` - ✅ Success: no issues found
+
+---
+
 ## Summary
 
 | Commit | Description | Files Created | Tests | Status |
@@ -107,5 +183,6 @@ tests/providers/
 | #0001 | Project Skeleton | 20+ | 0 | ✅ |
 | #0002 | Gateway Skeleton | 12 | 3 | ✅ |
 | #0003 | Provider Abstraction | 9 | 8 | ✅ |
+| #0004 | vLLM Provider | 4 | 25 | ✅ |
 
-Total: 41+ files, 11 tests, all passing.
+Total: 45+ files, 36 tests, all passing.
