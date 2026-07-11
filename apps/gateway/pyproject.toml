@@ -1,0 +1,13 @@
+[project]
+name = "local-ai-platform-gateway"
+version = "0.1.0"
+description = "FastAPI gateway application for Local AI Platform"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi",
+    "uvicorn",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

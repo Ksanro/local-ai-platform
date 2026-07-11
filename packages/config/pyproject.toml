@@ -1,0 +1,10 @@
+[project]
+name = "local-ai-platform-config"
+version = "0.1.0"
+description = "Configuration management for Local AI Platform"
+requires-python = ">=3.12"
+dependencies = []
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
