@@ -5,7 +5,15 @@ description = "FastAPI gateway application for Local AI Platform"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi",
+    "pydantic",
     "uvicorn",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "pytest-mock",
+    "httpx",
 ]
 
 [build-system]
