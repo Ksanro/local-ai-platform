@@ -8,7 +8,7 @@ from starlette.requests import Request
 from starlette.responses import Response
 
 
-class RequestMiddleware(BaseHTTPMiddleware):  # type: ignore[misc]
+class RequestMiddleware(BaseHTTPMiddleware):
     """Middleware that adds a request ID to response headers."""
 
     async def dispatch(
@@ -21,7 +21,7 @@ class RequestMiddleware(BaseHTTPMiddleware):  # type: ignore[misc]
         return response
 
 
-class TimingMiddleware(BaseHTTPMiddleware):  # type: ignore[misc]
+class TimingMiddleware(BaseHTTPMiddleware):
     """Middleware that measures request processing time."""
 
     async def dispatch(
