@@ -11,15 +11,19 @@ import logging
 import time
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
-from starlette.requests import Request
 from starlette.responses import StreamingResponse
 
 from apps.gateway.core.config import get_settings
-from packages.pipeline.engine import PipelineEngine
 from packages.pipeline.exceptions import PipelineError
 from packages.pipeline.request import PipelineRequest
+from packages.providers.exceptions import (
+    ProviderAuthenticationError,
+    ProviderConnectionError,
+    ProviderResponseError,
+    UnknownProviderError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +58,30 @@ class ChatCompletionRequest(BaseModel):
     )
 
 
+def _status_for_exception(exc: Exception | None) -> int:
+    """Map a pipeline exception to an HTTP status code.
+
+    Args:
+        exc: The exception to map, or ``None`` for the default.
+
+    Returns:
+        An HTTP status code integer.
+    """
+    if exc is None:
+        return 502
+    if isinstance(exc, UnknownProviderError):
+        return 501
+    if isinstance(exc, PipelineError):
+        return 501
+    if isinstance(exc, ProviderAuthenticationError):
+        return 502
+    if isinstance(exc, ProviderConnectionError):
+        return 503
+    if isinstance(exc, ProviderResponseError):
+        return 502
+    return 502
+
+
 @router.post("/v1/chat/completions", response_model=None)
 async def chat_completions(
     request: Request,
@@ -76,7 +104,6 @@ async def chat_completions(
         HTTPException: If the pipeline fails or no provider is configured.
     """
     request_id = request.headers.get("X-Request-ID", "unknown")
-    provider_name: str | None = None
     model: str = body.model
     start_time: float = time.perf_counter()
 
@@ -85,11 +112,9 @@ async def chat_completions(
     provider_name = settings.default_provider
 
     # Build the pipeline request.
-    kwargs: dict[str, Any] = {
-        "messages": body.messages,
-        "model": body.model,
-        "stream": body.stream,
-    }
+    # Only optional passthrough params go in kwargs; messages/model/stream
+    # are the sole source of truth via the dedicated PipelineRequest fields.
+    kwargs: dict[str, Any] = {}
     if body.temperature is not None:
         kwargs["temperature"] = body.temperature
     if body.max_tokens is not None:
@@ -106,11 +131,13 @@ async def chat_completions(
 
     try:
         # Execute through the pipeline.
-        response = await get_pipeline().execute(pipeline_request)
+        engine = request.app.state.pipeline
+        response = await engine.execute(pipeline_request)
         elapsed = time.perf_counter() - start_time
 
         if not response.success:
-            raise HTTPException(status_code=502, detail=response.error)
+            status_code = _status_for_exception(response.exception)
+            raise HTTPException(status_code=status_code, detail=response.error)
 
         result = response.data
 
@@ -146,6 +173,8 @@ async def chat_completions(
             media_type=media_type,
         )
 
+    except HTTPException:
+        raise
     except PipelineError as exc:
         elapsed = time.perf_counter() - start_time
         logger.error(
@@ -157,7 +186,7 @@ async def chat_completions(
             request_id,
             exc,
         )
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        raise HTTPException(status_code=501, detail=str(exc)) from exc
 
 
 def _wrap_stream_duration(
@@ -214,22 +243,3 @@ def _wrap_stream_duration(
             )
 
     return _wrapped()
-
-
-# Module-level pipeline instance, initialized lazily.
-_pipeline: PipelineEngine | None = None
-
-
-def get_pipeline() -> PipelineEngine:
-    """Get the pipeline engine, initializing it if needed.
-
-    Returns:
-        The global pipeline engine instance.
-    """
-    global _pipeline
-    if _pipeline is None:
-        from packages.pipeline.stages import ProviderStage
-
-        _pipeline = PipelineEngine()
-        _pipeline.register(ProviderStage())
-    return _pipeline

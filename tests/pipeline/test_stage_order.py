@@ -7,9 +7,10 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from packages.pipeline.base import PipelineStage
-from packages.pipeline.context import PipelineContext, PipelineStageResult
+from packages.pipeline.context import PipelineContext
 from packages.pipeline.engine import PipelineEngine
 from packages.pipeline.request import PipelineRequest
+from packages.pipeline.response import PipelineStageResult
 from packages.pipeline.stages import ProviderStage
 
 
@@ -205,23 +206,18 @@ class TestStageOrdering:
     @pytest.mark.asyncio
     async def test_provider_name_in_context(self) -> None:
         """Verify provider_name is stored in context metadata."""
+        mock_provider = AsyncMock()
+        mock_provider.chat = AsyncMock(
+            return_value={"choices": [{"message": {"content": "ok"}}]}
+        )
         engine = PipelineEngine()
-        engine.register(ProviderStage())
+        engine.register(ProviderStage(mock_provider))
 
-        with patch("packages.pipeline.stages.create_provider") as mock_create, patch(
-            "packages.pipeline.stages.has_provider", return_value=True
-        ):
-            mock_provider = AsyncMock()
-            mock_provider.chat = AsyncMock(
-                return_value={"choices": [{"message": {"content": "ok"}}]}
-            )
-            mock_create.return_value = mock_provider
+        request = PipelineRequest(
+            provider_name="custom-provider",
+            model="custom-model",
+        )
+        response = await engine.execute(request)
 
-            request = PipelineRequest(
-                provider_name="custom-provider",
-                model="custom-model",
-            )
-            response = await engine.execute(request)
-
-            assert response.success is True
-            assert response.data is not None
+        assert response.success is True
+        assert response.data is not None

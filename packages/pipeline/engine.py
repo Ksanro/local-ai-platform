@@ -127,6 +127,8 @@ class PipelineEngine:
                         context.request_id,
                         result.error,
                     )
+                    # Halt the pipeline on failure — do not run later stages.
+                    break
 
                 # Propagate data for next stages
                 if result.data is not None:
@@ -159,11 +161,9 @@ class PipelineEngine:
                     original=exc,
                 ) from exc
 
-        # Build final response
+        # Build final response from context (success/error/data are
+        # aggregated across all stages by from_context).
         response = PipelineResponse.from_context(context)
-        response.data = response_data
-        response.stage_results = all_results
-        response.request_id = context.request_id
 
         # Log summary
         logger.info(

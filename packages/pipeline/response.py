@@ -5,9 +5,29 @@ Defines the typed response structure that flows back from the pipeline.
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import Any
 
-from packages.pipeline.context import PipelineContext, PipelineStageResult
+
+@dataclass
+class PipelineStageResult:
+    """Result produced by a single pipeline stage.
+
+    Attributes:
+        stage_name: Name of the stage that produced this result.
+        success: Whether the stage completed successfully.
+        data: The stage's output data.
+        error: Error message if the stage failed.
+        exception: The original exception, if any.
+        duration: Time spent in the stage (seconds).
+    """
+
+    stage_name: str
+    success: bool
+    data: Any = None
+    error: str | None = None
+    exception: Exception | None = field(default=None, repr=False)
+    duration: float = 0.0
 
 
 class PipelineResponse:
@@ -51,12 +71,25 @@ class PipelineResponse:
         self.elapsed = elapsed
         self.request_id = request_id
 
+    @property
+    def exception(self) -> Exception | None:
+        """The exception from the first failing stage, if any.
+
+        Returns:
+            The first failing stage's exception, or ``None``.
+        """
+        for result in self.stage_results.values():
+            if not result.success and result.exception is not None:
+                return result.exception
+        return None
+
     @classmethod
     def from_context(cls, context: PipelineContext) -> PipelineResponse:
         """Build a PipelineResponse from a pipeline context.
 
-        Extracts the last stage result as the response data and
-        computes elapsed time.
+        Computes success across all stages (all must succeed), finds
+        the first error message, and takes data from the last successful
+        stage that produced non-None data.
 
         Args:
             context: The pipeline context after all stages executed.
@@ -65,9 +98,8 @@ class PipelineResponse:
             A new ``PipelineResponse`` instance.
         """
         results = context.stage_results
-        last_result = list(results.values())[-1] if results else None
 
-        if last_result is None:
+        if not results:
             return cls(
                 data=None,
                 stage_results={},
@@ -77,11 +109,23 @@ class PipelineResponse:
                 request_id=context.request_id,
             )
 
+        success = all(r.success for r in results.values())
+        error = next(
+            (r.error for r in results.values() if not r.success),
+            None,
+        )
+
+        # Take data from the last successful stage that produced data.
+        data = None
+        for r in results.values():
+            if r.success and r.data is not None:
+                data = r.data
+
         return cls(
-            data=last_result.data,
+            data=data,
             stage_results=dict(results),
-            success=last_result.success,
-            error=last_result.error,
+            success=success,
+            error=error,
             elapsed=context.elapsed,
             request_id=context.request_id,
         )

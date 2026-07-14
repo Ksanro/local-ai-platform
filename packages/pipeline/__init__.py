@@ -21,8 +21,9 @@ Usage::
 """
 
 from packages.pipeline.base import PipelineStage
-from packages.pipeline.context import PipelineContext, PipelineStageResult
+from packages.pipeline.context import PipelineContext
 from packages.pipeline.engine import PipelineEngine
+from packages.pipeline.response import PipelineResponse, PipelineStageResult
 from packages.pipeline.exceptions import (
     PipelineError,
     PipelineExecutionError,

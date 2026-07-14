@@ -12,24 +12,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
-
-@dataclass
-class PipelineStageResult:
-    """Result produced by a single pipeline stage.
-
-    Attributes:
-        stage_name: Name of the stage that produced this result.
-        success: Whether the stage completed successfully.
-        data: The stage's output data.
-        error: Error message if the stage failed.
-        duration: Time spent in the stage (seconds).
-    """
-
-    stage_name: str
-    success: bool
-    data: Any = None
-    error: str | None = None
-    duration: float = 0.0
+from packages.pipeline.response import PipelineStageResult
 
 
 @dataclass

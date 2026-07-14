@@ -74,14 +74,21 @@ class PipelineStage(ABC):
             StageError: If the stage fails during execution.
         """
 
-    async def after(self, context: PipelineContext, result: PipelineStageResult) -> None:
+    async def after(
+        self, context: PipelineContext, result: PipelineStageResult
+    ) -> PipelineStageResult | None:
         """Post-execution hook.
 
         Called after ``execute()`` (or the short-circuit result from
         ``before()``). Can perform cleanup, record metrics, or modify
-        the context.
+        the context. If a ``PipelineStageResult`` is returned, it
+        replaces the stage's result in the pipeline response.
 
         Args:
             context: The pipeline context.
             result: The result produced by this stage.
+
+        Returns:
+            A ``PipelineStageResult`` to replace the stage's result,
+            or ``None`` to keep the existing result.
         """

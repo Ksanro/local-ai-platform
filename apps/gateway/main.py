@@ -9,11 +9,14 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from apps.gateway.api.chat import router as chat_router
 from apps.gateway.api.health import router as health_router
 from apps.gateway.api.version import router as version_router
 from apps.gateway.core.config import get_settings
 from apps.gateway.core.logging import setup_logging
 from apps.gateway.middleware import RequestMiddleware, TimingMiddleware
+from packages.pipeline.engine import PipelineEngine
+from packages.pipeline.stages import ProviderStage
 from packages.providers import _load_providers
 from packages.providers.factory import create_provider
 from packages.providers.registry import has_provider
@@ -23,9 +26,10 @@ from packages.providers.registry import has_provider
 async def lifespan(app: FastAPI):
     """Application lifespan context manager.
 
-    Runs once at startup: loads settings, configures logging, and
-    creates the default provider instance. On shutdown, closes the
-    provider's httpx client to release the connection pool.
+    Runs once at startup: loads settings, configures logging, creates
+    a single provider instance, and builds the pipeline engine. On
+    shutdown, closes the provider's httpx client to release the
+    connection pool.
 
     Args:
         app: The FastAPI application instance.
@@ -36,18 +40,20 @@ async def lifespan(app: FastAPI):
     # Register all available providers.
     _load_providers()
 
-    # Create and cache the default provider instance for lifecycle management.
-    # The pipeline creates its own provider instances via create_provider(),
-    # but we keep this for proper cleanup on shutdown.
+    # Create a single provider instance, build the pipeline, and wire
+    # both onto app.state so every request reuses the same instance.
     default = settings.default_provider
     if has_provider(default):
         provider = create_provider(default)
-        app.state._provider = provider  # Private attribute for cleanup
+        app.state.provider = provider
+        engine = PipelineEngine()
+        engine.register(ProviderStage(provider))
+        app.state.pipeline = engine
 
     yield
 
     # Clean up the provider's httpx client on shutdown.
-    provider = getattr(app.state, "_provider", None)
+    provider = getattr(app.state, "provider", None)
     if provider is not None:
         await provider.close()
 
@@ -84,7 +90,7 @@ def create_app() -> FastAPI:
 
     app.include_router(health_router)
     app.include_router(version_router)
-    app.include_router(health_router)
+    app.include_router(chat_router)
 
     return app
 
