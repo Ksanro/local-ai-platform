@@ -1,15 +1,14 @@
 """Tests for the chat completions endpoint."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from apps.gateway.api.chat import router as chat_router
-from packages.providers.exceptions import UnknownProviderError
-from packages.providers.factory import create_provider
-from packages.providers.registry import get_registry
+from packages.pipeline.exceptions import PipelineError
+from packages.pipeline.response import PipelineResponse
 
 
 def _make_app() -> FastAPI:
@@ -26,8 +25,8 @@ def _make_app() -> FastAPI:
 
 
 def test_chat_completions_provider_not_found() -> None:
-    """Verify chat completions returns 501 when DEFAULT_PROVIDER points to an
-    unregistered provider name."""
+    """Verify chat completions returns 502 when the pipeline reports
+    an unregistered provider."""
     payload = {
         "messages": [{"role": "user", "content": "Hello"}],
         "model": "test-model",
@@ -38,44 +37,53 @@ def test_chat_completions_provider_not_found() -> None:
             "FakeSettings", (), {"default_provider": "nonexistent"}
         )(),
     ):
-        app = _make_app()
-        client = TestClient(app)
-        response = client.post("/v1/chat/completions", json=payload)
-    assert response.status_code == 501
+        with patch(
+            "apps.gateway.api.chat.get_pipeline"
+        ) as mock_pipeline:
+            mock_pipeline.return_value.execute = AsyncMock(
+                return_value=PipelineResponse(
+                    success=False,
+                    error="Provider 'nonexistent' is not registered",
+                )
+            )
+            app = _make_app()
+            client = TestClient(app)
+            response = client.post("/v1/chat/completions", json=payload)
+    assert response.status_code == 502
     data = response.json()
     assert "not registered" in data["detail"].lower() or "not found" in data["detail"].lower()
 
 
 def test_chat_completions_no_providers_registered() -> None:
-    """Verify 501 when the registry is empty."""
+    """Verify 502 when the pipeline has no stages (no providers)."""
     payload = {
         "messages": [{"role": "user", "content": "Hello"}],
         "model": "test-model",
     }
-    with patch("apps.gateway.api.chat.get_registry", return_value={}):
+    with patch("apps.gateway.api.chat.get_pipeline") as mock_pipeline:
+        mock_pipeline.return_value.execute = AsyncMock(
+            side_effect=PipelineError("No stages registered")
+        )
         app = _make_app()
         client = TestClient(app)
         response = client.post("/v1/chat/completions", json=payload)
-    assert response.status_code == 501
-    data = response.json()
-    assert data["detail"] == "No providers registered"
+    assert response.status_code == 502
 
 
 def test_chat_completions_streaming_error_on_provider_failure() -> None:
-    """Verify 502 when the provider raises during streaming."""
-    from packages.providers.exceptions import ProviderConnectionError
-
+    """Verify 502 when the pipeline raises during streaming."""
     payload = {
         "messages": [{"role": "user", "content": "Hello"}],
         "model": "test-model",
         "stream": True,
     }
-    mock_provider = MagicMock()
-    mock_provider.chat.side_effect = ProviderConnectionError("vLLM unreachable")
-    app = _make_app()
-    app.state.provider = mock_provider
-    client = TestClient(app)
-    response = client.post("/v1/chat/completions", json=payload)
+    with patch("apps.gateway.api.chat.get_pipeline") as mock_pipeline:
+        mock_pipeline.return_value.execute = AsyncMock(
+            side_effect=PipelineError("vLLM unreachable")
+        )
+        app = _make_app()
+        client = TestClient(app)
+        response = client.post("/v1/chat/completions", json=payload)
     assert response.status_code == 502
 
 
@@ -89,8 +97,6 @@ def test_streaming_response_returns_multiple_chunks() -> None:
         "max_tokens": 50,
     }
     app = _make_app()
-    # Use the real provider (reads VLLM_BASE_URL from env).
-    app.state.provider = create_provider("vllm")
     client = TestClient(app)
     response = client.post("/v1/chat/completions", json=payload)
     assert response.status_code == 200
@@ -113,7 +119,6 @@ def test_chat_completions_streaming_has_done_token() -> None:
         "max_tokens": 20,
     }
     app = _make_app()
-    app.state.provider = create_provider("vllm")
     client = TestClient(app)
     response = client.post("/v1/chat/completions", json=payload)
     assert response.status_code == 200
@@ -129,7 +134,6 @@ def test_chat_completions_non_streaming() -> None:
         "max_tokens": 10,
     }
     app = _make_app()
-    app.state.provider = create_provider("vllm")
     client = TestClient(app)
     response = client.post("/v1/chat/completions", json=payload)
     assert response.status_code == 200

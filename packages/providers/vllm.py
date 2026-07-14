@@ -203,9 +203,9 @@ class VLLMProvider(Provider):
                     async for line in response.aiter_lines():
                         if line:
                             if line.startswith("data: "):
-                                yield line + "\n"
+                                yield line + "\n\n"
                             elif line.strip():
-                                yield f"data: {line}\n"
+                                yield f"data: {line}\n\n"
             except httpx.HTTPStatusError as exc:
                 status_code = exc.response.status_code
                 error_data: dict[str, Any] = {

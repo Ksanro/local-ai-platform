@@ -9,7 +9,6 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from apps.gateway.api.chat import router as chat_router
 from apps.gateway.api.health import router as health_router
 from apps.gateway.api.version import router as version_router
 from apps.gateway.core.config import get_settings
@@ -37,15 +36,18 @@ async def lifespan(app: FastAPI):
     # Register all available providers.
     _load_providers()
 
-    # Create and cache the default provider instance.
+    # Create and cache the default provider instance for lifecycle management.
+    # The pipeline creates its own provider instances via create_provider(),
+    # but we keep this for proper cleanup on shutdown.
     default = settings.default_provider
     if has_provider(default):
-        app.state.provider = create_provider(default)
+        provider = create_provider(default)
+        app.state._provider = provider  # Private attribute for cleanup
 
     yield
 
     # Clean up the provider's httpx client on shutdown.
-    provider = getattr(app.state, "provider", None)
+    provider = getattr(app.state, "_provider", None)
     if provider is not None:
         await provider.close()
 
@@ -82,11 +84,9 @@ def create_app() -> FastAPI:
 
     app.include_router(health_router)
     app.include_router(version_router)
-    app.include_router(chat_router)
+    app.include_router(health_router)
 
     return app
 
 
 app = create_app()
-
-

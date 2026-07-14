@@ -1,7 +1,8 @@
 """Chat completions endpoint.
 
-Routes chat requests to the configured provider and handles
-both streaming and non-streaming responses.
+Routes chat requests through the pipeline (which delegates to the
+configured provider) and handles both streaming and non-streaming
+responses.
 """
 
 from __future__ import annotations
@@ -16,12 +17,9 @@ from starlette.requests import Request
 from starlette.responses import StreamingResponse
 
 from apps.gateway.core.config import get_settings
-from packages.providers.exceptions import (
-    ProviderAuthenticationError,
-    ProviderConnectionError,
-    ProviderResponseError,
-)
-from packages.providers.registry import get_registry, has_provider
+from packages.pipeline.engine import PipelineEngine
+from packages.pipeline.exceptions import PipelineError
+from packages.pipeline.request import PipelineRequest
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +61,7 @@ async def chat_completions(
 ) -> StreamingResponse | dict[str, Any]:
     """Chat completions endpoint.
 
-    Forwards the request to the configured provider and returns
+    Forwards the request through the pipeline and returns
     either a JSON response or an SSE streaming response depending
     on the ``stream`` flag.
 
@@ -75,8 +73,7 @@ async def chat_completions(
         A StreamingResponse for SSE or a dict for JSON responses.
 
     Raises:
-        HTTPException: If no provider is configured or the provider
-            call fails.
+        HTTPException: If the pipeline fails or no provider is configured.
     """
     request_id = request.headers.get("X-Request-ID", "unknown")
     provider_name: str | None = None
@@ -84,23 +81,10 @@ async def chat_completions(
     start_time: float = time.perf_counter()
 
     # Look up the configured provider via the factory.
-    registry = get_registry()
-    if not registry:
-        raise HTTPException(status_code=501, detail="No providers registered")
+    settings = get_settings()
+    provider_name = settings.default_provider
 
-    provider_name = get_settings().default_provider
-    if not has_provider(provider_name):
-        registered = ", ".join(sorted(registry.keys()))
-        raise HTTPException(
-            status_code=501,
-            detail=f"Provider '{provider_name}' is not registered. "
-            f"Available: [{registered}]",
-        )
-
-    # Use the cached provider instance (created once at startup).
-    provider = request.app.state.provider
-
-    # Build kwargs for the provider, passing through all fields.
+    # Build the pipeline request.
     kwargs: dict[str, Any] = {
         "messages": body.messages,
         "model": body.model,
@@ -111,9 +95,24 @@ async def chat_completions(
     if body.max_tokens is not None:
         kwargs["max_tokens"] = body.max_tokens
 
+    pipeline_request = PipelineRequest(
+        provider_name=provider_name,
+        model=body.model,
+        messages=body.messages,
+        stream=body.stream,
+        kwargs=kwargs,
+        metadata={"request_id": request_id},
+    )
+
     try:
-        result = await provider.chat(**kwargs)
+        # Execute through the pipeline.
+        response = await get_pipeline().execute(pipeline_request)
         elapsed = time.perf_counter() - start_time
+
+        if not response.success:
+            raise HTTPException(status_code=502, detail=response.error)
+
+        result = response.data
 
         # Non-streaming: log duration immediately.
         if not body.stream:
@@ -130,7 +129,7 @@ async def chat_completions(
         generator_fn = result.get("generator")
         media_type = result.get("media_type", "text/event-stream")
         if generator_fn is None:
-            # Unexpected shape – fall through to JSON.
+            # Unexpected shape -- fall through to JSON.
             logger.warning(
                 "provider=%s model=%s request_id=%s "
                 "stream=true but no generator in result",
@@ -147,11 +146,7 @@ async def chat_completions(
             media_type=media_type,
         )
 
-    except (
-        ProviderAuthenticationError,
-        ProviderConnectionError,
-        ProviderResponseError,
-    ) as exc:
+    except PipelineError as exc:
         elapsed = time.perf_counter() - start_time
         logger.error(
             "provider=%s model=%s duration=%.3fs status=error request_id=%s "
@@ -219,3 +214,22 @@ def _wrap_stream_duration(
             )
 
     return _wrapped()
+
+
+# Module-level pipeline instance, initialized lazily.
+_pipeline: PipelineEngine | None = None
+
+
+def get_pipeline() -> PipelineEngine:
+    """Get the pipeline engine, initializing it if needed.
+
+    Returns:
+        The global pipeline engine instance.
+    """
+    global _pipeline
+    if _pipeline is None:
+        from packages.pipeline.stages import ProviderStage
+
+        _pipeline = PipelineEngine()
+        _pipeline.register(ProviderStage())
+    return _pipeline
