@@ -15,21 +15,39 @@ from apps.gateway.api.version import router as version_router
 from apps.gateway.core.config import get_settings
 from apps.gateway.core.logging import setup_logging
 from apps.gateway.middleware import RequestMiddleware, TimingMiddleware
+from packages.providers import _load_providers
+from packages.providers.factory import create_provider
+from packages.providers.registry import has_provider
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan context manager.
 
-    Runs once at startup: loads settings and configures logging.
-    No cleanup is needed on shutdown.
+    Runs once at startup: loads settings, configures logging, and
+    creates the default provider instance. On shutdown, closes the
+    provider's httpx client to release the connection pool.
 
     Args:
         app: The FastAPI application instance.
     """
     settings = get_settings()
     setup_logging(level=settings.log_level)
+
+    # Register all available providers.
+    _load_providers()
+
+    # Create and cache the default provider instance.
+    default = settings.default_provider
+    if has_provider(default):
+        app.state.provider = create_provider(default)
+
     yield
+
+    # Clean up the provider's httpx client on shutdown.
+    provider = getattr(app.state, "provider", None)
+    if provider is not None:
+        await provider.close()
 
 
 def create_app() -> FastAPI:

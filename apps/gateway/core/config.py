@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     app_name: str = "Local AI Platform"
     log_level: str = "INFO"
     cors_origins: list[str] = ["*"]
+    default_provider: str = "vllm"
 
     model_config = {"env_prefix": "APP_"}
 

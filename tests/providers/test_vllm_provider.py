@@ -452,20 +452,33 @@ class TestVLLMProviderConfig:
 
     def test_config_loads_from_file(self) -> None:
         """Test that config is loaded from config file."""
-        custom_config = _make_mock_config(
-            base_url="http://config-test.local:8000/v1",
-            api_key="config-api-key",
-            request_timeout=45.0,
-            default_model="config-model",
-        )
-        with patch("packages.providers.vllm.load_config", return_value=custom_config):
-            from packages.providers.vllm import _get_vllm_config
+        import os
 
-            config = _get_vllm_config()
-            assert config["VLLM_BASE_URL"] == "http://config-test.local:8000/v1"
-            assert config["VLLM_API_KEY"] == "config-api-key"
-            assert config["REQUEST_TIMEOUT"] == 45.0
-            assert config["DEFAULT_MODEL"] == "config-model"
+        # Clear env vars so the config file value takes precedence.
+        saved = {}
+        for key in ("VLLM_BASE_URL", "DEFAULT_MODEL", "VLLM_API_KEY", "REQUEST_TIMEOUT"):
+            if key in os.environ:
+                saved[key] = os.environ.pop(key)
+        try:
+            custom_config = _make_mock_config(
+                base_url="http://config-test.local:8000/v1",
+                api_key="config-api-key",
+                request_timeout=45.0,
+                default_model="config-model",
+            )
+            with patch(
+                "packages.providers.vllm.load_config", return_value=custom_config
+            ):
+                from packages.providers.vllm import _get_vllm_config
+
+                config = _get_vllm_config()
+                assert config["VLLM_BASE_URL"] == "http://config-test.local:8000/v1"
+                assert config["VLLM_API_KEY"] == "config-api-key"
+                assert config["REQUEST_TIMEOUT"] == 45.0
+                assert config["DEFAULT_MODEL"] == "config-model"
+        finally:
+            for key, val in saved.items():
+                os.environ[key] = val
 
     def test_env_overrides_config(self) -> None:
         """Test that environment variables override config file values."""

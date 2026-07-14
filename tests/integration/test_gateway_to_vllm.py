@@ -1,7 +1,8 @@
 """Integration tests: gateway communicates with a real vLLM instance.
 
-These tests require an actual vLLM server running. They skip automatically
-when the ``VLLM_BASE_URL`` environment variable is not configured.
+These tests require:
+- An actual vLLM server (``VLLM_BASE_URL``)
+- A running gateway server (``GATEWAY_HOST:GATEWAY_PORT``)
 
 Environment variables
 ---------------------
@@ -23,9 +24,20 @@ VLLM_BASE_URL = os.environ.get("VLLM_BASE_URL")
 DEFAULT_MODEL = os.environ.get("DEFAULT_MODEL", "default-model")
 REQUEST_TIMEOUT = float(os.environ.get("REQUEST_TIMEOUT", "30"))
 
+
+def _gateway_reachable() -> bool:
+    """Check whether the gateway server is reachable."""
+    try:
+        with httpx.Client() as client:
+            client.get(f"http://{BASE_URL}:{PORT}/health", timeout=2)
+            return True
+    except Exception:
+        return False
+
+
 pytestmark = pytest.mark.skipif(
-    not VLLM_BASE_URL,
-    reason="VLLM_BASE_URL is not configured – skipping integration tests",
+    not VLLM_BASE_URL or not _gateway_reachable(),
+    reason="VLLM_BASE_URL not set or gateway not reachable – skipping integration tests",
 )
 
 
