@@ -4,6 +4,7 @@
 **License:** Apache 2.0
 **Python:** 3.12+
 **Last Updated:** 2026-07-14
+**Latest Commit:** 13th commit — unify pipeline failure path, fix circular import, isolate unit tests from network
 
 ---
 
@@ -94,7 +95,7 @@ A FastAPI-based HTTP gateway that proxies requests to backend LLM providers.
 - **Streaming responses** — Server-Sent Events (SSE) with per-token streaming
 - **Request tracing** — every response includes `X-Request-ID` and `X-Process-Time` headers
 - **Structured logging** — every request logs `provider`, `model`, `duration`, `status`, `request_id`
-- **Error handling** — 501 for missing providers, 502 for provider errors, 401 for auth failures
+- **Error handling** — 501 for missing providers, 502 for provider errors, 503 for connection failures, 401 for auth failures
 - **CORS** — configurable origins (default `*`)
 - **Pydantic validation** — `ChatCompletionRequest` validates `messages`, `model`, `stream`, `temperature`, `max_tokens`
 
@@ -152,6 +153,17 @@ The first concrete provider implementation. Proxies OpenAI-compatible requests t
 | 5xx | `ProviderResponseError` |
 | Timeout | `ProviderConnectionError` |
 | Connection refused | `ProviderConnectionError` |
+
+**Gateway Status Code Mapping:**
+
+| Exception | HTTP Status |
+|-----------|-------------|
+| `UnknownProviderError` | 501 |
+| `ProviderConnectionError` | 503 |
+| `ProviderAuthenticationError` | 502 |
+| `ProviderResponseError` | 502 |
+| Other `PipelineError` | 501 |
+| No exception (success) | 200 |
 
 **Streaming:** Returns an async generator that yields SSE-formatted events. Error events are wrapped as `data: {"error": {...}}\n\n` for client compatibility.
 
@@ -215,9 +227,15 @@ response = await engine.execute(request)
 
 **Error Handling:**
 
-- Pipeline owns exception translation
-- Gateway converts `PipelineError` → HTTP response
+- Pipeline owns exception translation — all exceptions (including raised exceptions) are caught and converted to failed `PipelineStageResult`
+- Gateway converts `PipelineError` → HTTP response with status code mapping:
+  - `UnknownProviderError` → 501
+  - `ProviderConnectionError` → 503
+  - `ProviderAuthenticationError` → 502
+  - `ProviderResponseError` → 502
+  - Other `PipelineError` → 501
 - Stage errors include stage name and original exception
+- A stage that raises an exception yields `PipelineResponse.success=False` with `response.exception` set to the original exception (not wrapped in `StageError`)
 
 **Logging:**
 
@@ -373,7 +391,7 @@ from packages.pipeline import (
     PipelineRequest,           # Typed request model
     PipelineResponse,          # Typed response model
     PipelineContext,           # Mutable shared state
-    PipelineStageResult,       # Per-stage result
+    PipelineStageResult,       # Per-stage result (from result.py)
     PipelineStage,             # Abstract base class
     PipelineError,             # Base exception
     StageError,                # Stage failure
@@ -381,6 +399,19 @@ from packages.pipeline import (
 )
 from packages.pipeline.stages import ProviderStage  # Built-in provider stage
 ```
+
+**Module Layout:**
+
+| Module | Contents |
+|--------|----------|
+| `result.py` | `PipelineStageResult` dataclass (success, data, error, exception, duration) |
+| `response.py` | `PipelineResponse` class (wraps final response with all stage results) |
+| `context.py` | `PipelineContext` class (mutable shared state across stages) |
+| `engine.py` | `PipelineEngine` class (orchestrates stage execution) |
+| `base.py` | `PipelineStage` ABC (before, execute, after hooks) |
+| `stages.py` | `ProviderStage` (resolves provider, calls `chat()`) |
+| `exceptions.py` | `PipelineError`, `StageError`, `PipelineExecutionError` |
+| `request.py` | `PipelineRequest` dataclass |
 
 ---
 
@@ -423,11 +454,12 @@ from packages.pipeline.stages import ProviderStage  # Built-in provider stage
 │   ├── pipeline/                   # Request processing pipeline
 │   │   ├── __init__.py             # Exports
 │   │   ├── base.py                 # PipelineStage ABC
-│   │   ├── context.py              # PipelineContext, PipelineStageResult
+│   │   ├── context.py              # PipelineContext
 │   │   ├── engine.py               # PipelineEngine
 │   │   ├── exceptions.py           # PipelineError hierarchy
 │   │   ├── request.py              # PipelineRequest
 │   │   ├── response.py             # PipelineResponse
+│   │   ├── result.py               # PipelineStageResult
 │   │   └── stages.py               # ProviderStage
 │   │
 │   ├── core/                       # Core business logic (stub)
@@ -459,8 +491,8 @@ from packages.pipeline.stages import ProviderStage  # Built-in provider stage
 
 | Area | Tests | Description |
 |------|-------|-------------|
-| Gateway | 6 | Health, version, chat (mocked + real vLLM) |
-| Pipeline | 32 | Engine, stages, ordering, context, ProviderStage |
+| Gateway | 8 | Health, version, chat (all stubbed — no network calls) |
+| Pipeline | 35 | Engine, stages, ordering, context, ProviderStage, exception handling, HTTP status mapping |
 | Providers | 33 | Factory, registry, vLLM provider (health, models, chat, streaming, config) |
 | Repository | 20+ | Scanner, filters, language detection, statistics |
 | Integration | 3 | End-to-end gateway → vLLM (health, chat, streaming) |
@@ -487,6 +519,10 @@ VLLM_BASE_URL=http://localhost:8000/v1 pytest tests/integration/
 # Smoke test
 python scripts/test_gateway.py
 ```
+
+### Network Guard
+
+All unit tests are isolated from network calls via an autouse fixture in `tests/conftest.py` that monkeypatches `httpx.AsyncClient.send` to raise `AssertionError` if any non-integration test attempts to open an HTTP connection. Integration tests under `tests/integration/` are exempt.
 
 ### CI Pipeline
 
@@ -544,6 +580,9 @@ Priority: **Environment Variable > Config File > Hardcoded Default**
 - [x] Structured logging with request tracing
 - [x] Smoke test and integration test scripts
 - [x] Request processing pipeline (stages, engine, context, ProviderStage)
+- [x] Unified pipeline failure path — all exceptions caught and converted to failed results
+- [x] Network isolation — unit tests cannot make real network calls
+- [x] Circular import fix — `PipelineStageResult` extracted to dedicated module
 
 ### Planned (Future Sprints)
 

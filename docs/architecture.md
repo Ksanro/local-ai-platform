@@ -174,6 +174,10 @@ Gateway
 
 ↓
 
+Pipeline (stages in order)
+
+↓
+
 Provider
 
 ↓
@@ -193,6 +197,8 @@ Gateway
 Agent
 ```
 
+Pipeline stages execute in order: `before()` → `execute()` → `after()`. Each stage receives a mutable context and returns a `PipelineStageResult`.
+
 Future
 
 ```
@@ -204,19 +210,19 @@ Gateway
 
 ↓
 
-Context Builder
+AuthenticationStage
 
 ↓
 
-Repository Intelligence
+RepositoryContextStage
 
 ↓
 
-Memory
+MemoryStage
 
 ↓
 
-Provider
+ProviderStage
 
 ↓
 
@@ -240,6 +246,23 @@ docs/
 Applications contain entry points only.
 
 Business logic belongs inside packages.
+
+## Pipeline Package
+
+```
+packages/pipeline/
+├── __init__.py       # Public exports
+├── base.py           # PipelineStage ABC
+├── context.py        # PipelineContext (mutable shared state)
+├── engine.py         # PipelineEngine (orchestrates stages)
+├── exceptions.py     # PipelineError hierarchy
+├── request.py        # PipelineRequest
+├── response.py       # PipelineResponse
+├── result.py         # PipelineStageResult
+└── stages.py         # ProviderStage (built-in)
+```
+
+`PipelineStageResult` lives in its own module (`result.py`) to break the circular import between `response.py` and `context.py`.
 
 ---
 
@@ -304,11 +327,13 @@ Future metrics include
 
 # Testing Strategy
 
-- Unit tests
-- Integration tests
-- Gateway tests
-- Provider tests
-- Benchmark tests
+- Unit tests — all isolated from network calls (autouse fixture blocks `httpx.AsyncClient.send`)
+- Integration tests — under `tests/integration/`, exempt from network guard
+- Gateway tests — use stub pipelines, never touch real providers
+- Provider tests — use mocked httpx client
+- Benchmark tests — performance regression tests
+
+Network isolation: `tests/conftest.py` contains an autouse fixture that raises `AssertionError` if any non-integration test attempts to open an HTTP connection.
 
 ---
 

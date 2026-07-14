@@ -8,11 +8,16 @@ A production-ready Python project structure for AI platform development.
 ├── apps/
 │   └── gateway/          # FastAPI gateway application
 ├── packages/
-│   ├── core/             # Core business logic
 │   ├── config/           # Configuration management
+│   ├── pipeline/         # Request processing pipeline (stages, engine, context)
 │   ├── providers/        # AI provider implementations
-│   └── telemetry/        # Telemetry and monitoring
+│   ├── repository/       # Repository scanner and index
+│   └── telemetry/        # Telemetry and monitoring (stub)
 ├── tests/                # Test suite
+│   ├── gateway/          # Gateway unit tests
+│   ├── pipeline/         # Pipeline unit tests
+│   ├── providers/        # Provider unit tests
+│   ├── repository/       # Scanner unit tests
 │   └── integration/      # End-to-end integration tests
 ├── scripts/              # Utility scripts
 └── .github/              # GitHub Actions workflows
