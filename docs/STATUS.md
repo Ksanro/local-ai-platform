@@ -4,7 +4,7 @@
 **License:** Apache 2.0
 **Python:** 3.12+
 **Last Updated:** 2026-07-14
-**Latest Commit:** 13th commit — unify pipeline failure path, fix circular import, isolate unit tests from network
+**Latest Commit:** 14th commit — Add Symbol Graph Foundation: language-independent symbol representation
 
 ---
 
@@ -277,7 +277,95 @@ def scan(path: Path) -> RepositoryIndex
 - `find_language(index, language)` — find all files of a given language
 - `summary(index)` — human-readable summary dict
 
-### 7. Configuration Management
+### 7. Symbol Graph
+
+A language-independent representation of symbols and their relationships
+extracted from source code. Provides the foundation for repository
+intelligence — future features (Context Builder, Semantic Search,
+Prompt Optimization) consume the symbol graph to understand code
+structure.
+
+**Architecture:**
+
+```
+Python AST
+        │
+        ▼
+SymbolExtractor  (abstract interface)
+        │
+        ▼
+SymbolGraph      (immutable data model)
+```
+
+The public API never exposes Python AST nodes. AST is strictly an
+implementation detail of language-specific extractors.
+
+**Data Model:**
+
+| Model | Description |
+|-------|-------------|
+| `Language` | Programming language identifier (currently `PYTHON`) |
+| `Symbol` | A single symbol (class, function, method) with `id`, `name`, `qualified_name`, `symbol_type`, `module`, `lineno`, `decorators` |
+| `SymbolType` | `MODULE`, `CLASS`, `FUNCTION`, `METHOD` |
+| `Relationship` | Directed relationship between two symbols (`source`, `target`, `type`) |
+| `RelationshipType` | `DEFINES` (containment), `IMPORTS`, `INHERITS`, `CALLS` (reserved) |
+| `Module` | All symbols and relationships in a single source file |
+| `SymbolGraph` | Complete graph for a repository (dict of modules) |
+
+**Public API (`SymbolGraphView`):**
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `modules()` | `Sequence[Module]` | All modules, sorted by path |
+| `module(path)` | `Module \| None` | Module by path |
+| `classes()` | `Sequence[Symbol]` | All CLASS symbols, sorted |
+| `functions()` | `Sequence[Symbol]` | All FUNCTION symbols, sorted |
+| `methods()` | `Sequence[Symbol]` | All METHOD symbols, sorted |
+| `symbols()` | `Sequence[Symbol]` | All symbols, sorted |
+| `find(name)` | `Sequence[Symbol]` | Match against `name` or `qualified_name` |
+| `children(symbol)` | `Sequence[Symbol]` | Direct children via DEFINES only |
+| `parents(symbol)` | `Sequence[Symbol]` | Direct parents via DEFINES only |
+| `imports(module)` | `Sequence[str]` | Raw import text for a module |
+
+**Rules:**
+
+- `find()` always returns a list (never `None`)
+- Matching is performed against both `name` and `qualified_name`
+- Only `DEFINES` relationships are traversed by `children()` and `parents()`
+- All public collections are sorted deterministically by `qualified_name`, then `lineno`
+
+**Python AST Extractor:**
+
+Extracts from Python source using the standard library `ast` module:
+
+- Modules (by file stem)
+- Classes and their nested definitions
+- Functions and methods (nested functions classified as `FUNCTION`, not `METHOD`)
+- Inheritance relationships
+- Decorators (simple names, attribute access, call syntax)
+- Imports (stored as raw text, no resolution)
+
+**Classification Rules:**
+
+- `def` directly inside a class → `METHOD`
+- nested `def` (not inside a class) → `FUNCTION`
+- nested `class` → `CLASS`
+- `async def` follows the same rule as `def`
+- decorators never change `SymbolType`
+
+**Known Limitations:**
+
+1. No call resolution — CALLS relationships are not populated
+2. No import resolution — imports stored as raw text
+3. No type inference — parameter and return types not extracted
+4. No control-flow analysis — only syntactic structure captured
+5. Python only — the interface supports future extractors (Tree-sitter, etc.)
+
+**Tests:** 82 tests (45 extractor + 32 API + 8 integration + 7 smoke)
+
+---
+
+### 9. Configuration Management
 
 **YAML Config Loading (`packages/config`):**
 
@@ -291,7 +379,7 @@ def scan(path: Path) -> RepositoryIndex
 - `lru_cache` singleton pattern for settings instance
 - Configurable: `app_name`, `log_level`, `cors_origins`, `default_provider`
 
-### 8. Structured Logging
+### 10. Structured Logging
 
 - Timestamp, logger name, level, and message format
 - Output directed to stdout for containerized environments
@@ -374,6 +462,32 @@ from packages.repository import (
 )
 ```
 
+### Symbol Graph Package (`packages.repository.symbols`)
+
+```python
+from packages.repository.symbols import (
+    SymbolGraphView,           # Read-only view over SymbolGraph
+    Symbol,                    # A single symbol (class, function, method)
+    SymbolType,                # MODULE, CLASS, FUNCTION, METHOD
+    Relationship,              # Directed relationship between symbols
+    RelationshipType,          # DEFINES, IMPORTS, INHERITS, CALLS
+    Module,                    # All symbols in a source file
+    SymbolGraph,               # Complete graph for a repository
+    SymbolExtractor,           # Abstract extractor interface
+    Language,                  # Programming language identifier
+    PythonAstExtractor,        # Python AST implementation
+)
+```
+
+**Module Layout:**
+
+| Module | Contents |
+|--------|----------|
+| `models.py` | `Symbol`, `SymbolGraph`, `Module`, `Relationship`, `SymbolType`, `RelationshipType`, `Language` |
+| `extractor.py` | `SymbolExtractor` ABC (`language`, `extract(path)`) |
+| `python_ast.py` | `PythonAstExtractor` — AST-based implementation |
+| `graph.py` | `SymbolGraphView` — sorted, deterministic public API |
+
 ### Config Package (`packages.config`)
 
 ```python
@@ -440,12 +554,19 @@ from packages.pipeline.stages import ProviderStage  # Built-in provider stage
 │   │   ├── registry.py             # register() / get_registry()
 │   │   └── vllm.py                 # VLLMProvider implementation
 │   │
-│   ├── repository/                 # Repository scanner
+│   ├── repository/                 # Repository scanner + symbol graph
 │   │   ├── models.py               # Dataclasses (SourceFile, Directory, etc.)
 │   │   ├── scanner.py              # scan() function
 │   │   ├── filters.py              # gitignore + hardcoded ignores
 │   │   ├── index.py                # Helper functions
-│   │   └── languages.py            # Extension → language mapping
+│   │   ├── languages.py            # Extension → language mapping
+│   │   │
+│   │   ├── symbols/                # Symbol graph (language-independent)
+│   │   │   ├── __init__.py         # Package exports
+│   │   │   ├── models.py           # Symbol, SymbolGraph, Module, etc.
+│   │   │   ├── extractor.py        # SymbolExtractor ABC
+│   │   │   ├── python_ast.py       # Python AST implementation
+│   │   │   └── graph.py            # SymbolGraphView public API
 │   │
 │   ├── config/                     # YAML config loading
 │   │   ├── __init__.py             # load_config, get_env_or_config
@@ -495,6 +616,7 @@ from packages.pipeline.stages import ProviderStage  # Built-in provider stage
 | Pipeline | 35 | Engine, stages, ordering, context, ProviderStage, exception handling, HTTP status mapping |
 | Providers | 33 | Factory, registry, vLLM provider (health, models, chat, streaming, config) |
 | Repository | 20+ | Scanner, filters, language detection, statistics |
+| Symbol Graph | 82 | Extractor (45), API (32), integration (8), smoke (7) |
 | Integration | 3 | End-to-end gateway → vLLM (health, chat, streaming) |
 | Smoke | 3 | Manual smoke test (gateway reachable, chat, streaming) |
 
@@ -583,6 +705,7 @@ Priority: **Environment Variable > Config File > Hardcoded Default**
 - [x] Unified pipeline failure path — all exceptions caught and converted to failed results
 - [x] Network isolation — unit tests cannot make real network calls
 - [x] Circular import fix — `PipelineStageResult` extracted to dedicated module
+- [x] Symbol Graph Foundation — language-independent symbol representation, Python AST extractor, 82 tests
 
 ### Planned (Future Sprints)
 
@@ -602,7 +725,7 @@ Priority: **Environment Variable > Config File > Hardcoded Default**
 | Component | Status | Description |
 |-----------|--------|-------------|
 | Context Engine | Planned | Build optimized prompts, remove redundant context, compress history |
-| Repository Intelligence | Planned | Symbol graph, dependency graph, code search, metadata extraction |
+| Repository Intelligence | In Progress | Symbol graph implemented (v1). Dependency graph, code search, metadata extraction planned |
 | Memory | Planned | Long-term conversation memory, project memory, user preferences |
 | Metrics | Planned | Prometheus-compatible metrics (latency, tokens/sec, cache hits) |
 | Authentication | Planned | API key authentication for gateway endpoints |

@@ -146,7 +146,14 @@ Responsibilities
 - Code search
 - Metadata extraction
 
-Future feature.
+**Implemented: Symbol Graph Foundation**
+
+A language-independent representation of symbols and their relationships.
+The `SymbolGraphView` public API provides sorted, deterministic access to
+classes, functions, methods, and relationships. The `SymbolExtractor` ABC
+supports future language-specific extractors (Tree-sitter, Scala, Java, etc.).
+
+See `docs/symbol-graph.md` for full documentation.
 
 ---
 
@@ -264,6 +271,26 @@ packages/pipeline/
 
 `PipelineStageResult` lives in its own module (`result.py`) to break the circular import between `response.py` and `context.py`.
 
+## Repository Package
+
+```
+packages/repository/
+├── models.py               # SourceFile, Directory, LanguageSummary, Statistics, RepositoryIndex
+├── scanner.py              # scan() function
+├── filters.py              # gitignore + hardcoded ignores
+├── index.py                # Helper functions (get_file, find_extension, find_language, summary)
+└── languages.py            # Extension → language mapping
+
+packages/repository/symbols/
+├── __init__.py             # Package exports
+├── models.py               # Symbol, SymbolGraph, Module, Relationship, SymbolType, RelationshipType, Language
+├── extractor.py            # SymbolExtractor ABC
+├── python_ast.py           # Python AST implementation
+└── graph.py                # SymbolGraphView public API
+```
+
+`SymbolGraphView` provides sorted, deterministic read-only access to the symbol graph. All public collections are sorted by `qualified_name`, then `lineno`.
+
 ---
 
 # Dependency Rules
@@ -331,6 +358,7 @@ Future metrics include
 - Integration tests — under `tests/integration/`, exempt from network guard
 - Gateway tests — use stub pipelines, never touch real providers
 - Provider tests — use mocked httpx client
+- Symbol Graph tests — 82 tests covering extractor, API, and integration
 - Benchmark tests — performance regression tests
 
 Network isolation: `tests/conftest.py` contains an autouse fixture that raises `AssertionError` if any non-integration test attempts to open an HTTP connection.
