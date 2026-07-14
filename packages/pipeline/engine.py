@@ -6,16 +6,15 @@ Orchestrates registered stages in order, executing each stage's
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import time
-from typing import Any
 
 from packages.pipeline.base import PipelineStage
 from packages.pipeline.context import PipelineContext
-from packages.pipeline.exceptions import PipelineExecutionError, StageError
+from packages.pipeline.exceptions import PipelineExecutionError
 from packages.pipeline.request import PipelineRequest
-from packages.pipeline.response import PipelineResponse, PipelineStageResult
+from packages.pipeline.response import PipelineResponse
+from packages.pipeline.result import PipelineStageResult
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +81,6 @@ class PipelineEngine:
         context.set_metadata("provider_name", request.provider_name)
         context.set_metadata("model", request.model)
 
-        response_data: Any = None
         all_results: dict[str, PipelineStageResult] = {}
 
         for stage in self._stages:
@@ -132,17 +130,15 @@ class PipelineEngine:
 
                 # Propagate data for next stages
                 if result.data is not None:
-                    response_data = result.data
+                    pass
 
-            except StageError:
-                # Re-raise StageError (already has all info)
-                raise
             except Exception as exc:
                 elapsed = time.perf_counter() - stage_start
                 error_result = PipelineStageResult(
                     stage_name=stage_name,
                     success=False,
                     error=str(exc),
+                    exception=exc,
                     duration=elapsed,
                 )
                 context.set_stage_result(stage_name, error_result)
@@ -155,11 +151,11 @@ class PipelineEngine:
                     exc,
                     elapsed,
                 )
-                raise StageError(
-                    message=f"Stage '{stage_name}' failed: {exc}",
-                    stage_name=stage_name,
-                    original=exc,
-                ) from exc
+                # Catch any exception, record it as a failed result,
+                # and fall through to build a normal PipelineResponse.
+                # This ensures the status-code mapping in chat.py
+                # receives the original exception via response.exception.
+                break
 
         # Build final response from context (success/error/data are
         # aggregated across all stages by from_context).

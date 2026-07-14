@@ -2,18 +2,20 @@
 
 from __future__ import annotations
 
-import sys
-from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
+from apps.gateway.api.chat import router as chat_router
 from packages.pipeline.base import PipelineStage
 from packages.pipeline.context import PipelineContext
 from packages.pipeline.engine import PipelineEngine
-from packages.pipeline.exceptions import PipelineExecutionError, StageError
+from packages.pipeline.exceptions import PipelineExecutionError
 from packages.pipeline.request import PipelineRequest
-from packages.pipeline.response import PipelineResponse, PipelineStageResult
+from packages.pipeline.response import PipelineResponse
+from packages.pipeline.result import PipelineStageResult
 from packages.pipeline.stages import ProviderStage
 
 
@@ -176,8 +178,8 @@ class TestPipelineEngine:
         assert response.data == {"track_result": True}
 
     @pytest.mark.asyncio
-    async def test_execute_stage_failure_propagates(self) -> None:
-        """Verify a failing stage raises StageError."""
+    async def test_execute_stage_failure_returns_failed_response(self) -> None:
+        """Verify a failing stage returns a failed PipelineResponse, not an exception."""
         engine = PipelineEngine()
         good = _TrackingStage(name="good")
         bad = _FailingStage(name="bad", error_msg="kaboom")
@@ -185,11 +187,13 @@ class TestPipelineEngine:
         engine.register(bad)
 
         request = PipelineRequest()
-        with pytest.raises(StageError) as exc_info:
-            await engine.execute(request)
+        response = await engine.execute(request)
 
-        assert "bad" in str(exc_info.value.stage_name)
-        assert "kaboom" in str(exc_info.value)
+        assert response.success is False
+        assert response.error == "kaboom"
+        assert "bad" in response.stage_results
+        assert response.stage_results["bad"].error == "kaboom"
+        assert isinstance(response.stage_results["bad"].exception, RuntimeError)
 
     @pytest.mark.asyncio
     async def test_request_id_propagation(self) -> None:
@@ -283,6 +287,7 @@ class TestProviderStage:
 
         assert result is not None
         assert result.success is False
+        assert result.error is not None
         assert "nonexistent" in result.error
         assert result.exception is not None
 
@@ -307,6 +312,7 @@ class TestProviderStage:
         result = await stage.execute(context)
 
         assert result.success is False
+        assert result.error is not None
         assert "unreachable" in result.error
         assert isinstance(result.exception, ProviderConnectionError)
 
@@ -441,3 +447,95 @@ class TestPipelineHalting:
         # The response should have success=False because bad stage failed.
         assert response.success is False
         assert response.error == "boom"
+
+
+class TestExceptionHandling:
+    """Tests proving exceptions are caught and converted to failed results."""
+
+    @pytest.mark.asyncio
+    async def test_raised_exception_yields_failed_response(self) -> None:
+        """A stage that raises an exception yields PipelineResponse.success=False
+        with response.exception set to the original exception (not a StageError)."""
+        engine = PipelineEngine()
+        engine.register(_FailingStage(name="bad", error_msg="kaboom"))
+
+        request = PipelineRequest()
+        response = await engine.execute(request)
+
+        assert response.success is False
+        assert response.exception is not None
+        assert isinstance(response.exception, RuntimeError)
+        assert str(response.exception) == "kaboom"
+        # The exception must NOT be wrapped in StageError.
+        from packages.pipeline.exceptions import StageError
+
+        assert not isinstance(response.exception, StageError)
+
+    @pytest.mark.asyncio
+    async def test_raised_provider_connection_error_is_original(self) -> None:
+        """A stage that raises ProviderConnectionError preserves the original."""
+        from packages.providers.exceptions import ProviderConnectionError
+
+        class _ConnFailStage(PipelineStage):
+            @property
+            def name(self) -> str:
+                return "connfail"
+
+            async def before(self, context: PipelineContext) -> PipelineStageResult | None:
+                return None
+
+            async def execute(self, context: PipelineContext) -> PipelineStageResult:
+                raise ProviderConnectionError("Connection refused")
+
+            async def after(
+                self, context: PipelineContext, result: PipelineStageResult
+            ) -> PipelineStageResult | None:
+                return None
+
+        engine = PipelineEngine()
+        engine.register(_ConnFailStage())
+
+        request = PipelineRequest()
+        response = await engine.execute(request)
+
+        assert response.success is False
+        assert response.exception is not None
+        assert isinstance(response.exception, ProviderConnectionError)
+
+
+class TestHTTPStatusMapping:
+    """Tests proving raised exceptions map to correct HTTP status codes."""
+
+    @pytest.mark.asyncio
+    async def test_provider_connection_error_maps_to_503(self) -> None:
+        """A raised ProviderConnectionError surfaces as HTTP 503 (not 501)."""
+        from packages.providers.exceptions import ProviderConnectionError
+
+        mock_engine = AsyncMock()
+        resp = PipelineResponse(
+            success=False,
+            error="Connection refused",
+        )
+        resp.stage_results = {
+            "provider": PipelineStageResult(
+                stage_name="provider",
+                success=False,
+                error="Connection refused",
+                exception=ProviderConnectionError("Connection refused"),
+            )
+        }
+        mock_engine.execute = AsyncMock(return_value=resp)
+
+        app = FastAPI()
+        app.include_router(chat_router)
+        app.state.pipeline = mock_engine
+
+        client = TestClient(app)
+        response = client.post(
+            "/v1/chat/completions",
+            json={
+                "messages": [{"role": "user", "content": "Hello"}],
+                "model": "test-model",
+            },
+        )
+        assert response.status_code == 503

@@ -4,10 +4,8 @@ from __future__ import annotations
 
 import time
 
-import pytest
-
 from packages.pipeline.context import PipelineContext
-from packages.pipeline.response import PipelineStageResult
+from packages.pipeline.result import PipelineStageResult
 
 
 class TestPipelineContext:

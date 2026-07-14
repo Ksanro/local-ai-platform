@@ -1,15 +1,19 @@
 """Tests for the chat completions endpoint."""
 
+from __future__ import annotations
+
+from collections.abc import AsyncGenerator
+from typing import Any
 from unittest.mock import AsyncMock, patch
 
-import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from apps.gateway.api.chat import router as chat_router
 from packages.pipeline.engine import PipelineEngine
 from packages.pipeline.exceptions import PipelineError
-from packages.pipeline.response import PipelineResponse, PipelineStageResult
+from packages.pipeline.response import PipelineResponse
+from packages.pipeline.result import PipelineStageResult
 from packages.providers.exceptions import (
     ProviderConnectionError,
     UnknownProviderError,
@@ -35,30 +39,48 @@ def _make_app(pipeline: PipelineEngine | None = None) -> FastAPI:
     app.include_router(chat_router)
 
     if pipeline is not None:
-        app.state.pipeline = pipeline  # type: ignore[attr-defined]
+        app.state.pipeline = pipeline
     else:
         # Wire a stub pipeline so the endpoint has something to call.
+        async def _stub_generator() -> AsyncGenerator[str, None]:
+            """Yield SSE data lines for streaming tests."""
+            yield 'data: {"id":"stub-1","choices":[{"delta":{"role":"assistant"}}]}\n'
+            yield 'data: {"id":"stub-1","choices":[{"delta":{"content":"ok"}}]}\n'
+            yield "data: [DONE]\n"
+
         class _StubStage:
             @property
             def name(self) -> str:
                 return "stub"
 
-            async def before(self, context):  # type: ignore[no-untyped-def]
+            async def before(self, context: Any) -> Any:
                 return None
 
-            async def execute(self, context):  # type: ignore[no-untyped-def]
+            async def execute(self, context: Any) -> Any:
+                stream = context.request.get("stream", False)
+                if stream:
+                    data: dict[str, Any] = {
+                        "generator": _stub_generator,
+                        "media_type": "text/event-stream",
+                    }
+                else:
+                    data = {
+                        "choices": [
+                            {"message": {"role": "assistant", "content": "ok"}}
+                        ]
+                    }
                 return PipelineStageResult(
                     stage_name="stub",
                     success=True,
-                    data={"choices": [{"message": {"role": "assistant", "content": "ok"}}]},
+                    data=data,
                 )
 
-            async def after(self, context, result):  # type: ignore[no-untyped-def]
+            async def after(self, context: Any, result: Any) -> Any:
                 return None
 
         engine = PipelineEngine()
-        engine.register(_StubStage())
-        app.state.pipeline = engine  # type: ignore[attr-defined]
+        engine.register(_StubStage())  # type: ignore[arg-type]
+        app.state.pipeline = engine
 
     return app
 
@@ -94,7 +116,7 @@ def test_chat_completions_provider_not_found() -> None:
         }
         mock_engine.execute = AsyncMock(return_value=resp)
         app = _make_app()
-        app.state.pipeline = mock_engine  # type: ignore[attr-defined]
+        app.state.pipeline = mock_engine
         client = TestClient(app)
         response = client.post("/v1/chat/completions", json=payload)
     assert response.status_code == 501
@@ -113,7 +135,7 @@ def test_chat_completions_no_providers_registered() -> None:
         side_effect=PipelineError("No stages registered")
     )
     app = _make_app()
-    app.state.pipeline = mock_engine  # type: ignore[attr-defined]
+    app.state.pipeline = mock_engine
     client = TestClient(app)
     response = client.post("/v1/chat/completions", json=payload)
     assert response.status_code == 501
@@ -131,7 +153,7 @@ def test_chat_completions_streaming_error_on_provider_failure() -> None:
         side_effect=PipelineError("vLLM unreachable")
     )
     app = _make_app()
-    app.state.pipeline = mock_engine  # type: ignore[attr-defined]
+    app.state.pipeline = mock_engine
     client = TestClient(app)
     response = client.post("/v1/chat/completions", json=payload)
     assert response.status_code == 501
@@ -139,21 +161,14 @@ def test_chat_completions_streaming_error_on_provider_failure() -> None:
 
 def test_streaming_response_returns_multiple_chunks() -> None:
     """Verify streaming endpoint returns at least 2 SSE chunks from the
-    real vLLM server."""
-    from packages.providers.factory import create_provider
-    from packages.pipeline.stages import ProviderStage
-
+    stub pipeline."""
     payload = {
         "messages": [{"role": "user", "content": "Hello"}],
         "model": "qwen36",
         "stream": True,
         "max_tokens": 50,
     }
-    # Build a real pipeline that connects to the actual vLLM server.
-    provider = create_provider("vllm")
-    engine = PipelineEngine()
-    engine.register(ProviderStage(provider))
-    app = _make_app(pipeline=engine)
+    app = _make_app()
     client = TestClient(app)
     response = client.post("/v1/chat/completions", json=payload)
     assert response.status_code == 200
@@ -169,19 +184,13 @@ def test_streaming_response_returns_multiple_chunks() -> None:
 
 def test_chat_completions_streaming_has_done_token() -> None:
     """Verify the streaming response ends with a [DONE] terminator."""
-    from packages.providers.factory import create_provider
-    from packages.pipeline.stages import ProviderStage
-
     payload = {
         "messages": [{"role": "user", "content": "Hello"}],
         "model": "qwen36",
         "stream": True,
         "max_tokens": 20,
     }
-    provider = create_provider("vllm")
-    engine = PipelineEngine()
-    engine.register(ProviderStage(provider))
-    app = _make_app(pipeline=engine)
+    app = _make_app()
     client = TestClient(app)
     response = client.post("/v1/chat/completions", json=payload)
     assert response.status_code == 200
@@ -190,19 +199,13 @@ def test_chat_completions_streaming_has_done_token() -> None:
 
 def test_chat_completions_non_streaming() -> None:
     """Verify non-streaming chat returns valid OpenAI JSON shape."""
-    from packages.providers.factory import create_provider
-    from packages.pipeline.stages import ProviderStage
-
     payload = {
         "messages": [{"role": "user", "content": "Reply with exactly OK"}],
         "model": "qwen36",
         "stream": False,
         "max_tokens": 10,
     }
-    provider = create_provider("vllm")
-    engine = PipelineEngine()
-    engine.register(ProviderStage(provider))
-    app = _make_app(pipeline=engine)
+    app = _make_app()
     client = TestClient(app)
     response = client.post("/v1/chat/completions", json=payload)
     assert response.status_code == 200
@@ -239,7 +242,7 @@ def test_chat_completions_provider_connection_error_returns_503() -> None:
         }
         mock_engine.execute = AsyncMock(return_value=resp)
         app = _make_app()
-        app.state.pipeline = mock_engine  # type: ignore[attr-defined]
+        app.state.pipeline = mock_engine
         client = TestClient(app)
         response = client.post("/v1/chat/completions", json=payload)
     assert response.status_code == 503

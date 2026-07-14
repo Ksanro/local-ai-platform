@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -10,7 +10,7 @@ from packages.pipeline.base import PipelineStage
 from packages.pipeline.context import PipelineContext
 from packages.pipeline.engine import PipelineEngine
 from packages.pipeline.request import PipelineRequest
-from packages.pipeline.response import PipelineStageResult
+from packages.pipeline.result import PipelineStageResult
 from packages.pipeline.stages import ProviderStage
 
 
@@ -214,7 +214,7 @@ class TestStageOrdering:
         engine.register(ProviderStage(mock_provider))
 
         request = PipelineRequest(
-            provider_name="custom-provider",
+            provider_name="vllm",
             model="custom-model",
         )
         response = await engine.execute(request)

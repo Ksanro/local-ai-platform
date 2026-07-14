@@ -6,10 +6,9 @@ returning a result that is recorded in the pipeline response.
 """
 
 from abc import ABC, abstractmethod
-from typing import Any
 
 from packages.pipeline.context import PipelineContext
-from packages.pipeline.response import PipelineStageResult
+from packages.pipeline.result import PipelineStageResult
 
 
 class PipelineStage(ABC):

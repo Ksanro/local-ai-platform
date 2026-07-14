@@ -53,9 +53,9 @@ async def lifespan(app: FastAPI):
     yield
 
     # Clean up the provider's httpx client on shutdown.
-    provider = getattr(app.state, "provider", None)
+    provider = getattr(app.state, "provider", None)  # type: ignore[assignment]
     if provider is not None:
-        await provider.close()
+        await provider.close()  # type: ignore[attr-defined]
 
 
 def create_app() -> FastAPI:

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any
+from typing import Any, cast
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -150,7 +150,7 @@ async def chat_completions(
                 elapsed,
                 request_id,
             )
-            return result
+            return cast(dict[str, Any], result)
 
         # Streaming: log duration and TTFT on exhaustion via a wrapper generator.
         generator_fn = result.get("generator")
@@ -164,7 +164,7 @@ async def chat_completions(
                 model,
                 request_id,
             )
-            return result
+            return cast(dict[str, Any], result)
 
         return StreamingResponse(
             content=_wrap_stream_duration(

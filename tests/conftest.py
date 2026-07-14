@@ -4,12 +4,17 @@ Sets ``VLLM_BASE_URL`` to the shared DGX server before any imports
 that read it, so all tests can use the real vLLM instance.
 """
 
+from __future__ import annotations
+
 import os
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
+
+if TYPE_CHECKING:
+    from collections.abc import Generator
 
 # The shared DGX vLLM server used for integration and streaming tests.
 _VLLM_BASE_URL = "http://100.106.236.88:8000/v1"
@@ -39,6 +44,31 @@ def _ensure_providers_loaded() -> None:
     from packages.providers import _load_providers
 
     _load_providers()
+
+
+@pytest.fixture(autouse=True)
+def _guard_network_calls(request: pytest.FixtureRequest) -> Generator[None, None, None]:
+    """Prevent unit tests from making real network calls.
+
+    Monkeypatches ``httpx.AsyncClient.send`` to raise an AssertionError
+    if any test (outside ``tests/integration/``) attempts to open an
+    HTTP connection.  Integration tests are exempt because they live
+    under the ``tests/integration/`` directory.
+    """
+    if "integration" in str(request.node.fspath):
+        yield
+        return
+
+    async def _blocking_send(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError(
+            "Unit tests must not make network calls. "
+            "Use a mock or stub pipeline instead."
+        )
+
+    with patch.object(
+        httpx.AsyncClient, "send", _blocking_send
+    ):
+        yield
 
 
 @pytest.fixture

@@ -23,7 +23,6 @@ Usage::
 from packages.pipeline.base import PipelineStage
 from packages.pipeline.context import PipelineContext
 from packages.pipeline.engine import PipelineEngine
-from packages.pipeline.response import PipelineResponse, PipelineStageResult
 from packages.pipeline.exceptions import (
     PipelineError,
     PipelineExecutionError,
@@ -32,6 +31,7 @@ from packages.pipeline.exceptions import (
 )
 from packages.pipeline.request import PipelineRequest
 from packages.pipeline.response import PipelineResponse
+from packages.pipeline.result import PipelineStageResult
 
 __all__ = [
     "PipelineContext",
