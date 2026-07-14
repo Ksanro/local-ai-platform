@@ -7,7 +7,7 @@ communicate with a real vLLM instance.
 Environment variables
 ---------------------
 GATEWAY_HOST   - Gateway host (default ``localhost``)
-GATEWAY_PORT   - Gateway port  (default ``8000``)
+GATEWAY_PORT   - Gateway port  (default ``8001``)
 VLLM_BASE_URL  - vLLM server URL (required for chat/streaming)
 DEFAULT_MODEL  - Model name to use (default ``default-model``)
 REQUEST_TIMEOUT - Request timeout in seconds (default ``30``)
@@ -23,7 +23,7 @@ import sys
 from typing import Callable
 
 BASE_URL = os.environ.get("GATEWAY_HOST", "localhost")
-PORT = os.environ.get("GATEWAY_PORT", "8000")
+PORT = os.environ.get("GATEWAY_PORT", "8001")
 VLLM_BASE_URL = os.environ.get("VLLM_BASE_URL")
 DEFAULT_MODEL = os.environ.get("DEFAULT_MODEL", "default-model")
 REQUEST_TIMEOUT = float(os.environ.get("REQUEST_TIMEOUT", "30"))
@@ -56,38 +56,23 @@ def check(label: str, fn: Callable[[], None]) -> None:
 
 
 # ------------------------------------------------------------------
-# 1. Gateway reachable
+# 1. Gateway reachable + health (collapsed)
 # ------------------------------------------------------------------
 
 def _check_gateway_reachable() -> None:
-    """Verify the gateway process responds to basic requests."""
+    """Verify the gateway process responds and health is ok."""
     import httpx
 
     with httpx.Client() as client:
         resp = client.get(f"{GATEWAY_URL}/health", timeout=REQUEST_TIMEOUT)
         resp.raise_for_status()
-
-
-# ------------------------------------------------------------------
-# 2. Health endpoint
-# ------------------------------------------------------------------
-
-def _check_health() -> None:
-    """GET /health should return 200 with status ok."""
-    import httpx
-
-    with httpx.Client() as client:
-        resp = client.get(f"{GATEWAY_URL}/health", timeout=REQUEST_TIMEOUT)
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "ok"
-        request_id = resp.headers.get("X-Request-ID", "unknown")
-        duration = float(resp.headers.get("X-Process-Time", 0))
-        _log("vllm", DEFAULT_MODEL, duration, "ok", request_id)
 
 
 # ------------------------------------------------------------------
-# 3. Chat endpoint (non-streaming)
+# 2. Chat endpoint (non-streaming)
 # ------------------------------------------------------------------
 
 def _check_chat() -> None:
@@ -98,6 +83,7 @@ def _check_chat() -> None:
         "model": DEFAULT_MODEL,
         "messages": [{"role": "user", "content": "Reply with exactly OK"}],
         "stream": False,
+        "max_tokens": 50,
     }
 
     with httpx.Client() as client:
@@ -117,32 +103,39 @@ def _check_chat() -> None:
 
 
 # ------------------------------------------------------------------
-# 4. Streaming endpoint
+# 3. Streaming endpoint
 # ------------------------------------------------------------------
 
 def _check_streaming() -> None:
-    """POST /v1/chat/completions with stream=true should return SSE."""
+    """POST /v1/chat/completions with stream=true should stream SSE."""
     import httpx
 
     payload = {
         "model": DEFAULT_MODEL,
         "messages": [{"role": "user", "content": "Reply with exactly OK"}],
         "stream": True,
+        "max_tokens": 50,
     }
 
+    chunks_received: list[str] = []
+
     with httpx.Client() as client:
-        resp = client.post(
+        with client.stream(
+            "POST",
             f"{GATEWAY_URL}/v1/chat/completions",
             json=payload,
             timeout=REQUEST_TIMEOUT,
-        )
-        assert resp.status_code == 200
-        assert resp.headers["content-type"] == "text/event-stream"
-        chunks = list(resp.iter_lines())
-        assert len(chunks) > 0
-        request_id = resp.headers.get("X-Request-ID", "unknown")
-        duration = float(resp.headers.get("X-Process-Time", 0))
-        _log("vllm", DEFAULT_MODEL, duration, "ok", request_id)
+        ) as resp:
+            assert resp.status_code == 200
+            assert resp.headers["content-type"].startswith("text/event-stream")
+            for line in resp.iter_lines():
+                if line:
+                    chunks_received.append(line)
+
+    assert len(chunks_received) > 0
+    request_id = resp.headers.get("X-Request-ID", "unknown")
+    duration = float(resp.headers.get("X-Process-Time", 0))
+    _log("vllm", DEFAULT_MODEL, duration, "ok", request_id)
 
 
 # ------------------------------------------------------------------
@@ -161,7 +154,6 @@ def main() -> None:
     print()
 
     check("Gateway reachable", _check_gateway_reachable)
-    check("Provider healthy", _check_health)
 
     if VLLM_BASE_URL:
         check("Chat successful", _check_chat)

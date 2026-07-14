@@ -63,7 +63,7 @@ The gateway exposes the following endpoints:
 |-------------------|--------------------|------------------------------------------|
 | `APP_LOG_LEVEL`   | `INFO`             | Logging level                            |
 | `GATEWAY_HOST`    | `localhost`        | Gateway host for smoke / integration tests |
-| `GATEWAY_PORT`    | `8000`             | Gateway port for smoke / integration tests |
+| `GATEWAY_PORT`    | `8001`             | Gateway port for smoke / integration tests |
 | `VLLM_BASE_URL`   | `http://localhost:8000/v1` | vLLM server URL                    |
 | `VLLM_API_KEY`    | `empty`            | vLLM API key                             |
 | `DEFAULT_MODEL`   | `default-model`    | Default model identifier                 |
@@ -80,15 +80,14 @@ python scripts/test_gateway.py
 Expected output on success:
 
 ```
-Local AI Platform – Gateway Smoke Test
-  Gateway : http://localhost:8000
+Local AI Platform - Gateway Smoke Test
+  Gateway : http://localhost:8001
   vLLM    : http://localhost:8000/v1
   Model   : default-model
 
-✓ Gateway reachable
-✓ Provider healthy
-✓ Chat successful
-✓ Streaming successful
+[PASS] Gateway reachable
+[PASS] Chat successful
+[PASS] Streaming successful
 
 RESULT: PASSED
 ```

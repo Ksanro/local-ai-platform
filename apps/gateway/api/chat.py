@@ -7,6 +7,7 @@ both streaming and non-streaming responses.
 from __future__ import annotations
 
 import logging
+import os
 import time
 from typing import Any
 
@@ -26,6 +27,10 @@ from packages.providers.registry import get_registry
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+# The provider name to use for chat requests. Defaults to "vllm".
+# Change this env var to route to a different registered provider.
+_DEFAULT_PROVIDER = os.environ.get("DEFAULT_PROVIDER", "vllm")
 
 
 class ChatCompletionRequest(BaseModel):
@@ -83,18 +88,27 @@ async def chat_completions(
     model: str = body.model
     start_time: float = time.perf_counter()
 
-    # Look up the first registered provider via the factory.
+    # Look up the configured provider via the factory.
     registry = get_registry()
     if not registry:
         raise HTTPException(status_code=501, detail="Provider not configured")
 
-    provider_name = next(iter(registry))
+    provider_name = _DEFAULT_PROVIDER
     try:
         provider = create_provider(provider_name)
     except Exception:
+        elapsed = time.perf_counter() - start_time
+        logger.error(
+            "provider=%s model=%s duration=%.3fs status=error request_id=%s "
+            "error=provider creation failed",
+            provider_name,
+            model,
+            elapsed,
+            request_id,
+        )
         raise HTTPException(
             status_code=501, detail="Provider not configured"
-        )
+        ) from None
 
     # Build kwargs for the provider, passing through all fields.
     kwargs: dict[str, Any] = {
@@ -110,25 +124,38 @@ async def chat_completions(
     try:
         result = await provider.chat(**kwargs)
         elapsed = time.perf_counter() - start_time
-        status = "ok"
 
-        logger.info(
-            "provider=%s model=%s duration=%.3fs status=%s request_id=%s",
-            provider_name,
-            model,
-            elapsed,
-            status,
-            request_id,
-        )
-
-        # Streaming responses carry a generator + media_type.
-        if isinstance(result, dict) and "generator" in result:
-            return StreamingResponse(
-                content=result["generator"](),
-                media_type=result.get("media_type", "text/event-stream"),
+        # Non-streaming: log duration immediately.
+        if not body.stream:
+            logger.info(
+                "provider=%s model=%s duration=%.3fs status=ok request_id=%s",
+                provider_name,
+                model,
+                elapsed,
+                request_id,
             )
+            return result
 
-        return result
+        # Streaming: log duration on exhaustion via a wrapper generator.
+        generator = result.get("generator")
+        media_type = result.get("media_type", "text/event-stream")
+        if generator is None:
+            # Unexpected shape – fall through to JSON.
+            logger.warning(
+                "provider=%s model=%s request_id=%s "
+                "stream=true but no generator in result",
+                provider_name,
+                model,
+                request_id,
+            )
+            return result
+
+        return StreamingResponse(
+            content=_wrap_stream_duration(
+                generator, provider_name, model, elapsed, request_id
+            ),
+            media_type=media_type,
+        )
 
     except (
         ProviderAuthenticationError,
@@ -137,7 +164,8 @@ async def chat_completions(
     ) as exc:
         elapsed = time.perf_counter() - start_time
         logger.error(
-            "provider=%s model=%s duration=%.3fs status=error request_id=%s error=%s",
+            "provider=%s model=%s duration=%.3fs status=error request_id=%s "
+            "error=%s",
             provider_name,
             model,
             elapsed,
@@ -145,3 +173,45 @@ async def chat_completions(
             exc,
         )
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+def _wrap_stream_duration(
+    generator: Any,
+    provider_name: str,
+    model: str,
+    pre_time: float,
+    request_id: str,
+) -> Any:
+    """Wrap a streaming generator to log total duration on exhaustion.
+
+    Yields every event from the underlying generator so the caller
+    sees the same stream, but logs the full wall-clock time once
+    iteration is complete.
+
+    Args:
+        generator: The async generator returned by the provider.
+        provider_name: Name of the provider for logging.
+        model: Model identifier for logging.
+        pre_time: Time elapsed before the generator was created.
+        request_id: Request ID for logging.
+
+    Returns:
+        An async generator that yields the same events and logs
+        duration after the last event.
+    """
+    async def _wrapped() -> Any:
+        start = time.perf_counter()
+        try:
+            async for event in generator:
+                yield event
+        finally:
+            elapsed = time.perf_counter() - start
+            logger.info(
+                "provider=%s model=%s duration=%.3fs status=stream_ok request_id=%s",
+                provider_name,
+                model,
+                elapsed,
+                request_id,
+            )
+
+    return _wrapped()
