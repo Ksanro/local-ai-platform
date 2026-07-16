@@ -126,7 +126,10 @@ async def chat_completions(
         messages=body.messages,
         stream=body.stream,
         kwargs=kwargs,
-        metadata={"request_id": request_id},
+        metadata={
+            "request_id": request_id,
+            "context_enabled": settings.repository_context_enabled,
+        },
     )
 
     try:

@@ -206,6 +206,48 @@ Agent
 
 Pipeline stages execute in order: `before()` → `execute()` → `after()`. Each stage receives a mutable context and returns a `PipelineStageResult`.
 
+Current
+
+```
+Agent
+
+↓
+
+Gateway
+
+↓
+
+RepositoryContextStage
+
+↓
+
+ProviderStage
+
+↓
+
+LLM
+```
+
+## RepositoryContextStage
+
+**Responsibility:** Assembles repository context for the request by orchestrating the Context Builder pipeline (Builder → Ranking → Budget → Composer) and attaching the resulting `ContextPackage` to the `PipelineContext`.
+
+**Execution order:** Runs before `ProviderStage`. Never performs inference.
+
+**Behavior:**
+
+- If repository context is disabled (`context_enabled=False`), the stage returns a no-op result and the pipeline continues.
+- On any exception, the stage logs the error, leaves `context_package` as `None`, and returns a successful result so the pipeline continues to the provider stage.
+- Structured logging includes: `request_id`, `context_enabled`, `symbols_selected`, `modules_selected`, `estimated_tokens`, `duration_ms`.
+
+**Constraints:**
+
+- Must not call providers.
+- Must not serialize requests.
+- Must not inspect provider configuration.
+- Must not access Gateway internals.
+- Orchestrates existing Context components only.
+
 Future
 
 ```
@@ -258,15 +300,17 @@ Business logic belongs inside packages.
 
 ```
 packages/pipeline/
-├── __init__.py       # Public exports
-├── base.py           # PipelineStage ABC
-├── context.py        # PipelineContext (mutable shared state)
-├── engine.py         # PipelineEngine (orchestrates stages)
-├── exceptions.py     # PipelineError hierarchy
-├── request.py        # PipelineRequest
-├── response.py       # PipelineResponse
-├── result.py         # PipelineStageResult
-└── stages.py         # ProviderStage (built-in)
+├── __init__.py                # Public exports
+├── base.py                    # PipelineStage ABC
+├── context.py                 # PipelineContext (mutable shared state)
+├── engine.py                  # PipelineEngine (orchestrates stages)
+├── exceptions.py              # PipelineError hierarchy
+├── request.py                 # PipelineRequest
+├── response.py                # PipelineResponse
+├── result.py                  # PipelineStageResult
+├── stages.py                  # ProviderStage (built-in)
+└── stages/
+    └── repository_context.py  # RepositoryContextStage
 ```
 
 `PipelineStageResult` lives in its own module (`result.py`) to break the circular import between `response.py` and `context.py`.

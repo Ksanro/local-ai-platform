@@ -12,6 +12,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
+from packages.context.package import ContextPackage
 from packages.pipeline.result import PipelineStageResult
 
 
@@ -29,6 +30,8 @@ class PipelineContext:
             keyed by stage name.
         metadata: Free-form dict for arbitrary stage-to-stage data.
         start_time: perf_counter timestamp when the pipeline started.
+        context_package: Assembled repository context from the
+            RepositoryContextStage. Read-only after population.
     """
 
     request_id: str = field(default_factory=lambda: str(uuid.uuid4()))
@@ -36,6 +39,7 @@ class PipelineContext:
     stage_results: dict[str, PipelineStageResult] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
     start_time: float = field(default_factory=time.perf_counter)
+    context_package: ContextPackage | None = None
 
     def get_stage_result(self, stage_name: str) -> PipelineStageResult | None:
         """Get a previously recorded stage result.

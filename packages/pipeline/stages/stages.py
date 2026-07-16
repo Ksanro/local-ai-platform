@@ -1,9 +1,6 @@
 """Pipeline stages.
 
-Contains concrete stage implementations. The only built-in stage is
-``ProviderStage``, which resolves a provider and calls its ``chat()``
-method. Future stages will include authentication, repository context,
-memory, prompt optimization, and metrics.
+Contains the built-in ProviderStage implementation.
 """
 
 from __future__ import annotations

@@ -80,6 +80,7 @@ class PipelineEngine:
         # Store provider_name and model in context metadata for logging
         context.set_metadata("provider_name", request.provider_name)
         context.set_metadata("model", request.model)
+        context.set_metadata("context_enabled", request.metadata.get("context_enabled", True))
 
         all_results: dict[str, PipelineStageResult] = {}
 

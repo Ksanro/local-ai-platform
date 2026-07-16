@@ -1,0 +1,274 @@
+"""Repository context pipeline stage.
+
+Assembles repository context for the request by orchestrating the
+Context Builder pipeline (Builder -> Ranking -> Budget -> Composer)
+and attaching the resulting ContextPackage to the PipelineContext.
+
+Architecture
+------------
+
+PipelineContext
+       │
+       ▼
+RepositoryContextStage
+       │
+       ├── ContextBuilder   (enumerates & ranks symbols)
+       ├── RankingEngine    (integrated inside Builder)
+       ├── ContextBudget    (integrated inside Builder)
+       └── ContextComposer  (assembles structured package)
+       │
+       ▼
+PipelineContext.context_package
+
+The stage is provider-agnostic. It never performs inference.
+
+Constraints
+-----------
+
+The stage
+
+must not
+
+- call providers
+- serialize requests
+- inspect provider configuration
+- access Gateway internals
+
+It orchestrates existing Context components only.
+"""
+
+from __future__ import annotations
+
+import logging
+import time
+
+from packages.context.builder import ContextBuilder
+from packages.context.composer import ContextComposer
+from packages.context.models import ContextQuery
+from packages.pipeline.base import PipelineStage
+from packages.pipeline.context import PipelineContext
+from packages.pipeline.result import PipelineStageResult
+from packages.repository.symbols.graph import SymbolGraphView
+
+logger = logging.getLogger(__name__)
+
+
+class RepositoryContextStage(PipelineStage):
+    """Pipeline stage that assembles repository context.
+
+    Orchestrates the full context-building pipeline and attaches
+    the resulting ContextPackage to the PipelineContext.
+
+    Attributes:
+        _graph_view: Read-only symbol graph view for symbol enumeration.
+            May be ``None`` if repository scanning is not configured;
+            the stage handles this gracefully.
+    """
+
+    def __init__(self, graph_view: SymbolGraphView | None = None) -> None:
+        """Initialize with an optional symbol graph view.
+
+        Args:
+            graph_view: A ``SymbolGraphView`` providing access to
+                repository symbols, or ``None`` to disable context
+                assembly.
+        """
+        self._graph_view = graph_view
+
+    @property
+    def name(self) -> str:
+        """Stage name for logging and ordering."""
+        return "repository_context"
+
+    async def before(self, context: PipelineContext) -> PipelineStageResult | None:
+        """Check if repository context is enabled.
+
+        Reads the ``context_enabled`` flag from context metadata.
+        Defaults to ``True`` when the flag is absent.
+
+        If disabled, records a no-op result and skips ``execute()``.
+
+        Args:
+            context: The pipeline context.
+
+        Returns:
+            A no-op result if context is disabled, or ``None`` to
+            proceed with ``execute()``.
+        """
+        context_enabled = context.get_metadata("context_enabled", True)
+        if not context_enabled:
+            context.context_package = None
+            return PipelineStageResult(
+                stage_name=self.name,
+                success=True,
+                data={"enabled": False},
+            )
+        return None
+
+    async def execute(self, context: PipelineContext) -> PipelineStageResult:
+        """Assemble repository context and attach to context.
+
+        Executes the full context-building pipeline:
+
+        1. Build candidates from the symbol graph.
+        2. Rank candidates against the user query.
+        3. Estimate token budget.
+        4. Compose the final ContextPackage.
+
+        Stores the ContextPackage in ``context.context_package``.
+
+        On any exception, logs the error, leaves ``context_package``
+        as ``None``, and returns a successful result so the pipeline
+        continues to the provider stage.
+
+        Args:
+            context: The pipeline context with request data.
+
+        Returns:
+            A ``PipelineStageResult`` with the ContextPackage on
+            success, or a successful result with ``None`` data on
+            failure (graceful degradation).
+        """
+        start_time = time.perf_counter()
+        request_id = context.request_id
+        context_enabled = context.get_metadata("context_enabled", True)
+
+        try:
+            # If no graph view is available, skip context assembly.
+            if self._graph_view is None:
+                context.context_package = None
+                return PipelineStageResult(
+                    stage_name=self.name,
+                    success=True,
+                    data=None,
+                )
+
+            # Extract query text from the request.
+            # Messages are stored in context.request as provider kwargs.
+            query_text = self._extract_query(context)
+
+            # Build context from the symbol graph.
+            query = ContextQuery(
+                text=query_text,
+                max_symbols=20,
+                max_modules=10,
+                max_tokens=4096,
+            )
+
+            builder = ContextBuilder(self._graph_view)
+            context_result = builder.build(query)
+
+            # Compose the final package.
+            composer = ContextComposer()
+            package = composer.compose(context_result)
+
+            # Attach to context.
+            context.context_package = package
+
+            elapsed_ms = (time.perf_counter() - start_time) * 1000
+
+            symbols_selected = len(package.symbols)
+            modules_selected = len(package.modules)
+            estimated_tokens = package.metadata.get("estimated_tokens", 0)
+
+            logger.info(
+                "repository_context request_id=%s context_enabled=%s "
+                "symbols_selected=%d modules_selected=%d "
+                "estimated_tokens=%d duration_ms=%.1f",
+                request_id,
+                context_enabled,
+                symbols_selected,
+                modules_selected,
+                estimated_tokens,
+                elapsed_ms,
+            )
+
+            return PipelineStageResult(
+                stage_name=self.name,
+                success=True,
+                data=package,
+            )
+
+        except Exception as exc:
+            elapsed_ms = (time.perf_counter() - start_time) * 1000
+
+            logger.error(
+                "repository_context request_id=%s context_enabled=%s "
+                "error=%s duration_ms=%.1f",
+                request_id,
+                context_enabled,
+                exc,
+                elapsed_ms,
+            )
+
+            # Leave context_package as None — graceful degradation.
+            context.context_package = None
+
+            return PipelineStageResult(
+                stage_name=self.name,
+                success=True,
+                data=None,
+                error=str(exc),
+            )
+
+    async def after(
+        self, context: PipelineContext, result: PipelineStageResult
+    ) -> PipelineStageResult | None:
+        """Log stage completion.
+
+        Args:
+            context: The pipeline context.
+            result: The result from this stage.
+
+        Returns:
+            ``None`` to keep the existing result.
+        """
+        if result.success:
+            has_package = context.context_package is not None
+            logger.info(
+                "repository_context request_id=%s status=ok has_package=%s",
+                context.request_id,
+                has_package,
+            )
+        else:
+            logger.error(
+                "repository_context request_id=%s status=error error=%s",
+                context.request_id,
+                result.error,
+            )
+        return None
+
+    @staticmethod
+    def _extract_query(context: PipelineContext) -> str:
+        """Extract query text from the pipeline context.
+
+        Reads the last user message from the request messages.
+
+        Args:
+            context: The pipeline context.
+
+        Returns:
+            The query text, or empty string if not found.
+        """
+        request = context.request
+        if not isinstance(request, dict):
+            return ""
+
+        messages = request.get("messages", [])
+        if not messages:
+            return ""
+
+        # Find the last user message.
+        for message in reversed(messages):
+            if isinstance(message, dict) and message.get("role") == "user":
+                content = message.get("content", "")
+                if isinstance(content, str):
+                    return content.strip()
+
+        # Fallback: join all user message contents.
+        user_contents = [
+            msg.get("content", "")
+            for msg in messages
+            if isinstance(msg, dict) and msg.get("role") == "user"
+        ]
+        return " ".join(user_contents).strip() if user_contents else ""
