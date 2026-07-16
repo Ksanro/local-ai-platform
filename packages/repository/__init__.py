@@ -80,6 +80,7 @@ __all__ = [
     "find_extension",
     "find_language",
     "get_file",
+    "build_index",
     "parse_gitignore",
     "should_ignore_path",
     "scan",
@@ -87,7 +88,7 @@ __all__ = [
 ]
 
 
-def index(path: Path) -> StructIndex:
+def build_index(path: Path) -> StructIndex:
     """Build a structural :class:`StructIndex` from the given path.
 
     Delegates symbol extraction to the existing :class:`PythonAstExtractor`

@@ -107,10 +107,15 @@ class RepositoryIndex:
     def symbols(self) -> Sequence[Symbol]:
         """Return all symbols sorted by qualified_name, lineno.
 
+        Deduplicates by ``qualified_name`` — the last occurrence wins.
+
         Returns:
             Sorted list of all ``Symbol`` instances.
         """
-        return sorted(self._symbols, key=lambda s: (s.qualified_name, s.lineno))
+        seen: dict[str, Symbol] = {}
+        for sym in self._symbols:
+            seen[sym.qualified_name] = sym
+        return sorted(seen.values(), key=lambda s: (s.qualified_name, s.lineno))
 
     def classes(self) -> Sequence[Symbol]:
         """Return all CLASS symbols sorted by qualified_name, lineno.

@@ -88,7 +88,7 @@ class TestBuilderBehavior:
         builder = _make_builder()
         project_root = Path(__file__).resolve().parent.parent.parent
         index = builder.build(project_root)
-        assert len(index.relationships) > 0
+        assert len(index.relationships()) > 0
 
     def test_build_has_statistics(self) -> None:
         """build() should contain statistics."""
@@ -148,7 +148,7 @@ class TestDeterministicOutput:
 
         assert len(index1.symbols()) == len(index2.symbols())
         assert len(index1.modules) == len(index2.modules)
-        assert len(index1.relationships) == len(index2.relationships)
+        assert len(index1.relationships()) == len(index2.relationships())
         assert index1.statistics() == index2.statistics()
 
     def test_symbols_sorted(self) -> None:

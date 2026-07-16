@@ -3,8 +3,8 @@
 **Version:** 0.1.0
 **License:** Apache 2.0
 **Python:** 3.12+
-**Last Updated:** 2026-07-14
-**Latest Commit:** 14th commit — Add Symbol Graph Foundation: language-independent symbol representation
+**Last Updated:** 2026-07-16
+**Latest Commit:** repository index service and tests
 
 ---
 
@@ -45,7 +45,7 @@ The platform is **model agnostic**, **provider agnostic**, and **agent agnostic*
                    │
         ┌──────────┴──────────┐
         ▼                     ▼
-   Request Pipeline      Context Engine (future)
+   Request Pipeline      Context Engine
         │
         ▼
   Provider Layer
@@ -200,18 +200,18 @@ response = await engine.execute(request)
 2. `execute()` — perform the primary work
 3. `after()` — post-process, clean up, record metrics
 
-**Built-in Stage:**
+**Built-in Stages:**
 
 | Stage | Responsibility |
 |-------|---------------|
 | `ProviderStage` | Resolve provider, call `provider.chat()`, return response |
+| `RepositoryContextStage` | Enrich request with repository context, serialize to ProviderRequest |
 
 **Future Stages (planned):**
 
 | Stage | Responsibility |
 |-------|---------------|
 | `AuthenticationStage` | Validate API keys, rate limiting |
-| `RepositoryContextStage` | Enrich request with repository context |
 | `MemoryStage` | Inject conversation memory |
 | `PromptOptimizationStage` | Optimize prompts before sending |
 | `DSPARKStage` | DSPARK framework integration |
@@ -242,7 +242,7 @@ response = await engine.execute(request)
 - Per-stage: `stage`, `duration`, `request_id`
 - Per-request: `provider`, `model`, `status`
 
-### 6. Repository Scanner
+### 5. Repository Scanner
 
 Walks a directory tree, collects file and directory metadata, classifies files by language, and produces a structured index.
 
@@ -277,7 +277,7 @@ def scan(path: Path) -> RepositoryIndex
 - `find_language(index, language)` — find all files of a given language
 - `summary(index)` — human-readable summary dict
 
-### 7. Symbol Graph
+### 6. Symbol Graph
 
 A language-independent representation of symbols and their relationships
 extracted from source code. Provides the foundation for repository
@@ -363,9 +363,183 @@ Extracts from Python source using the standard library `ast` module:
 
 **Tests:** 82 tests (45 extractor + 32 API + 8 integration + 7 smoke)
 
----
+### 7. Context Builder
 
-### 9. Configuration Management
+Assembles repository context for future coding agents by enumerating symbols
+from a `SymbolGraphView` and returning them in a deterministic order.
+
+**Architecture:**
+
+```
+Repository
+      │
+      ▼
+ContextBuilder
+      │
+      ▼
+RankingEngine
+      │
+      ▼
+ContextBudget
+      │
+      ▼
+ContextResult
+      │
+      ▼
+ContextComposer
+      │
+      ▼
+ContextPackage
+      │
+      ▼
+Provider
+```
+
+The Builder depends only on the public `SymbolGraphView` API.  It never
+accesses the filesystem, parses source code, or touches AST objects.
+
+**Components:**
+
+| Component | File | Purpose |
+|-----------|------|---------|
+| `ContextBuilder` | `builder.py` | Orchestrates the full build pipeline |
+| `RankingEngine` | `ranking.py` | Scores candidates against query text |
+| `ContextBudget` | `budget.py` | Estimates token budget for context |
+| `ContextComposer` | `composer.py` | Assembles ranked result into `ContextPackage` |
+| `ContextQuery` | `query.py` | Query parameters (text, limits) |
+| `ContextCandidate` | `models.py` | Individual symbol candidate with score |
+| `ContextResult` | `models.py` | Final assembled context |
+| `ScoringRules` | `scoring.py` | Additive scoring rules for ranking |
+
+**Ranking Engine:**
+
+Scores candidates against query text using additive rules:
+
+| Rule | Score |
+|------|------:|
+| Exact symbol name match | +100 |
+| Exact qualified name match | +90 |
+| Partial symbol name match | +50 |
+| Module name contains query token | +30 |
+| Matching query token | +10 per token |
+| Public symbol (name does not start with "_") | +5 |
+
+**Budget Estimation:**
+
+```
+estimated_tokens = symbols * 80 + modules * 150
+```
+
+**Context Package:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `query` | `str` | The original user query |
+| `modules` | `list[str]` | Ordered list of unique module names |
+| `symbols` | `list[str]` | Ordered list of unique symbol qualified names |
+| `metadata` | `dict[str, Any]` | Budget metadata |
+
+### 8. Serialization Layer
+
+Translates platform models into provider-specific request formats.
+
+**Architecture:**
+
+```
+ContextPackage (platform model)
+       │
+       ▼
+  Serializer (provider-specific)
+       │
+       ▼
+  ProviderRequest (provider payload)
+       │
+       ▼
+  Provider (executes inference)
+```
+
+**Key constraints:**
+
+- Providers never consume `ContextPackage` directly.
+- Serializers never access repositories, the filesystem, or providers.
+- `ProviderRequest` is the stable boundary between serialization and execution.
+
+**OpenAI Serializer:**
+
+Converts platform models into OpenAI Chat Completions format:
+
+- System message describes the platform's role.
+- Repository context includes symbols and modules.
+- User messages are copied unchanged.
+- Deterministic: identical input always produces identical output.
+
+**Factory & Registry:**
+
+- `SerializerFactory.create(ProviderType)` — creates a serializer by type
+- `SerializerRegistry` — maintains global mapping of provider types to serializer classes
+- Auto-registration at import time
+- `register()`, `get_registry()`, `has_serializer()`, `unregister()`
+
+**Adding a New Serializer:**
+
+1. Create a new serializer class inheriting from `ProviderSerializer`.
+2. Implement `provider` property and `_serialize()` method.
+3. Register at import time: `register(ProviderType.new_type, NewSerializer)`.
+
+No changes to Context Builder, Repository Intelligence, or Providers required.
+
+### 9. Repository Index Service
+
+A service layer over the repository scanner that builds a structured index
+with symbol graph, relationships, and statistics.
+
+**Components:**
+
+| Component | File | Purpose |
+|-----------|------|---------|
+| `RepositoryIndex` | `models.py` | Complete index with modules, symbols, relationships, statistics |
+| `IndexBuilder` | `builder.py` | Builds the index from scanned files |
+| `IndexHelpers` | `helpers.py` | Helper functions for index queries |
+
+**Data Model:**
+
+| Model | Description |
+|-------|-------------|
+| `RepositoryIndex` | Complete index (modules, symbols, relationships, statistics) |
+| `Module` | All symbols and relationships in a single source file |
+| `Symbol` | A single symbol with metadata |
+| `Relationship` | Directed relationship between symbols |
+| `RepositoryStatistics` | Aggregate statistics (module count, symbol counts, etc.) |
+
+**Index Builder:**
+
+- Takes a `SymbolGraph` and produces a `RepositoryIndex`
+- Builds modules, symbols, relationships, and statistics
+- Deterministic output — same input always produces same output
+
+### 10. Repository Context Stage
+
+Orchestrates the full repository intelligence pipeline within the request processing pipeline.
+
+**Responsibility:** Assembles repository context for the request by orchestrating the Context Builder pipeline (Builder → Ranking → Budget → Composer), serializes the resulting `ContextPackage` into a `ProviderRequest`, and attaches both to the `PipelineContext`.
+
+**Execution order:** Runs before `ProviderStage`. Never performs inference.
+
+**Behavior:**
+
+- If repository context is disabled (`context_enabled=False`), the stage returns a no-op result and the pipeline continues.
+- On any exception, the stage logs the error, leaves `context_package` as `None`, and returns a successful result so the pipeline continues to the provider stage.
+- Structured logging includes: `request_id`, `context_enabled`, `symbols_selected`, `modules_selected`, `estimated_tokens`, `duration_ms`.
+
+**Constraints:**
+
+- Must not call providers.
+- Must not inspect provider configuration.
+- Must not access Gateway internals.
+- Serializes only into `ProviderRequest` — never raw JSON or HTTP payloads.
+- Orchestrates existing Context components only.
+
+### 11. Configuration Management
 
 **YAML Config Loading (`packages/config`):**
 
@@ -379,7 +553,7 @@ Extracts from Python source using the standard library `ast` module:
 - `lru_cache` singleton pattern for settings instance
 - Configurable: `app_name`, `log_level`, `cors_origins`, `default_provider`
 
-### 10. Structured Logging
+### 12. Structured Logging
 
 - Timestamp, logger name, level, and message format
 - Output directed to stdout for containerized environments
@@ -462,6 +636,23 @@ from packages.repository import (
 )
 ```
 
+### Repository Index Package (`packages.repository.index`)
+
+```python
+from packages.repository.index import (
+    RepositoryIndex,           # Complete index with modules, symbols, relationships
+    Module,                    # All symbols in a source file
+    Symbol,                    # A single symbol
+    Relationship,              # Directed relationship between symbols
+    RepositoryStatistics,      # Aggregate statistics
+    IndexBuilder,              # Build index from symbol graph
+    get_file,                  # Look up file by path
+    find_extension,            # Find files by extension
+    find_language,             # Find files by language
+    summary,                   # Human-readable summary
+)
+```
+
 ### Symbol Graph Package (`packages.repository.symbols`)
 
 ```python
@@ -488,6 +679,39 @@ from packages.repository.symbols import (
 | `python_ast.py` | `PythonAstExtractor` — AST-based implementation |
 | `graph.py` | `SymbolGraphView` — sorted, deterministic public API |
 
+### Context Package (`packages.context`)
+
+```python
+from packages.context import (
+    ContextBuilder,            # Assemble repository context
+    ContextComposer,           # Assemble result into ContextPackage
+    ContextBudget,             # Estimate token budget
+    RankingEngine,             # Score candidates against query
+    ContextQuery,              # Query parameters
+    ContextCandidate,          # Ranked symbol candidate
+    ContextResult,             # Assembled context result
+    ContextPackage,            # Final context package
+    ContextBudgetResult,       # Budget estimate
+    RankingReason,             # Explainability signal
+)
+```
+
+### Serialization Package (`packages.serializers`)
+
+```python
+from packages.serializers import (
+    SerializerFactory,         # Create serializer by type
+    register,                  # Register a serializer class
+    get_registry,              # Get registry copy
+    has_serializer,            # Check if registered
+    unregister,                # Remove a serializer
+    ProviderSerializer,        # Abstract serializer base class
+    ProviderRequest,           # Provider-specific request payload
+    ProviderType,              # Provider type enum
+    UnknownSerializerError,    # Serializer not registered
+)
+```
+
 ### Config Package (`packages.config`)
 
 ```python
@@ -511,7 +735,10 @@ from packages.pipeline import (
     StageError,                # Stage failure
     PipelineExecutionError,    # Execution failure
 )
-from packages.pipeline.stages import ProviderStage  # Built-in provider stage
+from packages.pipeline.stages import (
+    ProviderStage,             # Built-in provider stage
+    RepositoryContextStage,    # Repository context stage
+)
 ```
 
 **Module Layout:**
@@ -524,6 +751,7 @@ from packages.pipeline.stages import ProviderStage  # Built-in provider stage
 | `engine.py` | `PipelineEngine` class (orchestrates stage execution) |
 | `base.py` | `PipelineStage` ABC (before, execute, after hooks) |
 | `stages.py` | `ProviderStage` (resolves provider, calls `chat()`) |
+| `stages/repository_context.py` | `RepositoryContextStage` (orchestrates context → serialize → provider) |
 | `exceptions.py` | `PipelineError`, `StageError`, `PipelineExecutionError` |
 | `request.py` | `PipelineRequest` dataclass |
 
@@ -558,8 +786,14 @@ from packages.pipeline.stages import ProviderStage  # Built-in provider stage
 │   │   ├── models.py               # Dataclasses (SourceFile, Directory, etc.)
 │   │   ├── scanner.py              # scan() function
 │   │   ├── filters.py              # gitignore + hardcoded ignores
-│   │   ├── index.py                # Helper functions
+│   │   ├── index.py                # Legacy helper functions
 │   │   ├── languages.py            # Extension → language mapping
+│   │   │
+│   │   ├── index/                  # Repository index service
+│   │   │   ├── __init__.py         # Package exports
+│   │   │   ├── models.py           # RepositoryIndex, Module, Symbol, etc.
+│   │   │   ├── builder.py          # IndexBuilder
+│   │   │   └── helpers.py          # Index helper functions
 │   │   │
 │   │   ├── symbols/                # Symbol graph (language-independent)
 │   │   │   ├── __init__.py         # Package exports
@@ -568,9 +802,26 @@ from packages.pipeline.stages import ProviderStage  # Built-in provider stage
 │   │   │   ├── python_ast.py       # Python AST implementation
 │   │   │   └── graph.py            # SymbolGraphView public API
 │   │
-│   ├── config/                     # YAML config loading
-│   │   ├── __init__.py             # load_config, get_env_or_config
-│   │   └── config.yaml             # Default configuration
+│   ├── context/                    # Context Builder
+│   │   ├── __init__.py             # Package exports
+│   │   ├── builder.py              # ContextBuilder (orchestrates build)
+│   │   ├── ranking.py              # RankingEngine (scores candidates)
+│   │   ├── budget.py               # ContextBudget (token estimation)
+│   │   ├── composer.py             # ContextComposer (assembles package)
+│   │   ├── models.py               # ContextCandidate, ContextResult, etc.
+│   │   ├── package.py              # ContextPackage
+│   │   ├── query.py                # ContextQuery
+│   │   └── scoring.py              # ScoringRules
+│   │
+│   ├── serializers/                # Serialization Layer
+│   │   ├── __init__.py             # Package exports
+│   │   ├── base.py                 # ProviderSerializer ABC
+│   │   ├── factory.py              # SerializerFactory
+│   │   ├── registry.py             # SerializerRegistry
+│   │   ├── models.py               # ProviderRequest
+│   │   ├── types.py                # ProviderType enum
+│   │   ├── exceptions.py           # UnknownSerializerError
+│   │   └── openai.py               # OpenAISerializer
 │   │
 │   ├── pipeline/                   # Request processing pipeline
 │   │   ├── __init__.py             # Exports
@@ -581,23 +832,40 @@ from packages.pipeline.stages import ProviderStage  # Built-in provider stage
 │   │   ├── request.py              # PipelineRequest
 │   │   ├── response.py             # PipelineResponse
 │   │   ├── result.py               # PipelineStageResult
-│   │   └── stages.py               # ProviderStage
+│   │   ├── stages.py               # ProviderStage
+│   │   └── stages/
+│   │       ├── __init__.py         # Stage exports
+│   │       ├── stages.py           # ProviderStage
+│   │       └── repository_context.py # RepositoryContextStage
 │   │
-│   ├── core/                       # Core business logic (stub)
-│   └── telemetry/                  # Telemetry/monitoring (stub)
+│   ├── config/                     # YAML config loading
+│   │   ├── __init__.py             # load_config, get_env_or_config
+│   │   └── config.yaml             # Default configuration
+│   │
+│   ├── core/                       # Core business logic
+│   └── telemetry/                  # Telemetry/monitoring
 │
 ├── tests/                          # Test suite
 │   ├── conftest.py                 # Shared fixtures
+│   ├── context/                    # Context Builder tests
 │   ├── gateway/                    # Gateway unit tests
+│   ├── integration/                # E2E integration tests
+│   ├── pipeline/                   # Pipeline unit tests
 │   ├── providers/                  # Provider unit tests
 │   ├── repository/                 # Scanner unit tests
-│   └── integration/                # E2E integration tests
+│   │   └── index/                  # Repository index tests
+│   ├── serializers/                # Serialization tests
+│   └── repository/symbols/         # Symbol graph tests
 │
 ├── scripts/
 │   └── test_gateway.py             # Smoke test script
 │
 ├── docs/
-│   └── architecture.md             # Architecture documentation
+│   ├── architecture.md             # Architecture documentation
+│   ├── context-builder.md          # Context Builder documentation
+│   ├── serialization.md            # Serialization Layer documentation
+│   ├── status.md                   # Status & architecture overview
+│   └── symbol-graph.md             # Symbol Graph documentation
 │
 ├── compose.yaml                    # Docker Compose (gateway, redis, postgres)
 ├── pyproject.toml                  # Root project config
@@ -612,13 +880,15 @@ from packages.pipeline.stages import ProviderStage  # Built-in provider stage
 
 | Area | Tests | Description |
 |------|-------|-------------|
-| Gateway | 8 | Health, version, chat (all stubbed — no network calls) |
-| Pipeline | 35 | Engine, stages, ordering, context, ProviderStage, exception handling, HTTP status mapping |
-| Providers | 33 | Factory, registry, vLLM provider (health, models, chat, streaming, config) |
-| Repository | 20+ | Scanner, filters, language detection, statistics |
-| Symbol Graph | 82 | Extractor (45), API (32), integration (8), smoke (7) |
-| Integration | 3 | End-to-end gateway → vLLM (health, chat, streaming) |
-| Smoke | 3 | Manual smoke test (gateway reachable, chat, streaming) |
+| Gateway | 11 | Health, version, chat (all stubbed — no network calls) |
+| Pipeline | 62 | Engine, stages, ordering, context, ProviderStage, RepositoryContextStage, exception handling, HTTP status mapping |
+| Providers | 31 | Factory, registry, vLLM provider (health, models, chat, streaming, config) |
+| Repository | 176 | Scanner (20+), filters, language detection, statistics, index service, symbol graph (82) |
+| Context | 118 | Builder integration, ranking engine, budget estimation, composer, scoring rules |
+| Serializers | 37 | Factory, registry, OpenAI serializer, edge cases, determinism |
+| Integration | 31 | E2E gateway → vLLM (3), repository intelligence pipeline (23), symbol graph integration (8) |
+
+**Total: 466 tests**
 
 ### Running Tests
 
@@ -634,6 +904,12 @@ pytest tests/pipeline/
 
 # Repository tests only
 pytest tests/repository/
+
+# Context tests only
+pytest tests/context/
+
+# Serializer tests only
+pytest tests/serializers/
 
 # Integration tests (requires running vLLM + gateway)
 VLLM_BASE_URL=http://localhost:8000/v1 pytest tests/integration/
@@ -666,6 +942,10 @@ GitHub Actions runs three parallel jobs on every push/PR to `main`:
 | `APP_LOG_LEVEL` | `INFO` | Logging level |
 | `APP_CORS_ORIGINS` | `["*"]` | CORS allowed origins |
 | `APP_DEFAULT_PROVIDER` | `vllm` | Default provider name |
+| `APP_REPOSITORY_CONTEXT_ENABLED` | `true` | Enable repository intelligence |
+| `REPOSITORY_CONTEXT_MAX_SYMBOLS` | `20` | Maximum symbols in context |
+| `REPOSITORY_CONTEXT_MAX_MODULES` | `10` | Maximum modules in context |
+| `REPOSITORY_CONTEXT_MAX_TOKENS` | `4096` | Maximum token budget |
 | `VLLM_BASE_URL` | `http://localhost:8000/v1` | vLLM server URL |
 | `VLLM_API_KEY` | `empty` | vLLM API key |
 | `REQUEST_TIMEOUT` | `60.0` | Request timeout in seconds |
@@ -698,6 +978,7 @@ Priority: **Environment Variable > Config File > Hardcoded Default**
 - [x] Provider abstraction layer (ABC, registry, factory, exceptions)
 - [x] vLLM provider implementation (streaming, health, models, chat)
 - [x] Repository scanner (directory walking, language detection, gitignore)
+- [x] Symbol Graph Foundation — language-independent symbol representation, Python AST extractor, 82 tests
 - [x] Configuration management (YAML + env var override)
 - [x] Structured logging with request tracing
 - [x] Smoke test and integration test scripts
@@ -705,7 +986,11 @@ Priority: **Environment Variable > Config File > Hardcoded Default**
 - [x] Unified pipeline failure path — all exceptions caught and converted to failed results
 - [x] Network isolation — unit tests cannot make real network calls
 - [x] Circular import fix — `PipelineStageResult` extracted to dedicated module
-- [x] Symbol Graph Foundation — language-independent symbol representation, Python AST extractor, 82 tests
+- [x] Repository Context Stage — orchestrates context → serialize → provider
+- [x] Context Builder — ranking engine, budget estimation, context composer
+- [x] Serialization Layer — OpenAI serializer, factory, registry
+- [x] Repository Index Service — builder, helpers, models
+- [x] Repository Intelligence integration tests — 23 tests covering full pipeline
 
 ### Planned (Future Sprints)
 
@@ -724,8 +1009,8 @@ Priority: **Environment Variable > Config File > Hardcoded Default**
 
 | Component | Status | Description |
 |-----------|--------|-------------|
-| Context Engine | Planned | Build optimized prompts, remove redundant context, compress history |
-| Repository Intelligence | In Progress | Symbol graph implemented (v1). Dependency graph, code search, metadata extraction planned |
+| Context Engine | In Progress | Context Builder implemented (v1). Full context optimization planned |
+| Repository Intelligence | In Progress | Symbol graph + index service implemented. Dependency graph, code search planned |
 | Memory | Planned | Long-term conversation memory, project memory, user preferences |
 | Metrics | Planned | Prometheus-compatible metrics (latency, tokens/sec, cache hits) |
 | Authentication | Planned | API key authentication for gateway endpoints |

@@ -122,7 +122,7 @@ class TestIndexCreation:
             ),
         ]
         index = _make_index(symbols, relationships)
-        assert len(index.relationships) == 1
+        assert len(index.relationships()) == 1
 
     def test_index_with_statistics(self) -> None:
         """Verify index stores statistics."""

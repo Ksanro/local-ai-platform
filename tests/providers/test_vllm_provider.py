@@ -5,7 +5,7 @@ from __future__ import annotations
 import importlib
 import sys
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import httpx
 import pytest
@@ -344,9 +344,18 @@ class TestVLLMProviderStreaming:
             yield 'data: [DONE]'
 
         mock_response = MagicMock()
+        # Explicitly set __aenter__/__aexit__ to avoid MagicMock creating
+        # coroutine wrappers for the async context manager protocol.
+        mock_response.__aenter__ = Mock(return_value=mock_response)
+        mock_response.__aexit__ = Mock(return_value=None)
         mock_response.raise_for_status = MagicMock()
-        mock_response.aiter_lines = AsyncMock(side_effect=mock_aiter_lines)  # noqa: SIM103
-        client_instance.stream = AsyncMock(return_value=mock_response)  # noqa: SIM103
+        # Use regular Mock (not AsyncMock) for aiter_lines – calling it
+        # returns the async generator directly, not a coroutine.
+        mock_response.aiter_lines = Mock(side_effect=mock_aiter_lines)  # noqa: SIM103
+        # Use regular Mock (not AsyncMock) to avoid coroutine warnings –
+        # the code uses ``async with client.stream(...)`` so the result must
+        # be an awaitable async-context-manager, not a bare coroutine.
+        client_instance.stream = Mock(return_value=mock_response)  # noqa: F821
 
         from packages.providers.vllm import VLLMProvider
 
@@ -374,8 +383,15 @@ class TestVLLMProviderStreaming:
         http_error = httpx.HTTPStatusError(
             "Server Error", request=MagicMock(), response=mock_response
         )
-        mock_response.raise_for_status = MagicMock(side_effect=http_error)
-        client_instance.stream = AsyncMock(return_value=mock_response)  # noqa: SIM103
+        # Explicitly set __aenter__/__aexit__ to avoid MagicMock creating
+        # coroutine wrappers for the async context manager protocol.
+        mock_response.__aenter__ = Mock(return_value=mock_response)
+        mock_response.__aexit__ = Mock(return_value=None)
+        # Use regular Mock (not AsyncMock) – MagicMock creates coroutine
+        # wrappers by default; plain Mock avoids the RuntimeWarning.
+        mock_response.raise_for_status = Mock(side_effect=http_error)
+        # Use regular Mock (not AsyncMock) to avoid coroutine warnings.
+        client_instance.stream = Mock(return_value=mock_response)  # noqa: F821
 
         from packages.providers.vllm import VLLMProvider
 
@@ -403,7 +419,8 @@ class TestVLLMProviderStreaming:
     async def test_streaming_connection_error(self, mock_httpx_client: AsyncMock) -> None:
         """Test streaming connection error."""
         client_instance = mock_httpx_client
-        client_instance.stream = AsyncMock(side_effect=httpx.ConnectError("Refused"))  # noqa: SIM103
+        # Use regular Mock (not AsyncMock) to avoid coroutine warnings.
+        client_instance.stream = Mock(side_effect=httpx.ConnectError("Refused"))  # noqa: F821
 
         from packages.providers.vllm import VLLMProvider
 
