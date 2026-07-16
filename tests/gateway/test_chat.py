@@ -95,7 +95,9 @@ def test_chat_completions_provider_not_found() -> None:
     with patch(
         "apps.gateway.api.chat.get_settings",
         return_value=type(
-            "FakeSettings", (), {"default_provider": "nonexistent"}
+            "FakeSettings",
+            (),
+            {"default_provider": "nonexistent", "repository_context_enabled": True},
         )(),
     ):
         mock_engine = AsyncMock()
@@ -224,7 +226,9 @@ def test_chat_completions_provider_connection_error_returns_503() -> None:
     with patch(
         "apps.gateway.api.chat.get_settings",
         return_value=type(
-            "FakeSettings", (), {"default_provider": "vllm"}
+            "FakeSettings",
+            (),
+            {"default_provider": "vllm", "repository_context_enabled": True},
         )(),
     ):
         mock_engine = AsyncMock()

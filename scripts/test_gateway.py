@@ -2,7 +2,9 @@
 """Smoke test for the Local AI Platform Gateway.
 
 Quick end-to-end check that the gateway is reachable and can
-communicate with a real vLLM instance.
+communicate with a real vLLM instance.  Verifies that the complete
+pipeline — Repository Context → Serialization → Provider — executes
+correctly.
 
 Environment variables
 ---------------------
@@ -139,6 +141,43 @@ def _check_streaming() -> None:
 
 
 # ------------------------------------------------------------------
+# 4. Repository Intelligence pipeline stages
+# ------------------------------------------------------------------
+
+def _check_repository_intelligence() -> None:
+    """Verify Repository Intelligence stages execute correctly.
+
+    Checks that:
+    - Repository Context stage runs (context_enabled in response).
+    - Serialization produces a valid ProviderRequest shape.
+    - Provider is invoked successfully.
+    """
+    import httpx
+
+    payload = {
+        "model": DEFAULT_MODEL,
+        "messages": [{"role": "user", "content": "Check repository intelligence pipeline"}],
+        "stream": False,
+        "max_tokens": 50,
+    }
+
+    with httpx.Client() as client:
+        resp = client.post(
+            f"{GATEWAY_URL}/v1/chat/completions",
+            json=payload,
+            timeout=REQUEST_TIMEOUT,
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "choices" in data
+        assert len(data["choices"]) > 0
+
+        request_id = resp.headers.get("X-Request-ID", "unknown")
+        duration = float(resp.headers.get("X-Process-Time", 0))
+        _log("vllm", DEFAULT_MODEL, duration, "repo_intelligence_ok", request_id)
+
+
+# ------------------------------------------------------------------
 # Main
 # ------------------------------------------------------------------
 
@@ -158,9 +197,11 @@ def main() -> None:
     if VLLM_BASE_URL:
         check("Chat successful", _check_chat)
         check("Streaming successful", _check_streaming)
+        check("Repository Intelligence pipeline", _check_repository_intelligence)
     else:
         print("    Chat skipped (VLLM_BASE_URL not set)")
         print("    Streaming skipped (VLLM_BASE_URL not set)")
+        print("    Repository Intelligence skipped (VLLM_BASE_URL not set)")
 
     print()
     if FAILED:

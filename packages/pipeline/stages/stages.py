@@ -12,6 +12,7 @@ from packages.pipeline.context import PipelineContext
 from packages.pipeline.result import PipelineStageResult
 from packages.providers.base import Provider
 from packages.providers.exceptions import UnknownProviderError
+from packages.serializers.models import ProviderRequest
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +94,19 @@ class ProviderStage(PipelineStage):
         )
 
         try:
-            kwargs = context.request.copy()
+            # Prefer the serialized ProviderRequest produced by the
+            # RepositoryContextStage.  If no ProviderRequest is
+            # available, fall back to the raw request dict.
+            provider_request = context.get_metadata("provider_request")
+            if isinstance(provider_request, ProviderRequest):
+                kwargs = provider_request.to_dict()
+            else:
+                kwargs = context.request.copy()
+
+            # Ensure stream is always forwarded (ProviderRequest does
+            # not carry transport concerns).
+            kwargs["stream"] = context.request.get("stream", False)
+
             result = await self._provider.chat(**kwargs)
             return PipelineStageResult(
                 stage_name=self.name,

@@ -45,10 +45,14 @@ import time
 from packages.context.builder import ContextBuilder
 from packages.context.composer import ContextComposer
 from packages.context.models import ContextQuery
+from packages.context.package import ContextPackage
 from packages.pipeline.base import PipelineStage
 from packages.pipeline.context import PipelineContext
 from packages.pipeline.result import PipelineStageResult
 from packages.repository.symbols.graph import SymbolGraphView
+from packages.serializers.factory import SerializerFactory
+from packages.serializers.openai import OpenAISerializer  # noqa: F401 – auto-registers
+from packages.serializers.types import ProviderType
 
 logger = logging.getLogger(__name__)
 
@@ -165,6 +169,12 @@ class RepositoryContextStage(PipelineStage):
             # Attach to context.
             context.context_package = package
 
+            # Serialize the context package into a ProviderRequest.
+            # The serializer translates platform models into the
+            # provider-specific request format that the Provider
+            # layer consumes.
+            self._serialize(context, package)
+
             elapsed_ms = (time.perf_counter() - start_time) * 1000
 
             symbols_selected = len(package.symbols)
@@ -272,3 +282,41 @@ class RepositoryContextStage(PipelineStage):
             if isinstance(msg, dict) and msg.get("role") == "user"
         ]
         return " ".join(user_contents).strip() if user_contents else ""
+
+    @staticmethod
+    def _serialize(
+        context: PipelineContext,
+        context_package: ContextPackage,
+    ) -> None:
+        """Serialize the context package into a ProviderRequest.
+
+        Looks up the OpenAI serializer via the factory, produces a
+        ``ProviderRequest``, and attaches it to the pipeline context
+        so downstream stages can consume it.
+
+        Args:
+            context: The pipeline context with request data.
+            context_package: The assembled context package to serialize.
+        """
+        request = context.request
+        if not isinstance(request, dict):
+            return
+
+        messages = request.get("messages", [])
+        if not messages:
+            return
+
+        try:
+            serializer = SerializerFactory.create(ProviderType.openai)
+            provider_request = serializer.serialize(
+                context_package=context_package,
+                messages=messages,
+            )
+            context.set_metadata("provider_request", provider_request)
+        except Exception as exc:
+            logger.warning(
+                "serialization request_id=%s error=%s",
+                context.request_id,
+                exc,
+            )
+            # Leave provider_request unset — graceful degradation.

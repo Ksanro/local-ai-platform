@@ -228,6 +228,111 @@ ProviderStage
 LLM
 ```
 
+## Complete Request Lifecycle
+
+```
+Incoming Chat Completion Request
+            │
+            ▼
+    Gateway (FastAPI)
+            │
+            ▼
+    PipelineEngine.execute()
+            │
+            ├── RepositoryContextStage
+            │       │
+            │       ├── ContextBuilder    (enumerate & rank symbols)
+            │       ├── RankingEngine     (score candidates)
+            │       ├── ContextBudget     (estimate tokens)
+            │       └── ContextComposer   (assemble package)
+            │       │
+            │       ▼
+            │   ContextPackage
+            │       │
+            │       ▼
+            │   OpenAISerializer
+            │       │
+            │       ▼
+            │   ProviderRequest
+            │       │
+            │   stored in PipelineContext.metadata
+            │
+            ├── ProviderStage
+            │       │
+            │       ├── Read ProviderRequest from context
+            │       ├── Convert to kwargs (ProviderRequest.to_dict())
+            │       └── Call provider.chat(**kwargs)
+            │
+            ▼
+    Provider (vLLM / OpenAI / etc.)
+            │
+            ▼
+    LLM Inference
+            │
+            ▼
+    Response (unchanged)
+            │
+            ▼
+    Gateway → Agent
+```
+
+## Serialization Boundary
+
+The Serialization Layer sits between Repository Intelligence and the
+Provider layer:
+
+```
+ContextPackage (platform model)
+       │
+       ▼
+  Serializer (provider-specific)
+       │
+       ▼
+  ProviderRequest (provider payload)
+       │
+       ▼
+  Provider (executes inference)
+```
+
+**Key constraints:**
+
+- Providers never consume `ContextPackage` directly.
+- Serializers never access repositories, the filesystem, or providers.
+- `ProviderRequest` is the stable boundary between serialization and execution.
+- The pipeline stores `ProviderRequest` in context metadata so the
+  ProviderStage can consume it.
+
+## Feature Flags
+
+Repository Intelligence is controlled by environment variables:
+
+| Variable | Default | Description |
+|---|---|---|
+| `APP_REPOSITORY_CONTEXT_ENABLED` | `true` | Enable/disable repository context |
+| `REPOSITORY_CONTEXT_MAX_SYMBOLS` | `20` | Maximum symbols in context |
+| `REPOSITORY_CONTEXT_MAX_MODULES` | `10` | Maximum modules in context |
+| `REPOSITORY_CONTEXT_MAX_TOKENS` | `4096` | Maximum token budget |
+
+When disabled, the `RepositoryContextStage` returns a no-op result and
+the pipeline continues directly to the `ProviderStage`.
+
+## Logging
+
+Structured logging includes:
+
+- `request_id` — unique request identifier
+- `provider` — provider name
+- `model` — model identifier
+- `repository_context_enabled` — feature flag state
+- `selected_symbols` — count of selected symbols
+- `selected_modules` — count of selected modules
+- `estimated_tokens` — token budget estimate
+- `serialization_duration_ms` — serialization time
+- `provider_duration_ms` — provider execution time
+- `total_duration_ms` — total pipeline time
+
+**Never** log repository contents or source code.
+
 ## RepositoryContextStage
 
 **Responsibility:** Assembles repository context for the request by orchestrating the Context Builder pipeline (Builder → Ranking → Budget → Composer) and attaching the resulting `ContextPackage` to the `PipelineContext`.

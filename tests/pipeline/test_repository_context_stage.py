@@ -559,17 +559,21 @@ class TestConstraints:
     """Tests verifying the stage respects constraints."""
 
     def test_no_provider_import(self) -> None:
-        """Verify no provider import is used."""
+        """Verify no provider implementation is imported.
+
+        The stage may import ``ProviderType`` from the serializers
+        types module (needed for serialization) but must not import
+        from any ``packages.providers`` package.
+        """
         import inspect
 
         import packages.pipeline.stages.repository_context as stage_module
 
         source = inspect.getsource(stage_module)
-        # Check import lines only, not docstrings.
         for line in source.splitlines():
             stripped = line.strip()
             if stripped.startswith("import ") or stripped.startswith("from "):
-                assert "provider" not in stripped.lower()
+                assert "packages.providers" not in stripped
 
     def test_no_gateway_import(self) -> None:
         """Verify no gateway import is used."""

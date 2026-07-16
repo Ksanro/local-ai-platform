@@ -64,15 +64,19 @@ The gateway exposes the following endpoints:
 
 ## Environment Variables
 
-| Variable          | Default            | Description                              |
-|-------------------|--------------------|------------------------------------------|
-| `APP_LOG_LEVEL`   | `INFO`             | Logging level                            |
-| `GATEWAY_HOST`    | `localhost`        | Gateway host for smoke / integration tests |
-| `GATEWAY_PORT`    | `8001`             | Gateway port for smoke / integration tests |
-| `VLLM_BASE_URL`   | `http://localhost:8000/v1` | vLLM server URL                    |
-| `VLLM_API_KEY`    | `empty`            | vLLM API key                             |
-| `DEFAULT_MODEL`   | `default-model`    | Default model identifier                 |
-| `REQUEST_TIMEOUT` | `30`               | Request timeout in seconds               |
+| Variable                        | Default            | Description                              |
+|---------------------------------|--------------------|------------------------------------------|
+| `APP_LOG_LEVEL`                 | `INFO`             | Logging level                            |
+| `APP_REPOSITORY_CONTEXT_ENABLED`| `true`             | Enable repository intelligence           |
+| `REPOSITORY_CONTEXT_MAX_SYMBOLS`| `20`               | Maximum symbols in context               |
+| `REPOSITORY_CONTEXT_MAX_MODULES`| `10`               | Maximum modules in context               |
+| `REPOSITORY_CONTEXT_MAX_TOKENS` | `4096`             | Maximum token budget                     |
+| `GATEWAY_HOST`                  | `localhost`        | Gateway host for smoke / integration tests |
+| `GATEWAY_PORT`                  | `8001`             | Gateway port for smoke / integration tests |
+| `VLLM_BASE_URL`                 | `http://localhost:8000/v1` | vLLM server URL                    |
+| `VLLM_API_KEY`                | `empty`            | vLLM API key                             |
+| `DEFAULT_MODEL`                 | `default-model`    | Default model identifier                 |
+| `REQUEST_TIMEOUT`               | `30`               | Request timeout in seconds               |
 
 ## Smoke Test
 

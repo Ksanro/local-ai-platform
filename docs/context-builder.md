@@ -492,6 +492,44 @@ Run tests:
 python -m pytest tests/context/ -v
 ```
 
+## Integration
+
+The Context Builder is integrated into the Gateway pipeline through the
+``RepositoryContextStage``.  The full flow is:
+
+```
+Gateway request
+    │
+    ▼
+RepositoryContextStage.execute()
+    │
+    ├── ContextBuilder.build(query)
+    │       │
+    │       ├── SymbolGraphView.symbols()  (enumerate)
+    │       ├── RankingEngine.rank()       (score)
+    │       └── ContextBudget.estimate()   (budget)
+    │
+    ├── ContextComposer.compose(result)
+    │       │
+    │       └── ContextPackage
+    │
+    ├── OpenAISerializer.serialize(package, messages)
+    │       │
+    │       └── ProviderRequest
+    │
+    └── Stored in PipelineContext.metadata["provider_request"]
+            │
+            ▼
+    ProviderStage.consume(provider_request)
+            │
+            ▼
+    Provider.chat(**kwargs)
+```
+
+The Context Builder is **transparent** to clients.  A normal OpenAI
+Chat Completions request reaches the provider automatically enriched
+with repository context — no client changes required.
+
 ## Known Test Failures (Pending Review)
 
 The following tests in ``tests/context/test_builder.py`` are known to fail
