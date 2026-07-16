@@ -99,6 +99,7 @@ class PythonAstExtractor(SymbolExtractor):
             symbols=symbols,
             relationships=relationships,
             imports=imports,
+            source=source,
         )
 
         return SymbolGraph(modules={module_path: module})

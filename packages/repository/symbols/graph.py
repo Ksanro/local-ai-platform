@@ -214,6 +214,68 @@ class SymbolGraphView:
         return sorted(mod.imports)
 
     # ------------------------------------------------------------------
+    # Call relationships (CALLS only)
+    # ------------------------------------------------------------------
+
+    def callers(self, symbol: Symbol) -> Sequence[Symbol]:
+        """Return direct callers of a symbol via CALLS relationships.
+
+        Only ``CALLS`` relationships are traversed.  Other relationship
+        types (``IMPORTS``, ``INHERITS``, ``DEFINES``) are ignored.
+
+        Args:
+            symbol: The symbol to find callers for.
+
+        Returns:
+            Sorted list of ``Symbol`` instances that call this symbol.
+        """
+        caller_ids: set[str] = set()
+        for module in self._graph.modules.values():
+            for rel in module.relationships:
+                if rel.type == RelationshipType.CALLS and rel.target == symbol.qualified_name:
+                    caller_ids.add(rel.source)
+
+        # Build a lookup of all symbols by qualified_name.
+        symbol_lookup: dict[str, Symbol] = {}
+        for module in self._graph.modules.values():
+            for sym in module.symbols:
+                symbol_lookup[sym.qualified_name] = sym
+
+        return sorted(
+            (symbol_lookup[cid] for cid in caller_ids if cid in symbol_lookup),
+            key=lambda s: (s.qualified_name, s.lineno),
+        )
+
+    def callees(self, symbol: Symbol) -> Sequence[Symbol]:
+        """Return direct callees of a symbol via CALLS relationships.
+
+        Only ``CALLS`` relationships are traversed.  Other relationship
+        types (``IMPORTS``, ``INHERITS``, ``DEFINES``) are ignored.
+
+        Args:
+            symbol: The symbol to find callees for.
+
+        Returns:
+            Sorted list of ``Symbol`` instances that this symbol calls.
+        """
+        callee_ids: set[str] = set()
+        for module in self._graph.modules.values():
+            for rel in module.relationships:
+                if rel.type == RelationshipType.CALLS and rel.source == symbol.qualified_name:
+                    callee_ids.add(rel.target)
+
+        # Build a lookup of all symbols by qualified_name.
+        symbol_lookup: dict[str, Symbol] = {}
+        for module in self._graph.modules.values():
+            for sym in module.symbols:
+                symbol_lookup[sym.qualified_name] = sym
+
+        return sorted(
+            (symbol_lookup[cid] for cid in callee_ids if cid in symbol_lookup),
+            key=lambda s: (s.qualified_name, s.lineno),
+        )
+
+    # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 

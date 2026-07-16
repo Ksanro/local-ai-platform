@@ -131,12 +131,14 @@ class Module:
         symbols: All symbols defined in this file.
         relationships: All relationships within this file.
         imports: Raw import text as written in the source.
+        source: Raw source code of the file (used by relationship extractors).
     """
 
     path: str
     symbols: list[Symbol] = field(default_factory=list)
     relationships: list[Relationship] = field(default_factory=list)
     imports: list[str] = field(default_factory=list)
+    source: str = ""
 
 
 # ---------------------------------------------------------------------------

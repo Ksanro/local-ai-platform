@@ -343,6 +343,356 @@ class TestImports:
 
 
 # ------------------------------------------------------------------
+# callers()
+# ------------------------------------------------------------------
+
+
+class TestCallers:
+    """Tests for the callers() accessor."""
+
+    def test_callers_returns_callers_via_calls_relationship(self) -> None:
+        """callers() should return symbols that call the given symbol."""
+        symbols = [
+            _make_symbol("caller", "pkg.caller", SymbolType.FUNCTION, lineno=1),
+            _make_symbol("callee", "pkg.callee", SymbolType.FUNCTION, lineno=5),
+        ]
+        relationships = [
+            Relationship(
+                source="pkg.caller",
+                target="pkg.callee",
+                type=RelationshipType.CALLS,
+            ),
+        ]
+        module = Module(path="pkg", symbols=symbols, relationships=relationships)
+        graph = SymbolGraphView(SymbolGraph(modules={"pkg": module}))
+        callee = graph.find("pkg.callee")[0]
+        callers = graph.callers(callee)
+        assert len(callers) == 1
+        assert callers[0].name == "caller"
+
+    def test_callers_of_leaf_returns_empty(self) -> None:
+        """callers() should return empty list for symbols with no callers."""
+        symbols = [
+            _make_symbol("lonely", "pkg.lonely", SymbolType.FUNCTION, lineno=1),
+        ]
+        relationships: list[Relationship] = []
+        module = Module(path="pkg", symbols=symbols, relationships=relationships)
+        graph = SymbolGraphView(SymbolGraph(modules={"pkg": module}))
+        lonely = graph.find("pkg.lonely")[0]
+        callers = graph.callers(lonely)
+        assert len(callers) == 0
+
+    def test_callers_only_traverses_calls_not_defines(self) -> None:
+        """callers() should only traverse CALLS relationships."""
+        symbols = [
+            _make_symbol("parent", "pkg.parent", SymbolType.FUNCTION, lineno=1),
+            _make_symbol("child", "pkg.parent.child", SymbolType.FUNCTION, lineno=5),
+        ]
+        relationships = [
+            Relationship(
+                source="pkg.parent",
+                target="pkg.parent.child",
+                type=RelationshipType.DEFINES,
+            ),
+        ]
+        module = Module(path="pkg", symbols=symbols, relationships=relationships)
+        graph = SymbolGraphView(SymbolGraph(modules={"pkg": module}))
+        child = graph.find("pkg.parent.child")[0]
+        callers = graph.callers(child)
+        assert len(callers) == 0
+
+    def test_callers_sorted(self) -> None:
+        """callers() should return sorted results."""
+        symbols = [
+            _make_symbol("z_caller", "pkg.z_caller", SymbolType.FUNCTION, lineno=1),
+            _make_symbol("a_caller", "pkg.a_caller", SymbolType.FUNCTION, lineno=1),
+            _make_symbol("m_caller", "pkg.m_caller", SymbolType.FUNCTION, lineno=1),
+            _make_symbol("target", "pkg.target", SymbolType.FUNCTION, lineno=10),
+        ]
+        relationships = [
+            Relationship(
+                source="pkg.z_caller",
+                target="pkg.target",
+                type=RelationshipType.CALLS,
+            ),
+            Relationship(
+                source="pkg.a_caller",
+                target="pkg.target",
+                type=RelationshipType.CALLS,
+            ),
+            Relationship(
+                source="pkg.m_caller",
+                target="pkg.target",
+                type=RelationshipType.CALLS,
+            ),
+        ]
+        module = Module(path="pkg", symbols=symbols, relationships=relationships)
+        graph = SymbolGraphView(SymbolGraph(modules={"pkg": module}))
+        target = graph.find("pkg.target")[0]
+        callers = graph.callers(target)
+        names = [c.name for c in callers]
+        assert names == sorted(names)
+
+    def test_callers_cross_module(self) -> None:
+        """callers() should find callers across modules."""
+        symbols = [
+            _make_symbol("caller", "mod_a.caller", SymbolType.FUNCTION, lineno=1, module="mod_a.py"),
+            _make_symbol("callee", "mod_b.callee", SymbolType.FUNCTION, lineno=5, module="mod_b.py"),
+        ]
+        relationships_a = [
+            Relationship(
+                source="mod_a.caller",
+                target="mod_b.callee",
+                type=RelationshipType.CALLS,
+            ),
+        ]
+        relationships_b: list[Relationship] = []
+        module_a = Module(path="mod_a.py", symbols=[s for s in symbols if s.module == "mod_a.py"], relationships=relationships_a)
+        module_b = Module(path="mod_b.py", symbols=[s for s in symbols if s.module == "mod_b.py"], relationships=relationships_b)
+        graph = SymbolGraphView(SymbolGraph(modules={"mod_a.py": module_a, "mod_b.py": module_b}))
+        callee = graph.find("mod_b.callee")[0]
+        callers = graph.callers(callee)
+        assert len(callers) == 1
+        assert callers[0].name == "caller"
+
+    def test_multiple_callers(self) -> None:
+        """callers() should return all callers of a symbol."""
+        symbols = [
+            _make_symbol("a", "pkg.a", SymbolType.FUNCTION, lineno=1),
+            _make_symbol("b", "pkg.b", SymbolType.FUNCTION, lineno=3),
+            _make_symbol("c", "pkg.c", SymbolType.FUNCTION, lineno=5),
+            _make_symbol("target", "pkg.target", SymbolType.FUNCTION, lineno=10),
+        ]
+        relationships = [
+            Relationship(
+                source="pkg.a",
+                target="pkg.target",
+                type=RelationshipType.CALLS,
+            ),
+            Relationship(
+                source="pkg.b",
+                target="pkg.target",
+                type=RelationshipType.CALLS,
+            ),
+            Relationship(
+                source="pkg.c",
+                target="pkg.target",
+                type=RelationshipType.CALLS,
+            ),
+        ]
+        module = Module(path="pkg", symbols=symbols, relationships=relationships)
+        graph = SymbolGraphView(SymbolGraph(modules={"pkg": module}))
+        target = graph.find("pkg.target")[0]
+        callers = graph.callers(target)
+        assert len(callers) == 3
+        names = {c.name for c in callers}
+        assert names == {"a", "b", "c"}
+
+    def test_self_call(self) -> None:
+        """callers() should handle self-recursive calls."""
+        symbols = [
+            _make_symbol("recurse", "pkg.recurse", SymbolType.FUNCTION, lineno=1),
+        ]
+        relationships = [
+            Relationship(
+                source="pkg.recurse",
+                target="pkg.recurse",
+                type=RelationshipType.CALLS,
+            ),
+        ]
+        module = Module(path="pkg", symbols=symbols, relationships=relationships)
+        graph = SymbolGraphView(SymbolGraph(modules={"pkg": module}))
+        recurse = graph.find("pkg.recurse")[0]
+        callers = graph.callers(recurse)
+        assert len(callers) == 1
+        assert callers[0].name == "recurse"
+
+
+# ------------------------------------------------------------------
+# callees()
+# ------------------------------------------------------------------
+
+
+class TestCallees:
+    """Tests for the callees() accessor."""
+
+    def test_callees_returns_callees_via_calls_relationship(self) -> None:
+        """callees() should return symbols that the given symbol calls."""
+        symbols = [
+            _make_symbol("caller", "pkg.caller", SymbolType.FUNCTION, lineno=1),
+            _make_symbol("callee", "pkg.callee", SymbolType.FUNCTION, lineno=5),
+        ]
+        relationships = [
+            Relationship(
+                source="pkg.caller",
+                target="pkg.callee",
+                type=RelationshipType.CALLS,
+            ),
+        ]
+        module = Module(path="pkg", symbols=symbols, relationships=relationships)
+        graph = SymbolGraphView(SymbolGraph(modules={"pkg": module}))
+        caller = graph.find("pkg.caller")[0]
+        callees = graph.callees(caller)
+        assert len(callees) == 1
+        assert callees[0].name == "callee"
+
+    def test_callees_of_leaf_returns_empty(self) -> None:
+        """callees() should return empty list for symbols with no callees."""
+        symbols = [
+            _make_symbol("lonely", "pkg.lonely", SymbolType.FUNCTION, lineno=1),
+        ]
+        relationships: list[Relationship] = []
+        module = Module(path="pkg", symbols=symbols, relationships=relationships)
+        graph = SymbolGraphView(SymbolGraph(modules={"pkg": module}))
+        lonely = graph.find("pkg.lonely")[0]
+        callees = graph.callees(lonely)
+        assert len(callees) == 0
+
+    def test_callees_only_traverses_calls_not_defines(self) -> None:
+        """callees() should only traverse CALLS relationships."""
+        symbols = [
+            _make_symbol("parent", "pkg.parent", SymbolType.FUNCTION, lineno=1),
+            _make_symbol("child", "pkg.parent.child", SymbolType.FUNCTION, lineno=5),
+        ]
+        relationships = [
+            Relationship(
+                source="pkg.parent",
+                target="pkg.parent.child",
+                type=RelationshipType.DEFINES,
+            ),
+        ]
+        module = Module(path="pkg", symbols=symbols, relationships=relationships)
+        graph = SymbolGraphView(SymbolGraph(modules={"pkg": module}))
+        parent = graph.find("pkg.parent")[0]
+        callees = graph.callees(parent)
+        assert len(callees) == 0
+
+    def test_callees_sorted(self) -> None:
+        """callees() should return sorted results."""
+        symbols = [
+            _make_symbol("caller", "pkg.caller", SymbolType.FUNCTION, lineno=1),
+            _make_symbol("z_callee", "pkg.z_callee", SymbolType.FUNCTION, lineno=3),
+            _make_symbol("a_callee", "pkg.a_callee", SymbolType.FUNCTION, lineno=5),
+            _make_symbol("m_callee", "pkg.m_callee", SymbolType.FUNCTION, lineno=7),
+        ]
+        relationships = [
+            Relationship(
+                source="pkg.caller",
+                target="pkg.z_callee",
+                type=RelationshipType.CALLS,
+            ),
+            Relationship(
+                source="pkg.caller",
+                target="pkg.a_callee",
+                type=RelationshipType.CALLS,
+            ),
+            Relationship(
+                source="pkg.caller",
+                target="pkg.m_callee",
+                type=RelationshipType.CALLS,
+            ),
+        ]
+        module = Module(path="pkg", symbols=symbols, relationships=relationships)
+        graph = SymbolGraphView(SymbolGraph(modules={"pkg": module}))
+        caller = graph.find("pkg.caller")[0]
+        callees = graph.callees(caller)
+        names = [c.name for c in callees]
+        assert names == sorted(names)
+
+    def test_callees_cross_module(self) -> None:
+        """callees() should find callees across modules."""
+        symbols = [
+            _make_symbol("caller", "mod_a.caller", SymbolType.FUNCTION, lineno=1, module="mod_a.py"),
+            _make_symbol("callee", "mod_b.callee", SymbolType.FUNCTION, lineno=5, module="mod_b.py"),
+        ]
+        relationships_a = [
+            Relationship(
+                source="mod_a.caller",
+                target="mod_b.callee",
+                type=RelationshipType.CALLS,
+            ),
+        ]
+        relationships_b: list[Relationship] = []
+        module_a = Module(path="mod_a.py", symbols=[s for s in symbols if s.module == "mod_a.py"], relationships=relationships_a)
+        module_b = Module(path="mod_b.py", symbols=[s for s in symbols if s.module == "mod_b.py"], relationships=relationships_b)
+        graph = SymbolGraphView(SymbolGraph(modules={"mod_a.py": module_a, "mod_b.py": module_b}))
+        caller = graph.find("mod_a.caller")[0]
+        callees = graph.callees(caller)
+        assert len(callees) == 1
+        assert callees[0].name == "callee"
+
+    def test_multiple_callees(self) -> None:
+        """callees() should return all callees of a symbol."""
+        symbols = [
+            _make_symbol("source", "pkg.source", SymbolType.FUNCTION, lineno=1),
+            _make_symbol("a", "pkg.a", SymbolType.FUNCTION, lineno=3),
+            _make_symbol("b", "pkg.b", SymbolType.FUNCTION, lineno=5),
+            _make_symbol("c", "pkg.c", SymbolType.FUNCTION, lineno=7),
+        ]
+        relationships = [
+            Relationship(
+                source="pkg.source",
+                target="pkg.a",
+                type=RelationshipType.CALLS,
+            ),
+            Relationship(
+                source="pkg.source",
+                target="pkg.b",
+                type=RelationshipType.CALLS,
+            ),
+            Relationship(
+                source="pkg.source",
+                target="pkg.c",
+                type=RelationshipType.CALLS,
+            ),
+        ]
+        module = Module(path="pkg", symbols=symbols, relationships=relationships)
+        graph = SymbolGraphView(SymbolGraph(modules={"pkg": module}))
+        source = graph.find("pkg.source")[0]
+        callees = graph.callees(source)
+        assert len(callees) == 3
+        names = {c.name for c in callees}
+        assert names == {"a", "b", "c"}
+
+    def test_self_call(self) -> None:
+        """callees() should handle self-recursive calls."""
+        symbols = [
+            _make_symbol("recurse", "pkg.recurse", SymbolType.FUNCTION, lineno=1),
+        ]
+        relationships = [
+            Relationship(
+                source="pkg.recurse",
+                target="pkg.recurse",
+                type=RelationshipType.CALLS,
+            ),
+        ]
+        module = Module(path="pkg", symbols=symbols, relationships=relationships)
+        graph = SymbolGraphView(SymbolGraph(modules={"pkg": module}))
+        recurse = graph.find("pkg.recurse")[0]
+        callees = graph.callees(recurse)
+        assert len(callees) == 1
+        assert callees[0].name == "recurse"
+
+    def test_callees_ignores_unknown_targets(self) -> None:
+        """callees() should skip targets that are not in the symbol index."""
+        symbols = [
+            _make_symbol("caller", "pkg.caller", SymbolType.FUNCTION, lineno=1),
+        ]
+        relationships = [
+            Relationship(
+                source="pkg.caller",
+                target="unknown.external",
+                type=RelationshipType.CALLS,
+            ),
+        ]
+        module = Module(path="pkg", symbols=symbols, relationships=relationships)
+        graph = SymbolGraphView(SymbolGraph(modules={"pkg": module}))
+        caller = graph.find("pkg.caller")[0]
+        callees = graph.callees(caller)
+        assert len(callees) == 0
+
+
+# ------------------------------------------------------------------
 # symbols()
 # ------------------------------------------------------------------
 

@@ -15,6 +15,7 @@ from packages.repository.index.models import (
     RepositoryIndex,
     RepositoryStatistics,
 )
+from packages.repository.relationships.registry import RelationshipRegistry
 from packages.repository.symbols.extractor import SymbolExtractor
 from packages.repository.symbols.models import (
     Module,
@@ -32,23 +33,41 @@ class RepositoryIndexBuilder:
     Attributes:
         _extractor: The symbol extractor used to parse source files.
             Defaults to :class:`PythonAstExtractor` when not specified.
+        _registry: The relationship extractor registry.  Defaults to a
+            :class:`RelationshipRegistry` with :class:`CallExtractor`
+            registered when not specified.
     """
 
-    def __init__(self, extractor: SymbolExtractor | None = None) -> None:
+    def __init__(
+        self,
+        extractor: SymbolExtractor | None = None,
+        registry: RelationshipRegistry | None = None,
+    ) -> None:
         """Initialise the builder.
 
         Args:
             extractor: A ``SymbolExtractor`` implementation.  Defaults to
                 ``PythonAstExtractor`` when ``None``.
+            registry: A ``RelationshipRegistry``.  Defaults to a fresh
+                registry with ``CallExtractor`` registered when ``None``.
         """
         self._extractor = extractor or PythonAstExtractor()
+        if registry is None:
+            # Lazy import to avoid circular imports at module load time.
+            from packages.repository.relationships.call_extractor import (
+                CallExtractor,
+            )
+
+            registry = RelationshipRegistry()
+            registry.register(CallExtractor())
+        self._registry = registry
 
     def build(self, path: Path) -> RepositoryIndex:
         """Build a :class:`RepositoryIndex` from the given path.
 
         Extracts symbols from all Python source files under ``path``,
-        computes aggregate statistics, and returns a fully constructed
-        :class:`RepositoryIndex`.
+        runs all registered relationship extractors, computes aggregate
+        statistics, and returns a fully constructed :class:`RepositoryIndex`.
 
         Args:
             path: Path to a Python source file or directory.
@@ -71,6 +90,24 @@ class RepositoryIndexBuilder:
             modules[module_path] = module
             symbols.extend(module.symbols)
             relationships.extend(module.relationships)
+
+        # Run relationship extractors.
+        empty_stats = RepositoryStatistics(
+            module_count=0,
+            class_count=0,
+            function_count=0,
+            method_count=0,
+            symbol_count=0,
+        )
+        relationship_rels = self._registry.extract(
+            RepositoryIndex(
+                modules=modules,
+                _symbols=symbols,
+                _relationships=relationships,
+                _statistics=empty_stats,
+            )
+        )
+        relationships.extend(relationship_rels)
 
         statistics = self._compute_statistics(symbols, len(modules))
 
