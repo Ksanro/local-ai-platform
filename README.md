@@ -97,6 +97,7 @@ Local AI Platform - Gateway Smoke Test
 [PASS] Gateway reachable
 [PASS] Chat successful
 [PASS] Streaming successful
+[PASS] Repository Intelligence pipeline
 
 RESULT: PASSED
 ```

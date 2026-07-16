@@ -30,9 +30,10 @@ The stage
 must not
 
 - call providers
-- serialize requests
 - inspect provider configuration
 - access Gateway internals
+
+Serializes only into ``ProviderRequest`` — never raw JSON or HTTP payloads.
 
 It orchestrates existing Context components only.
 """

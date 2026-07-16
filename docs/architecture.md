@@ -335,7 +335,7 @@ Structured logging includes:
 
 ## RepositoryContextStage
 
-**Responsibility:** Assembles repository context for the request by orchestrating the Context Builder pipeline (Builder → Ranking → Budget → Composer) and attaching the resulting `ContextPackage` to the `PipelineContext`.
+**Responsibility:** Assembles repository context for the request by orchestrating the Context Builder pipeline (Builder → Ranking → Budget → Composer), serializes the resulting `ContextPackage` into a `ProviderRequest`, and attaches both to the `PipelineContext`.
 
 **Execution order:** Runs before `ProviderStage`. Never performs inference.
 
@@ -348,9 +348,9 @@ Structured logging includes:
 **Constraints:**
 
 - Must not call providers.
-- Must not serialize requests.
 - Must not inspect provider configuration.
 - Must not access Gateway internals.
+- Serializes only into ``ProviderRequest`` — never raw JSON or HTTP payloads.
 - Orchestrates existing Context components only.
 
 Future
