@@ -11,11 +11,13 @@ import pytest
 from packages.context.builder import ContextBuilder
 from packages.context.models import ContextCandidate, ContextQuery, ContextResult
 from packages.context.query import normalise_query
-from packages.repository.symbols.graph import SymbolGraphView
-from packages.repository.symbols.models import (
+from packages.repository.index.models import (
     Module,
+    Relationship,
+    RelationshipType,
+    RepositoryIndex,
+    RepositoryStatistics,
     Symbol,
-    SymbolGraph,
     SymbolType,
 )
 
@@ -42,25 +44,51 @@ def _make_symbol(
     )
 
 
-def _make_graph(
+def _make_index(
     symbols: list[Symbol],
-) -> SymbolGraphView:
-    """Create a SymbolGraphView from a list of symbols.
+    relationships: list[Relationship] | None = None,
+) -> RepositoryIndex:
+    """Create a RepositoryIndex from symbols and relationships.
 
     Symbols are grouped into modules by their ``module`` attribute.
 
     Args:
         symbols: List of Symbol instances.
+        relationships: List of Relationship instances.
 
     Returns:
-        A SymbolGraphView ready for testing.
+        A RepositoryIndex ready for testing.
     """
     modules: dict[str, Module] = {}
     for sym in symbols:
         if sym.module not in modules:
             modules[sym.module] = Module(path=sym.module)
         modules[sym.module].symbols.append(sym)
-    return SymbolGraphView(SymbolGraph(modules=modules))
+
+    rels = relationships or []
+    for rel in rels:
+        if rel.source in modules:
+            modules[rel.source].relationships.append(rel)
+
+    # Compute statistics
+    class_count = sum(1 for s in symbols if s.symbol_type == SymbolType.CLASS)
+    function_count = sum(1 for s in symbols if s.symbol_type == SymbolType.FUNCTION)
+    method_count = sum(1 for s in symbols if s.symbol_type == SymbolType.METHOD)
+
+    statistics = RepositoryStatistics(
+        module_count=len(modules),
+        class_count=class_count,
+        function_count=function_count,
+        method_count=method_count,
+        symbol_count=len(symbols),
+    )
+
+    return RepositoryIndex(
+        modules=modules,
+        _symbols=symbols,
+        _relationships=rels,
+        _statistics=statistics,
+    )
 
 
 def _make_builder(
@@ -69,14 +97,14 @@ def _make_builder(
     """Create a ContextBuilder with the given symbols.
 
     Args:
-        symbols: List of Symbol instances.  Defaults to an empty graph.
+        symbols: List of Symbol instances.  Defaults to an empty index.
 
     Returns:
         A ContextBuilder ready for testing.
     """
     if symbols is None:
         symbols = []
-    return ContextBuilder(_make_graph(symbols))
+    return ContextBuilder(_make_index(symbols))
 
 
 # ------------------------------------------------------------------
@@ -85,8 +113,8 @@ def _make_builder(
 
 
 @pytest.fixture()
-def multi_module_graph() -> SymbolGraphView:
-    """Graph with symbols across multiple modules."""
+def multi_module_index() -> RepositoryIndex:
+    """Index with symbols across multiple modules."""
     symbols = [
         _make_symbol("auth", "auth.middleware", SymbolType.FUNCTION, "auth.py"),
         _make_symbol("verify", "auth.verify", SymbolType.FUNCTION, "auth.py"),
@@ -95,13 +123,13 @@ def multi_module_graph() -> SymbolGraphView:
         _make_symbol("helper", "utils.helper", SymbolType.FUNCTION, "utils.py"),
         _make_symbol("format", "utils.format", SymbolType.FUNCTION, "utils.py"),
     ]
-    return _make_graph(symbols)
+    return _make_index(symbols)
 
 
 @pytest.fixture()
-def empty_graph() -> SymbolGraphView:
-    """Graph with no symbols."""
-    return _make_graph([])
+def empty_index() -> RepositoryIndex:
+    """Index with no symbols."""
+    return _make_index([])
 
 
 # ------------------------------------------------------------------
@@ -239,16 +267,16 @@ class TestNormaliseQuery:
 class TestDeterministicOrdering:
     """Tests for deterministic ordering of ContextResult."""
 
-    def test_sorted_by_qualified_name(self, multi_module_graph: SymbolGraphView) -> None:
+    def test_sorted_by_qualified_name(self, multi_module_index: RepositoryIndex) -> None:
         """Verify candidates are sorted by qualified_name ascending."""
-        builder = ContextBuilder(multi_module_graph)
+        builder = ContextBuilder(multi_module_index)
         result = builder.build(ContextQuery(text="test"))
         names = [c.qualified_name for c in result.candidates]
         assert names == sorted(names)
 
-    def test_empty_repository_sorted(self, empty_graph: SymbolGraphView) -> None:
+    def test_empty_repository_sorted(self, empty_index: RepositoryIndex) -> None:
         """Verify empty repository produces empty sorted result."""
-        builder = ContextBuilder(empty_graph)
+        builder = ContextBuilder(empty_index)
         result = builder.build(ContextQuery(text="test"))
         assert result.candidates == []
         assert result.selected_modules == []
@@ -270,27 +298,29 @@ class TestDeterministicOrdering:
 class TestMaxSymbols:
     """Tests for max_symbols enforcement."""
 
-    def test_max_symbols_respected(self, multi_module_graph: SymbolGraphView) -> None:
+    def test_max_symbols_respected(self, multi_module_index: RepositoryIndex) -> None:
         """Verify max_symbols limits the number of candidates."""
-        builder = ContextBuilder(multi_module_graph)
+        builder = ContextBuilder(multi_module_index)
         result = builder.build(ContextQuery(text="test", max_symbols=3))
         assert len(result.candidates) == 3
 
-    def test_max_symbols_larger_than_available(self, multi_module_graph: SymbolGraphView) -> None:
+    def test_max_symbols_larger_than_available(
+        self, multi_module_index: RepositoryIndex
+    ) -> None:
         """Verify max_symbols larger than available symbols returns all."""
-        builder = ContextBuilder(multi_module_graph)
+        builder = ContextBuilder(multi_module_index)
         result = builder.build(ContextQuery(text="test", max_symbols=100))
-        assert len(result.candidates) == 6  # 6 symbols in the graph
+        assert len(result.candidates) == 6  # 6 symbols in the index
 
-    def test_max_symbols_zero(self, multi_module_graph: SymbolGraphView) -> None:
+    def test_max_symbols_zero(self, multi_module_index: RepositoryIndex) -> None:
         """Verify max_symbols=0 returns no candidates."""
-        builder = ContextBuilder(multi_module_graph)
+        builder = ContextBuilder(multi_module_index)
         result = builder.build(ContextQuery(text="test", max_symbols=0))
         assert result.candidates == []
 
-    def test_max_symbols_one(self, multi_module_graph: SymbolGraphView) -> None:
+    def test_max_symbols_one(self, multi_module_index: RepositoryIndex) -> None:
         """Verify max_symbols=1 returns exactly one candidate."""
-        builder = ContextBuilder(multi_module_graph)
+        builder = ContextBuilder(multi_module_index)
         result = builder.build(ContextQuery(text="test", max_symbols=1))
         assert len(result.candidates) == 1
 
@@ -303,30 +333,30 @@ class TestMaxSymbols:
 class TestMaxModules:
     """Tests for max_modules enforcement."""
 
-    def test_max_modules_respected(self, multi_module_graph: SymbolGraphView) -> None:
+    def test_max_modules_respected(self, multi_module_index: RepositoryIndex) -> None:
         """Verify max_modules limits the number of unique modules."""
-        builder = ContextBuilder(multi_module_graph)
+        builder = ContextBuilder(multi_module_index)
         result = builder.build(ContextQuery(text="test", max_symbols=100, max_modules=2))
         assert len(result.selected_modules) == 2
 
     def test_max_modules_larger_than_available(
-        self, multi_module_graph: SymbolGraphView
+        self, multi_module_index: RepositoryIndex
     ) -> None:
         """Verify max_modules larger than available returns all modules."""
-        builder = ContextBuilder(multi_module_graph)
+        builder = ContextBuilder(multi_module_index)
         result = builder.build(ContextQuery(text="test", max_symbols=100, max_modules=100))
         # 3 unique modules: auth.py, main.py, utils.py
         assert len(result.selected_modules) == 3
 
-    def test_max_modules_zero(self, multi_module_graph: SymbolGraphView) -> None:
+    def test_max_modules_zero(self, multi_module_index: RepositoryIndex) -> None:
         """Verify max_modules=0 returns no modules."""
-        builder = ContextBuilder(multi_module_graph)
+        builder = ContextBuilder(multi_module_index)
         result = builder.build(ContextQuery(text="test", max_symbols=100, max_modules=0))
         assert result.selected_modules == []
 
-    def test_max_modules_one(self, multi_module_graph: SymbolGraphView) -> None:
+    def test_max_modules_one(self, multi_module_index: RepositoryIndex) -> None:
         """Verify max_modules=1 returns exactly one module."""
-        builder = ContextBuilder(multi_module_graph)
+        builder = ContextBuilder(multi_module_index)
         result = builder.build(ContextQuery(text="test", max_symbols=100, max_modules=1))
         assert len(result.selected_modules) == 1
 
@@ -339,15 +369,15 @@ class TestMaxModules:
 class TestModuleDeduplication:
     """Tests for selected_modules deduplication."""
 
-    def test_no_duplicate_modules(self, multi_module_graph: SymbolGraphView) -> None:
+    def test_no_duplicate_modules(self, multi_module_index: RepositoryIndex) -> None:
         """Verify selected_modules contains no duplicates."""
-        builder = ContextBuilder(multi_module_graph)
+        builder = ContextBuilder(multi_module_index)
         result = builder.build(ContextQuery(text="test", max_symbols=100, max_modules=100))
         assert len(result.selected_modules) == len(set(result.selected_modules))
 
-    def test_insertion_order_preserved(self, multi_module_graph: SymbolGraphView) -> None:
+    def test_insertion_order_preserved(self, multi_module_index: RepositoryIndex) -> None:
         """Verify selected_modules preserves insertion order from sorted candidates."""
-        builder = ContextBuilder(multi_module_graph)
+        builder = ContextBuilder(multi_module_index)
         result = builder.build(ContextQuery(text="test", max_symbols=100, max_modules=100))
         # The first occurrence of each module should be in sorted candidate order.
         # Since candidates are sorted by qualified_name, the first module seen
@@ -364,9 +394,9 @@ class TestModuleDeduplication:
 class TestRepeatedExecutions:
     """Tests for repeated execution stability."""
 
-    def test_identical_results(self, multi_module_graph: SymbolGraphView) -> None:
+    def test_identical_results(self, multi_module_index: RepositoryIndex) -> None:
         """Verify repeated builds produce identical ContextResult."""
-        builder = ContextBuilder(multi_module_graph)
+        builder = ContextBuilder(multi_module_index)
         query = ContextQuery(text="test", max_symbols=10, max_modules=5)
 
         results = [builder.build(query) for _ in range(5)]
@@ -376,9 +406,9 @@ class TestRepeatedExecutions:
             assert result.candidates == first.candidates
             assert result.selected_modules == first.selected_modules
 
-    def test_empty_repository_stable(self, empty_graph: SymbolGraphView) -> None:
+    def test_empty_repository_stable(self, empty_index: RepositoryIndex) -> None:
         """Verify empty repository produces stable empty results."""
-        builder = ContextBuilder(empty_graph)
+        builder = ContextBuilder(empty_index)
         results = [builder.build(ContextQuery(text="")) for _ in range(5)]
         for result in results:
             assert result.candidates == []
@@ -393,18 +423,18 @@ class TestRepeatedExecutions:
 class TestEmptyRepository:
     """Tests for empty repository boundary."""
 
-    def test_empty_repository(self, empty_graph: SymbolGraphView) -> None:
+    def test_empty_repository(self, empty_index: RepositoryIndex) -> None:
         """Verify builder handles empty repository gracefully."""
-        builder = ContextBuilder(empty_graph)
+        builder = ContextBuilder(empty_index)
         result = builder.build(ContextQuery(text="anything"))
         assert result.candidates == []
         assert result.selected_modules == []
 
     def test_empty_repository_with_limits(
-        self, empty_graph: SymbolGraphView
+        self, empty_index: RepositoryIndex
     ) -> None:
         """Verify empty repository respects limits."""
-        builder = ContextBuilder(empty_graph)
+        builder = ContextBuilder(empty_index)
         result = builder.build(
             ContextQuery(text="test", max_symbols=5, max_modules=3)
         )
@@ -420,18 +450,18 @@ class TestEmptyRepository:
 class TestEmptyQuery:
     """Tests for empty query boundary."""
 
-    def test_empty_text(self, multi_module_graph: SymbolGraphView) -> None:
+    def test_empty_text(self, multi_module_index: RepositoryIndex) -> None:
         """Verify builder handles empty query text."""
-        builder = ContextBuilder(multi_module_graph)
+        builder = ContextBuilder(multi_module_index)
         result = builder.build(ContextQuery(text=""))
         # Empty text should still return symbols (no filtering yet).
         assert len(result.candidates) > 0
 
     def test_empty_text_with_limits(
-        self, multi_module_graph: SymbolGraphView
+        self, multi_module_index: RepositoryIndex
     ) -> None:
         """Verify empty query text respects limits."""
-        builder = ContextBuilder(multi_module_graph)
+        builder = ContextBuilder(multi_module_index)
         result = builder.build(ContextQuery(text="", max_symbols=2, max_modules=1))
         assert len(result.candidates) == 2
         assert len(result.selected_modules) == 1
@@ -445,26 +475,26 @@ class TestEmptyQuery:
 class TestBuilderAPI:
     """Tests for the ContextBuilder public API."""
 
-    def test_build_returns_context_result(self, multi_module_graph: SymbolGraphView) -> None:
+    def test_build_returns_context_result(self, multi_module_index: RepositoryIndex) -> None:
         """Verify build() returns a ContextResult."""
-        builder = ContextBuilder(multi_module_graph)
+        builder = ContextBuilder(multi_module_index)
         result = builder.build(ContextQuery(text="test"))
         assert isinstance(result, ContextResult)
 
     def test_candidates_are_context_candidates(
-        self, multi_module_graph: SymbolGraphView
+        self, multi_module_index: RepositoryIndex
     ) -> None:
         """Verify all candidates are ContextCandidate instances."""
-        builder = ContextBuilder(multi_module_graph)
+        builder = ContextBuilder(multi_module_index)
         result = builder.build(ContextQuery(text="test"))
         for candidate in result.candidates:
             assert isinstance(candidate, ContextCandidate)
 
     def test_selected_modules_are_strings(
-        self, multi_module_graph: SymbolGraphView
+        self, multi_module_index: RepositoryIndex
     ) -> None:
         """Verify selected_modules contains strings."""
-        builder = ContextBuilder(multi_module_graph)
+        builder = ContextBuilder(multi_module_index)
         result = builder.build(ContextQuery(text="test"))
         for module in result.selected_modules:
             assert isinstance(module, str)
@@ -486,9 +516,9 @@ class TestRankingIntegration:
     """
 
     @pytest.mark.xfail(reason="fixture symbols don't match query tokens — all score 0")
-    def test_text_affects_ordering(self, multi_module_graph: SymbolGraphView) -> None:
+    def test_text_affects_ordering(self, multi_module_index: RepositoryIndex) -> None:
         """Verify query text affects ordering (ranking is applied)."""
-        builder = ContextBuilder(multi_module_graph)
+        builder = ContextBuilder(multi_module_index)
         result_a = builder.build(ContextQuery(text="authentication"))
         result_b = builder.build(ContextQuery(text="xyzzy nonsense"))
         # Different text should produce different orderings.
@@ -498,10 +528,10 @@ class TestRankingIntegration:
 
     @pytest.mark.xfail(reason="fixture symbols don't match query tokens — all score 0")
     def test_candidates_ranked_by_relevance(
-        self, multi_module_graph: SymbolGraphView
+        self, multi_module_index: RepositoryIndex
     ) -> None:
         """Verify candidates are ranked by relevance, not sorted by name."""
-        builder = ContextBuilder(multi_module_graph)
+        builder = ContextBuilder(multi_module_index)
         result = builder.build(ContextQuery(text="middleware"))
         names = [c.qualified_name for c in result.candidates]
         # Should be ranked, not alphabetically sorted.

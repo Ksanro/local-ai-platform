@@ -8,16 +8,16 @@ Architecture
 ------------
 
 PipelineContext
-       │
-       ▼
+       |
+       v
 RepositoryContextStage
-       │
-       ├── ContextBuilder   (enumerates & ranks symbols)
-       ├── RankingEngine    (integrated inside Builder)
-       ├── ContextBudget    (integrated inside Builder)
-       └── ContextComposer  (assembles structured package)
-       │
-       ▼
+       |
+       |-- ContextBuilder   (enumerate & rank symbols)
+       |-- RankingEngine    (integrated inside Builder)
+       |-- ContextBudget    (integrated inside Builder)
+       +-- ContextComposer  (assembles structured package)
+       |
+       v
 PipelineContext.context_package
 
 The stage is provider-agnostic. It never performs inference.
@@ -33,7 +33,7 @@ must not
 - inspect provider configuration
 - access Gateway internals
 
-Serializes only into ``ProviderRequest`` — never raw JSON or HTTP payloads.
+Serializes only into ``ProviderRequest`` -- never raw JSON or HTTP payloads.
 
 It orchestrates existing Context components only.
 """
@@ -50,9 +50,9 @@ from packages.context.package import ContextPackage
 from packages.pipeline.base import PipelineStage
 from packages.pipeline.context import PipelineContext
 from packages.pipeline.result import PipelineStageResult
-from packages.repository.symbols.graph import SymbolGraphView
+from packages.repository.index.models import RepositoryIndex
 from packages.serializers.factory import SerializerFactory
-from packages.serializers.openai import OpenAISerializer  # noqa: F401 – auto-registers
+from packages.serializers.openai import OpenAISerializer  # noqa: F401 - auto-registers
 from packages.serializers.types import ProviderType
 
 logger = logging.getLogger(__name__)
@@ -65,20 +65,20 @@ class RepositoryContextStage(PipelineStage):
     the resulting ContextPackage to the PipelineContext.
 
     Attributes:
-        _graph_view: Read-only symbol graph view for symbol enumeration.
+        _index: Read-only repository index for symbol enumeration.
             May be ``None`` if repository scanning is not configured;
             the stage handles this gracefully.
     """
 
-    def __init__(self, graph_view: SymbolGraphView | None = None) -> None:
-        """Initialize with an optional symbol graph view.
+    def __init__(self, index: RepositoryIndex | None = None) -> None:
+        """Initialize with an optional repository index.
 
         Args:
-            graph_view: A ``SymbolGraphView`` providing access to
+            index: A ``RepositoryIndex`` providing access to
                 repository symbols, or ``None`` to disable context
                 assembly.
         """
-        self._graph_view = graph_view
+        self._index = index
 
     @property
     def name(self) -> str:
@@ -115,7 +115,7 @@ class RepositoryContextStage(PipelineStage):
 
         Executes the full context-building pipeline:
 
-        1. Build candidates from the symbol graph.
+        1. Build candidates from the repository index.
         2. Rank candidates against the user query.
         3. Estimate token budget.
         4. Compose the final ContextPackage.
@@ -139,8 +139,8 @@ class RepositoryContextStage(PipelineStage):
         context_enabled = context.get_metadata("context_enabled", True)
 
         try:
-            # If no graph view is available, skip context assembly.
-            if self._graph_view is None:
+            # If no index is available, skip context assembly.
+            if self._index is None:
                 context.context_package = None
                 return PipelineStageResult(
                     stage_name=self.name,
@@ -152,7 +152,7 @@ class RepositoryContextStage(PipelineStage):
             # Messages are stored in context.request as provider kwargs.
             query_text = self._extract_query(context)
 
-            # Build context from the symbol graph.
+            # Build context from the repository index.
             query = ContextQuery(
                 text=query_text,
                 max_symbols=20,
@@ -160,7 +160,7 @@ class RepositoryContextStage(PipelineStage):
                 max_tokens=4096,
             )
 
-            builder = ContextBuilder(self._graph_view)
+            builder = ContextBuilder(self._index)
             context_result = builder.build(query)
 
             # Compose the final package.
@@ -212,7 +212,7 @@ class RepositoryContextStage(PipelineStage):
                 elapsed_ms,
             )
 
-            # Leave context_package as None — graceful degradation.
+            # Leave context_package as None -- graceful degradation.
             context.context_package = None
 
             return PipelineStageResult(
@@ -320,4 +320,4 @@ class RepositoryContextStage(PipelineStage):
                 context.request_id,
                 exc,
             )
-            # Leave provider_request unset — graceful degradation.
+            # Leave provider_request unset -- graceful degradation.

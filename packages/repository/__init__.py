@@ -1,11 +1,64 @@
-"""Repository scanner package.
+"""Repository package.
 
-Walks a directory tree, collects file and directory metadata,
-classifies files by language, and produces a structured index.
+Provides repository scanning, symbol extraction, and structural indexing.
+
+The package owns all repository analysis — no other package may scan
+source files directly.
+
+Architecture
+------------
+
+Repository
+
+    |
+
+    v
+
+Repository Index
+
+    |
+
+    |-- Symbol Graph
+
+    |-- Module Metadata
+
+    |-- Relationships
+
+    +-- Statistics
+
+            |
+
+            v
+
+    Context Builder
+
+Usage
+-----
+
+Scan for file metadata:
+
+    from packages.repository import scan
+
+    index = scan(path)
+
+Build a structural index:
+
+    from packages.repository import index
+
+    struct_index = index(path)
 """
+
+from __future__ import annotations
+
+from pathlib import Path
 
 from packages.repository.filters import parse_gitignore, should_ignore_path
 from packages.repository.index import find_extension, find_language, get_file, summary
+from packages.repository.index.models import RepositoryIndex as StructIndex
+from packages.repository.index.models import (
+    RepositoryStatistics,
+)
+from packages.repository.index.builder import RepositoryIndexBuilder
 from packages.repository.models import (
     Directory,
     LanguageSummary,
@@ -21,11 +74,34 @@ __all__ = [
     "RepositoryIndex",
     "SourceFile",
     "Statistics",
+    "StructIndex",
+    "RepositoryStatistics",
+    "RepositoryIndexBuilder",
     "find_extension",
     "find_language",
     "get_file",
     "parse_gitignore",
-    "scan",
     "should_ignore_path",
+    "scan",
     "summary",
 ]
+
+
+def index(path: Path) -> StructIndex:
+    """Build a structural :class:`StructIndex` from the given path.
+
+    Delegates symbol extraction to the existing :class:`PythonAstExtractor`
+    and returns an immutable, deterministic :class:`StructIndex` containing
+    all modules, symbols, relationships, and statistics.
+
+    Args:
+        path: Path to a Python source file or directory.
+
+    Returns:
+        A :class:`StructIndex` with complete structural analysis.
+
+    Raises:
+        FileNotFoundError: If ``path`` does not exist.
+        NotADirectoryError: If ``path`` is not a directory.
+    """
+    return RepositoryIndexBuilder().build(path)

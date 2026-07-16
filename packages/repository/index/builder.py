@@ -1,0 +1,110 @@
+"""Repository Index Builder.
+
+Constructs an immutable :class:`RepositoryIndex` from a filesystem path
+by delegating symbol extraction to the existing :class:`PythonAstExtractor`.
+
+The builder is stateless between calls — repeated builds of the same path
+produce identical :class:`RepositoryIndex` instances (deterministic).
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from packages.repository.index.models import (
+    RepositoryIndex,
+    RepositoryStatistics,
+)
+from packages.repository.symbols.extractor import SymbolExtractor
+from packages.repository.symbols.models import (
+    Module,
+    Relationship,
+    Symbol,
+    SymbolGraph,
+    SymbolType,
+)
+from packages.repository.symbols.python_ast import PythonAstExtractor
+
+
+class RepositoryIndexBuilder:
+    """Builds a :class:`RepositoryIndex` from a filesystem path.
+
+    Attributes:
+        _extractor: The symbol extractor used to parse source files.
+            Defaults to :class:`PythonAstExtractor` when not specified.
+    """
+
+    def __init__(self, extractor: SymbolExtractor | None = None) -> None:
+        """Initialise the builder.
+
+        Args:
+            extractor: A ``SymbolExtractor`` implementation.  Defaults to
+                ``PythonAstExtractor`` when ``None``.
+        """
+        self._extractor = extractor or PythonAstExtractor()
+
+    def build(self, path: Path) -> RepositoryIndex:
+        """Build a :class:`RepositoryIndex` from the given path.
+
+        Extracts symbols from all Python source files under ``path``,
+        computes aggregate statistics, and returns a fully constructed
+        :class:`RepositoryIndex`.
+
+        Args:
+            path: Path to a Python source file or directory.
+
+        Returns:
+            A :class:`RepositoryIndex` containing all discovered modules,
+            symbols, relationships, and statistics.
+
+        Raises:
+            FileNotFoundError: If ``path`` does not exist.
+            NotADirectoryError: If ``path`` is not a directory.
+        """
+        graph = self._extractor.extract(path)
+
+        modules: dict[str, Module] = {}
+        symbols: list[Symbol] = []
+        relationships: list[Relationship] = []
+
+        for module_path, module in graph.modules.items():
+            modules[module_path] = module
+            symbols.extend(module.symbols)
+            relationships.extend(module.relationships)
+
+        statistics = self._compute_statistics(symbols, len(modules))
+
+        return RepositoryIndex(
+            modules=modules,
+            _symbols=symbols,
+            _relationships=relationships,
+            _statistics=statistics,
+        )
+
+    @staticmethod
+    def _compute_statistics(
+        symbols: list[Symbol],
+        module_count: int,
+    ) -> RepositoryStatistics:
+        """Compute aggregate statistics from a list of symbols.
+
+        Args:
+            symbols: All symbols across all modules.
+            module_count: Number of modules in the repository.
+
+        Returns:
+            A :class:`RepositoryStatistics` dataclass with computed values.
+        """
+        class_count = sum(1 for s in symbols if s.symbol_type == SymbolType.CLASS)
+        function_count = sum(
+            1 for s in symbols if s.symbol_type == SymbolType.FUNCTION
+        )
+        method_count = sum(1 for s in symbols if s.symbol_type == SymbolType.METHOD)
+
+        return RepositoryStatistics(
+            module_count=module_count,
+            class_count=class_count,
+            function_count=function_count,
+            method_count=method_count,
+            symbol_count=len(symbols),
+        )

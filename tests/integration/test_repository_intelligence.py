@@ -81,17 +81,39 @@ def _make_symbol(
     )
 
 
-def _make_graph_view(symbols: list[Any]) -> Any:
-    """Create a SymbolGraphView from a list of symbols."""
-    from packages.repository.symbols.graph import SymbolGraphView
-    from packages.repository.symbols.models import Module, SymbolGraph
+def _make_index(symbols: list[Any]) -> Any:
+    """Create a RepositoryIndex from a list of symbols."""
+    from packages.repository.index.models import (
+        Module,
+        RepositoryIndex,
+        RepositoryStatistics,
+        SymbolType,
+    )
 
     modules: dict[str, Any] = {}
     for sym in symbols:
         if sym.module not in modules:
             modules[sym.module] = Module(path=sym.module)
         modules[sym.module].symbols.append(sym)
-    return SymbolGraphView(SymbolGraph(modules=modules))
+
+    class_count = sum(1 for s in symbols if getattr(s, "symbol_type", None) == SymbolType.CLASS)
+    function_count = sum(1 for s in symbols if getattr(s, "symbol_type", None) == SymbolType.FUNCTION)
+    method_count = sum(1 for s in symbols if getattr(s, "symbol_type", None) == SymbolType.METHOD)
+
+    statistics = RepositoryStatistics(
+        module_count=len(modules),
+        class_count=class_count,
+        function_count=function_count,
+        method_count=method_count,
+        symbol_count=len(symbols),
+    )
+
+    return RepositoryIndex(
+        modules=modules,
+        _symbols=symbols,
+        _relationships=[],
+        _statistics=statistics,
+    )
 
 
 def _make_context(
@@ -171,8 +193,8 @@ class TestContextEnabled:
             _make_symbol("App", "main.App", "main.py"),
             _make_symbol("run", "main.App.run", "main.py"),
         ]
-        graph_view = _make_graph_view(symbols)
-        stage = RepositoryContextStage(graph_view=graph_view)
+        index = _make_index(symbols)
+        stage = RepositoryContextStage(index=index)
 
         context = _make_context(context_enabled=True)
         result = await stage.execute(context)
@@ -186,8 +208,8 @@ class TestContextEnabled:
     async def test_provider_request_created(self) -> None:
         """Verify ProviderRequest is created when context is enabled."""
         symbols = [_make_symbol("App", "main.App", "main.py")]
-        graph_view = _make_graph_view(symbols)
-        stage = RepositoryContextStage(graph_view=graph_view)
+        index = _make_index(symbols)
+        stage = RepositoryContextStage(index=index)
 
         context = _make_context(context_enabled=True)
         await stage.execute(context)
@@ -202,8 +224,8 @@ class TestContextEnabled:
     async def test_provider_request_contains_repository_context(self) -> None:
         """Verify ProviderRequest includes repository context in messages."""
         symbols = [_make_symbol("App", "main.App", "main.py")]
-        graph_view = _make_graph_view(symbols)
-        stage = RepositoryContextStage(graph_view=graph_view)
+        index = _make_index(symbols)
+        stage = RepositoryContextStage(index=index)
 
         context = _make_context(context_enabled=True)
         await stage.execute(context)
@@ -263,9 +285,9 @@ class TestProviderReceivesRequest:
     async def test_provider_receives_provider_request(self) -> None:
         """Verify ProviderStage receives kwargs from ProviderRequest."""
         symbols = [_make_symbol("App", "main.App", "main.py")]
-        graph_view = _make_graph_view(symbols)
+        index = _make_index(symbols)
 
-        context_stage = RepositoryContextStage(graph_view=graph_view)
+        context_stage = RepositoryContextStage(index=index)
         mock_provider = _MockProvider()
 
         engine = _make_engine(context_stage, mock_provider)
@@ -284,9 +306,9 @@ class TestProviderReceivesRequest:
     async def test_provider_receives_stream_flag(self) -> None:
         """Verify stream flag is forwarded to provider."""
         symbols = [_make_symbol("App", "main.App", "main.py")]
-        graph_view = _make_graph_view(symbols)
+        index = _make_index(symbols)
 
-        context_stage = RepositoryContextStage(graph_view=graph_view)
+        context_stage = RepositoryContextStage(index=index)
         mock_provider = _MockProvider()
 
         engine = _make_engine(context_stage, mock_provider)
@@ -315,8 +337,8 @@ class TestSerializerInvoked:
     async def test_serializer_produces_correct_format(self) -> None:
         """Verify serializer produces OpenAI-compatible format."""
         symbols = [_make_symbol("App", "main.App", "main.py")]
-        graph_view = _make_graph_view(symbols)
-        stage = RepositoryContextStage(graph_view=graph_view)
+        index = _make_index(symbols)
+        stage = RepositoryContextStage(index=index)
 
         context = _make_context(context_enabled=True)
         await stage.execute(context)
@@ -334,8 +356,8 @@ class TestSerializerInvoked:
     async def test_serializer_preserves_user_messages(self) -> None:
         """Verify user messages are preserved in serialized request."""
         symbols = [_make_symbol("App", "main.App", "main.py")]
-        graph_view = _make_graph_view(symbols)
-        stage = RepositoryContextStage(graph_view=graph_view)
+        index = _make_index(symbols)
+        stage = RepositoryContextStage(index=index)
 
         user_messages = [
             {"role": "user", "content": "Hello"},
@@ -375,9 +397,9 @@ class TestResponseUnchanged:
     async def test_response_is_provider_response(self) -> None:
         """Verify the pipeline returns the provider's response."""
         symbols = [_make_symbol("App", "main.App", "main.py")]
-        graph_view = _make_graph_view(symbols)
+        index = _make_index(symbols)
 
-        context_stage = RepositoryContextStage(graph_view=graph_view)
+        context_stage = RepositoryContextStage(index=index)
         mock_provider = _MockProvider()
         mock_provider._response = {
             "choices": [
@@ -398,9 +420,9 @@ class TestResponseUnchanged:
     async def test_response_shape_preserved(self) -> None:
         """Verify response shape is preserved through the pipeline."""
         symbols = [_make_symbol("App", "main.App", "main.py")]
-        graph_view = _make_graph_view(symbols)
+        index = _make_index(symbols)
 
-        context_stage = RepositoryContextStage(graph_view=graph_view)
+        context_stage = RepositoryContextStage(index=index)
         mock_provider = _MockProvider()
 
         engine = _make_engine(context_stage, mock_provider)
@@ -481,9 +503,9 @@ class TestPipelineOrdering:
     async def test_provider_request_set_before_provider_stage(self) -> None:
         """Verify ProviderRequest is available when ProviderStage runs."""
         symbols = [_make_symbol("App", "main.App", "main.py")]
-        graph_view = _make_graph_view(symbols)
+        index = _make_index(symbols)
 
-        context_stage = RepositoryContextStage(graph_view=graph_view)
+        context_stage = RepositoryContextStage(index=index)
         mock_provider = _MockProvider()
 
         engine = _make_engine(context_stage, mock_provider)
@@ -568,9 +590,9 @@ class TestGracefulFailure:
     async def test_serialization_failure_does_not_break_pipeline(self) -> None:
         """Verify serialization failure is handled gracefully."""
         symbols = [_make_symbol("App", "main.App", "main.py")]
-        graph_view = _make_graph_view(symbols)
+        index = _make_index(symbols)
 
-        context_stage = RepositoryContextStage(graph_view=graph_view)
+        context_stage = RepositoryContextStage(index=index)
         mock_provider = _MockProvider()
 
         # Patch the serializer to fail.
@@ -609,8 +631,8 @@ class TestDeterministicExecution:
             _make_symbol("run", "main.App.run", "main.py"),
             _make_symbol("helper", "utils.helper", "utils.py"),
         ]
-        graph_view = _make_graph_view(symbols)
-        stage = RepositoryContextStage(graph_view=graph_view)
+        index = _make_index(symbols)
+        stage = RepositoryContextStage(index=index)
 
         provider_requests = []
         for _ in range(5):
@@ -633,8 +655,8 @@ class TestDeterministicExecution:
     @pytest.mark.asyncio
     async def test_empty_repository_produces_empty_context(self) -> None:
         """Verify empty repository produces empty context package."""
-        graph_view = _make_graph_view([])
-        stage = RepositoryContextStage(graph_view=graph_view)
+        index = _make_index([])
+        stage = RepositoryContextStage(index=index)
 
         context = _make_context(context_enabled=True)
         await stage.execute(context)
@@ -650,11 +672,11 @@ class TestDeterministicExecution:
             _make_symbol("App", "main.App", "main.py"),
             _make_symbol("run", "main.App.run", "main.py"),
         ]
-        graph_view = _make_graph_view(symbols)
+        index = _make_index(symbols)
 
         results = []
         for _ in range(3):
-            context_stage = RepositoryContextStage(graph_view=graph_view)
+            context_stage = RepositoryContextStage(index=index)
             mock_provider = _MockProvider()
 
             engine = PipelineEngine()
@@ -692,9 +714,9 @@ class TestEndToEnd:
     async def test_full_pipeline_with_context(self) -> None:
         """Verify full pipeline: context → serialize → provider."""
         symbols = [_make_symbol("App", "main.App", "main.py")]
-        graph_view = _make_graph_view(symbols)
+        index = _make_index(symbols)
 
-        context_stage = RepositoryContextStage(graph_view=graph_view)
+        context_stage = RepositoryContextStage(index=index)
         mock_provider = _MockProvider()
 
         engine = _make_engine(context_stage, mock_provider)

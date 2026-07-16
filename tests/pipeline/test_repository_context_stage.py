@@ -19,11 +19,12 @@ from packages.pipeline.engine import PipelineEngine
 from packages.pipeline.request import PipelineRequest
 from packages.pipeline.result import PipelineStageResult
 from packages.pipeline.stages.repository_context import RepositoryContextStage
-from packages.repository.symbols.graph import SymbolGraphView
-from packages.repository.symbols.models import (
+from packages.repository.index.models import (
     Module,
+    Relationship,
+    RepositoryIndex,
+    RepositoryStatistics,
     Symbol,
-    SymbolGraph,
     SymbolType,
 )
 
@@ -50,14 +51,32 @@ def _make_symbol(
     )
 
 
-def _make_graph(symbols: list[Symbol]) -> SymbolGraphView:
-    """Create a SymbolGraphView from a list of symbols."""
+def _make_index(symbols: list[Symbol]) -> RepositoryIndex:
+    """Create a RepositoryIndex from a list of symbols."""
     modules: dict[str, Module] = {}
     for sym in symbols:
         if sym.module not in modules:
             modules[sym.module] = Module(path=sym.module)
         modules[sym.module].symbols.append(sym)
-    return SymbolGraphView(SymbolGraph(modules=modules))
+
+    class_count = sum(1 for s in symbols if s.symbol_type == SymbolType.CLASS)
+    function_count = sum(1 for s in symbols if s.symbol_type == SymbolType.FUNCTION)
+    method_count = sum(1 for s in symbols if s.symbol_type == SymbolType.METHOD)
+
+    statistics = RepositoryStatistics(
+        module_count=len(modules),
+        class_count=class_count,
+        function_count=function_count,
+        method_count=method_count,
+        symbol_count=len(symbols),
+    )
+
+    return RepositoryIndex(
+        modules=modules,
+        _symbols=symbols,
+        _relationships=[],
+        _statistics=statistics,
+    )
 
 
 def _make_context(
@@ -90,8 +109,8 @@ class TestContextAttached:
             _make_symbol("App", "main.App", SymbolType.CLASS, "main.py"),
             _make_symbol("run", "main.App.run", SymbolType.METHOD, "main.py"),
         ]
-        graph_view = _make_graph(symbols)
-        stage = RepositoryContextStage(graph_view=graph_view)
+        index = _make_index(symbols)
+        stage = RepositoryContextStage(index=index)
 
         context = _make_context()
         result = await stage.execute(context)
@@ -108,8 +127,8 @@ class TestContextAttached:
         symbols = [
             _make_symbol("App", "main.App", SymbolType.CLASS, "main.py"),
         ]
-        graph_view = _make_graph(symbols)
-        stage = RepositoryContextStage(graph_view=graph_view)
+        index = _make_index(symbols)
+        stage = RepositoryContextStage(index=index)
 
         context = _make_context(
             messages=[{"role": "user", "content": "find the App class"}]
@@ -124,8 +143,8 @@ class TestContextAttached:
     async def test_stage_result_contains_package(self) -> None:
         """Verify the stage result data contains the ContextPackage."""
         symbols = [_make_symbol("App", "main.App", SymbolType.CLASS, "main.py")]
-        graph_view = _make_graph(symbols)
-        stage = RepositoryContextStage(graph_view=graph_view)
+        index = _make_index(symbols)
+        stage = RepositoryContextStage(index=index)
 
         context = _make_context()
         result = await stage.execute(context)
@@ -200,7 +219,7 @@ class TestExceptionHandling:
     async def test_exception_does_not_fail_pipeline(self) -> None:
         """Verify exceptions are caught and pipeline continues."""
         symbols = [_make_symbol("App", "main.App", SymbolType.CLASS, "main.py")]
-        graph_view = _make_graph(symbols)
+        index = _make_index(symbols)
 
         # Patch ContextBuilder to raise an exception.
         with patch(
@@ -208,7 +227,7 @@ class TestExceptionHandling:
         ) as MockBuilder:
             MockBuilder.side_effect = RuntimeError("builder failed")
 
-            stage = RepositoryContextStage(graph_view=graph_view)
+            stage = RepositoryContextStage(index=index)
             context = _make_context()
 
             result = await stage.execute(context)
@@ -221,14 +240,14 @@ class TestExceptionHandling:
     async def test_exception_logs_error(self) -> None:
         """Verify exceptions are logged."""
         symbols = [_make_symbol("App", "main.App", SymbolType.CLASS, "main.py")]
-        graph_view = _make_graph(symbols)
+        index = _make_index(symbols)
 
         with patch(
             "packages.pipeline.stages.repository_context.ContextBuilder"
         ) as MockBuilder:
             MockBuilder.side_effect = RuntimeError("kaboom")
 
-            stage = RepositoryContextStage(graph_view=graph_view)
+            stage = RepositoryContextStage(index=index)
             context = _make_context()
 
             with patch.object(
@@ -242,9 +261,9 @@ class TestExceptionHandling:
                 assert "kaboom" in str(call_args)
 
     @pytest.mark.asyncio
-    async def test_no_graph_view_returns_success(self) -> None:
-        """Verify None graph_view returns success with no package."""
-        stage = RepositoryContextStage(graph_view=None)
+    async def test_no_index_returns_success(self) -> None:
+        """Verify None index returns success with no package."""
+        stage = RepositoryContextStage(index=None)
         context = _make_context()
 
         result = await stage.execute(context)
@@ -310,7 +329,7 @@ class TestPipelineContinues:
 
         # Use the real RepositoryContextStage but patch the builder to fail.
         symbols = [_make_symbol("App", "main.App", SymbolType.CLASS, "main.py")]
-        graph_view = _make_graph(symbols)
+        index = _make_index(symbols)
 
         with patch(
             "packages.pipeline.stages.repository_context.ContextBuilder"
@@ -318,7 +337,7 @@ class TestPipelineContinues:
             MockBuilder.side_effect = RuntimeError("context failed")
 
             engine = PipelineEngine()
-            engine.register(RepositoryContextStage(graph_view=graph_view))
+            engine.register(RepositoryContextStage(index=index))
             engine.register(tracking_stage)
 
             request = PipelineRequest(
@@ -389,8 +408,8 @@ class TestDeterministicExecution:
             _make_symbol("run", "main.App.run", SymbolType.METHOD, "main.py"),
             _make_symbol("helper", "utils.helper", SymbolType.FUNCTION, "utils.py"),
         ]
-        graph_view = _make_graph(symbols)
-        stage = RepositoryContextStage(graph_view=graph_view)
+        index = _make_index(symbols)
+        stage = RepositoryContextStage(index=index)
 
         packages = []
         for _ in range(5):
@@ -411,8 +430,8 @@ class TestDeterministicExecution:
     @pytest.mark.asyncio
     async def test_empty_repository_produces_empty_package(self) -> None:
         """Verify empty repository produces empty ContextPackage."""
-        graph_view = _make_graph([])
-        stage = RepositoryContextStage(graph_view=graph_view)
+        index = _make_index([])
+        stage = RepositoryContextStage(index=index)
 
         context = _make_context()
         result = await stage.execute(context)
@@ -435,8 +454,8 @@ class TestLoggingFields:
     async def test_log_contains_request_id(self) -> None:
         """Verify log output includes request_id."""
         symbols = [_make_symbol("App", "main.App", SymbolType.CLASS, "main.py")]
-        graph_view = _make_graph(symbols)
-        stage = RepositoryContextStage(graph_view=graph_view)
+        index = _make_index(symbols)
+        stage = RepositoryContextStage(index=index)
 
         context = _make_context(request_id="req-123")
 
@@ -454,8 +473,8 @@ class TestLoggingFields:
     async def test_log_contains_context_enabled(self) -> None:
         """Verify log output includes context_enabled."""
         symbols = [_make_symbol("App", "main.App", SymbolType.CLASS, "main.py")]
-        graph_view = _make_graph(symbols)
-        stage = RepositoryContextStage(graph_view=graph_view)
+        index = _make_index(symbols)
+        stage = RepositoryContextStage(index=index)
 
         context = _make_context()
         context.set_metadata("context_enabled", True)
@@ -470,8 +489,8 @@ class TestLoggingFields:
     async def test_after_logs_completion(self) -> None:
         """Verify after() logs stage completion."""
         symbols = [_make_symbol("App", "main.App", SymbolType.CLASS, "main.py")]
-        graph_view = _make_graph(symbols)
-        stage = RepositoryContextStage(graph_view=graph_view)
+        index = _make_index(symbols)
+        stage = RepositoryContextStage(index=index)
 
         context = _make_context()
         result = PipelineStageResult(
@@ -501,8 +520,8 @@ class TestQueryExtraction:
     async def test_last_user_message(self) -> None:
         """Verify the last user message is used for context building."""
         symbols = [_make_symbol("App", "main.App", SymbolType.CLASS, "main.py")]
-        graph_view = _make_graph(symbols)
-        stage = RepositoryContextStage(graph_view=graph_view)
+        index = _make_index(symbols)
+        stage = RepositoryContextStage(index=index)
 
         context = _make_context(
             messages=[
@@ -523,8 +542,8 @@ class TestQueryExtraction:
     async def test_empty_messages(self) -> None:
         """Verify empty messages produces empty query."""
         symbols = [_make_symbol("App", "main.App", SymbolType.CLASS, "main.py")]
-        graph_view = _make_graph(symbols)
-        stage = RepositoryContextStage(graph_view=graph_view)
+        index = _make_index(symbols)
+        stage = RepositoryContextStage(index=index)
 
         context = _make_context(messages=[])
         result = await stage.execute(context)
@@ -537,8 +556,8 @@ class TestQueryExtraction:
     async def test_no_user_messages(self) -> None:
         """Verify only assistant messages produces empty query."""
         symbols = [_make_symbol("App", "main.App", SymbolType.CLASS, "main.py")]
-        graph_view = _make_graph(symbols)
-        stage = RepositoryContextStage(graph_view=graph_view)
+        index = _make_index(symbols)
+        stage = RepositoryContextStage(index=index)
 
         context = _make_context(
             messages=[{"role": "assistant", "content": "no user here"}]

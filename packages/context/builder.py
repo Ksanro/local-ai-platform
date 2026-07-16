@@ -1,7 +1,7 @@
 """Context Builder.
 
 Assembles repository context for future coding agents by enumerating
-symbols from a ``SymbolGraphView`` and returning them in a deterministic
+symbols from a ``RepositoryIndex`` and returning them in a deterministic
 order.
 
 Architecture
@@ -21,7 +21,7 @@ ContextBudget
       ▼
 ContextResult
 
-The Builder depends only on the public ``SymbolGraphView`` API.  It
+The Builder depends only on the public ``RepositoryIndex`` API.  It
 never accesses the filesystem, parses source code, or touches AST
 objects.
 
@@ -39,32 +39,28 @@ API.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 from packages.context.budget import ContextBudget
 from packages.context.models import ContextCandidate, ContextQuery, ContextResult
 from packages.context.ranking import RankingEngine
+from packages.repository.index.models import RepositoryIndex
 from packages.repository.symbols.models import Symbol
-
-if TYPE_CHECKING:
-    from packages.repository.symbols.graph import SymbolGraphView
 
 
 class ContextBuilder:
-    """Assembles repository context from a symbol graph.
+    """Assembles repository context from a repository index.
 
     Attributes:
-        graph_view: The read-only symbol graph view to draw symbols from.
+        _index: The repository index to draw symbols from.
     """
 
-    def __init__(self, graph_view: SymbolGraphView) -> None:
+    def __init__(self, index: RepositoryIndex) -> None:
         """Initialise the builder.
 
         Args:
-            graph_view: A ``SymbolGraphView`` providing access to repository
+            index: A ``RepositoryIndex`` providing access to repository
                 symbols.
         """
-        self._graph_view = graph_view
+        self._index = index
 
     def build(self, query: ContextQuery) -> ContextResult:
         """Build context from the given query.
@@ -80,7 +76,7 @@ class ContextBuilder:
             A ``ContextResult`` with candidates and selected modules.
         """
         # Enumerate all symbols from the repository.
-        all_symbols: list[Symbol] = list(self._graph_view.symbols())
+        all_symbols: list[Symbol] = list(self._index.symbols())
 
         # Convert to candidates.
         candidates: list[ContextCandidate] = [
