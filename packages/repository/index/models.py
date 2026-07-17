@@ -45,11 +45,11 @@ class RepositoryStatistics:
         symbol_count: Total number of symbols across all types.
     """
 
-    module_count: int
-    class_count: int
-    function_count: int
-    method_count: int
-    symbol_count: int
+    module_count: int = 0
+    class_count: int = 0
+    function_count: int = 0
+    method_count: int = 0
+    symbol_count: int = 0
 
 
 # ---------------------------------------------------------------------------
