@@ -12,12 +12,19 @@ Scoring Rules
 | Exact symbol name match | +100 |
 | Exact qualified name match | +90 |
 | Partial symbol name match | +50 |
-| Module name contains query token | +30 |
-| Matching query token | +10 per token |
+| Module match | +30 |
+| Shared class | +25 |
+| Direct caller | +20 |
+| Direct callee | +20 |
+| Shared module | +15 |
+| Token overlap | +10 |
 | Public symbol (name does not start with "_") | +5 |
 
 Each rule contributes at most once, except TOKEN_MATCH which accumulates
 per matching token.
+
+Relationship signals are only applied when the ranking engine is
+configured with a symbol graph and a primary symbol.
 
 Constraints
 -----------
@@ -32,10 +39,24 @@ from __future__ import annotations
 
 import re
 from enum import Enum, auto
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
     from packages.context.models import ContextCandidate
+
+
+class SymbolGraphView(Protocol):
+    """Minimal interface for a SymbolGraph view used in relationship scoring.
+
+    Duck-typed: any object with ``callers``, ``callees``, ``parents``,
+    and ``children`` methods that accept a ``ContextCandidate`` and return
+    a list of ``ContextCandidate`` objects is considered a valid view.
+    """
+
+    def callers(self, symbol: ContextCandidate) -> list[ContextCandidate]: ...
+    def callees(self, symbol: ContextCandidate) -> list[ContextCandidate]: ...
+    def parents(self, symbol: ContextCandidate) -> list[ContextCandidate]: ...
+    def children(self, symbol: ContextCandidate) -> list[ContextCandidate]: ...
 
 
 class RankingReason(Enum):
@@ -50,6 +71,12 @@ class RankingReason(Enum):
     MODULE_MATCH = auto()
     TOKEN_MATCH = auto()
     PUBLIC_SYMBOL = auto()
+    # Relationship signals
+    DIRECT_CALLER = auto()
+    DIRECT_CALLEE = auto()
+    SHARED_PARENT = auto()
+    SHARED_MODULE = auto()
+    SHARED_CLASS = auto()
 
 
 # ------------------------------------------------------------------
@@ -121,6 +148,24 @@ def _last_segment(qualified_name: str) -> str:
     """
     segments = qualified_name.rsplit(".", 1)
     return segments[-1]
+
+
+# ------------------------------------------------------------------
+# Relationship scoring constants
+# ------------------------------------------------------------------
+
+# Default weights for all ranking signals.
+# These are the authoritative defaults — no magic numbers elsewhere.
+WEIGHT_EXACT_MATCH = 100
+WEIGHT_QUALIFIED_NAME = 90
+WEIGHT_MODULE = 30
+WEIGHT_SHARED_CLASS = 25
+WEIGHT_DIRECT_CALLER = 20
+WEIGHT_DIRECT_CALLEE = 20
+WEIGHT_SHARED_PARENT = 25
+WEIGHT_SHARED_MODULE = 15
+WEIGHT_TOKEN_OVERLAP = 10
+WEIGHT_PUBLIC_SYMBOL = 5
 
 
 # ------------------------------------------------------------------
@@ -240,3 +285,124 @@ def score_candidate(
         reasons.append(RankingReason.PUBLIC_SYMBOL)
 
     return score, reasons
+
+
+def score_relationship(
+    candidate: ContextCandidate,
+    primary_symbol: ContextCandidate | None,
+    symbol_graph_view: SymbolGraphView | None,
+    relationship_enabled: bool,
+) -> tuple[int, list[RankingReason]]:
+    """Score a candidate based on relationship signals to the primary symbol.
+
+    This is a pure function that only uses the symbol graph to compute
+    relationship-based scoring signals.  It does not modify the graph.
+
+    Relationship signals:
+
+    - DIRECT_CALLER: candidate calls the primary symbol (+WEIGHT_DIRECT_CALLER)
+    - DIRECT_CALLEE: primary symbol calls the candidate (+WEIGHT_DIRECT_CALLEE)
+    - SHARED_PARENT: candidate and primary share a parent via DEFINES (+WEIGHT_SHARED_PARENT)
+    - SHARED_MODULE: candidate and primary are in the same module (+WEIGHT_SHARED_MODULE)
+    - SHARED_CLASS: candidate and primary share the same class scope (+WEIGHT_SHARED_CLASS)
+
+    Args:
+        candidate: The candidate to score.
+        primary_symbol: The primary symbol being requested.
+        symbol_graph_view: A SymbolGraphView instance for relationship lookups.
+        relationship_enabled: Whether relationship scoring is enabled.
+
+    Returns:
+        A ``(score, reasons)`` tuple.
+    """
+    from packages.context.models import ContextCandidate  # noqa: F401
+
+    if not relationship_enabled or primary_symbol is None or symbol_graph_view is None:
+        return 0, []
+
+    # Guard against synthetic or missing symbols.
+    if candidate.symbol_id == primary_symbol.symbol_id:
+        return 0, []
+
+    score = 0
+    reasons: list[RankingReason] = []
+
+    # Import the SymbolGraphView type to avoid circular imports.
+    # We use duck typing: the view must have callers(), callees(), parents(),
+    # children(), and modules() methods.
+    try:
+        # SHARED_MODULE: same module path
+        if candidate.module == primary_symbol.module:
+            score += WEIGHT_SHARED_MODULE
+            reasons.append(RankingReason.SHARED_MODULE)
+
+            # SHARED_CLASS: same class scope (same parent module and similar path prefix)
+            # Extract class scope from qualified_name: e.g. "auth.App.run" -> "auth.App"
+            candidate_class = _extract_class_scope(candidate.qualified_name)
+            primary_class = _extract_class_scope(primary_symbol.qualified_name)
+            if candidate_class and primary_class and candidate_class == primary_class:
+                score += WEIGHT_SHARED_CLASS
+                reasons.append(RankingReason.SHARED_CLASS)
+
+    except (AttributeError, TypeError):
+        # Symbol graph view doesn't have expected methods — skip relationship scoring.
+        return 0, []
+
+    # Check CALLS relationships via the symbol graph view.
+    try:
+        # DIRECT_CALLER: candidate calls the primary symbol
+        # The callers() method returns symbols that call the given symbol.
+        callers = symbol_graph_view.callers(primary_symbol)
+        for caller in callers:
+            if caller.qualified_name == candidate.qualified_name:
+                score += WEIGHT_DIRECT_CALLER
+                reasons.append(RankingReason.DIRECT_CALLER)
+                break
+
+        # DIRECT_CALLEE: primary symbol calls the candidate
+        # The callees() method returns symbols that the given symbol calls.
+        callees = symbol_graph_view.callees(primary_symbol)
+        for callee in callees:
+            if callee.qualified_name == candidate.qualified_name:
+                score += WEIGHT_DIRECT_CALLEE
+                reasons.append(RankingReason.DIRECT_CALLEE)
+                break
+
+        # SHARED_PARENT: candidate and primary share a parent via DEFINES
+        primary_parents = symbol_graph_view.parents(primary_symbol)
+        for parent in primary_parents:
+            # Check if candidate is a child of the same parent
+            candidate_children = symbol_graph_view.children(parent)
+            for child in candidate_children:
+                if child.qualified_name == candidate.qualified_name:
+                    score += WEIGHT_SHARED_PARENT
+                    reasons.append(RankingReason.SHARED_PARENT)
+                    break
+            if reasons and reasons[-1] == RankingReason.SHARED_PARENT:
+                break
+
+    except (AttributeError, TypeError):
+        # Symbol graph view doesn't have expected methods — skip relationship scoring.
+        pass
+
+    return score, reasons
+
+
+def _extract_class_scope(qualified_name: str) -> str:
+    """Extract the class scope from a qualified name.
+
+    For a method like ``auth.App.run``, returns ``auth.App``.
+    For a function like ``auth.run``, returns empty string.
+
+    Args:
+        qualified_name: A dotted qualified name.
+
+    Returns:
+        The class scope, or empty string if not a method.
+    """
+    # A method has at least 3 segments: module.Class.method
+    segments = qualified_name.split(".")
+    if len(segments) >= 3:
+        # The second-to-last segment is the class.
+        return ".".join(segments[:-1])
+    return ""

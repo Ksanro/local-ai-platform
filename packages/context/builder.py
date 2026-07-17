@@ -8,17 +8,17 @@ Architecture
 ------------
 
 Repository
-      │
-      ▼
+      |
+      v
 ContextBuilder
-      │
-      ▼
+      |
+      v
 RankingEngine
-      │
-      ▼
+      |
+      v
 ContextBudget
-      │
-      ▼
+      |
+      v
 ContextResult
 
 The Builder depends only on the public ``RepositoryIndex`` API.  It
@@ -32,6 +32,10 @@ Symbols are scored against the query text using the ``RankingEngine``,
 estimated against a token budget via ``ContextBudget``, and returned
 in relevance order, bounded by ``max_symbols`` and ``max_modules``.
 
+Relationship-aware ranking is supported via the ``SymbolGraphView``
+from the repository index.  When enabled, relationship signals are
+added to candidates and direct callers/callees may be expanded.
+
 Future extensions (semantic search, DSPARK, memory, Git awareness)
 will replace the default ranking strategy without changing the public
 API.
@@ -39,10 +43,13 @@ API.
 
 from __future__ import annotations
 
+import os
+
 from packages.context.budget import ContextBudget
 from packages.context.models import ContextCandidate, ContextQuery, ContextResult
 from packages.context.ranking import RankingEngine
 from packages.repository.index.models import RepositoryIndex
+from packages.repository.symbols.graph import SymbolGraphView
 from packages.repository.symbols.models import Symbol
 
 
@@ -62,15 +69,26 @@ class ContextBuilder:
         """
         self._index = index
 
-    def build(self, query: ContextQuery) -> ContextResult:
+    def build(
+        self,
+        query: ContextQuery,
+        primary_symbol: ContextCandidate | None = None,
+    ) -> ContextResult:
         """Build context from the given query.
 
         Enumerates all symbols from the repository, scores them against
         the query text using ``RankingEngine``, and applies
         ``max_symbols`` and ``max_modules`` constraints.
 
+        If a ``primary_symbol`` is provided and relationship-aware ranking
+        is enabled (via ``RELATIONSHIP_RANKING_ENABLED`` environment
+        variable), relationship signals are added and direct callers/callees
+        may be expanded.
+
         Args:
             query: The context query specifying text and limits.
+            primary_symbol: Optional primary symbol for relationship scoring
+                and expansion.
 
         Returns:
             A ``ContextResult`` with candidates and selected modules.
@@ -88,9 +106,28 @@ class ContextBuilder:
             for sym in all_symbols
         ]
 
+        # Build a SymbolGraphView for relationship lookups.
+        from packages.repository.symbols.graph import SymbolGraph
+
+        graph = SymbolGraph(modules=self._index.modules)
+        graph_view: SymbolGraphView = SymbolGraphView(graph)
+
+        # Determine relationship configuration from environment.
+        relationship_enabled = os.environ.get(
+            "RELATIONSHIP_RANKING_ENABLED", "true"
+        ) != "false"
+        expansion_enabled = os.environ.get(
+            "RELATIONSHIP_EXPANSION_ENABLED", "true"
+        ) != "false"
+
         # Rank candidates by relevance to the query text.
-        engine = RankingEngine()
-        candidates = engine.rank(query.text, candidates)
+        engine = RankingEngine(
+            symbol_graph_view=graph_view if relationship_enabled else None,
+            primary_symbol=primary_symbol if relationship_enabled else None,
+            relationship_enabled=relationship_enabled,
+            expansion_enabled=expansion_enabled,
+        )
+        candidates = engine.rank(query.text, candidates, max_tokens=query.max_tokens)
 
         # Apply max_symbols limit (0 means no candidates).
         if query.max_symbols > 0:
