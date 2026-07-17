@@ -112,13 +112,17 @@ class ContextBuilder:
         graph = SymbolGraph(modules=self._index.modules)
         graph_view: SymbolGraphView = SymbolGraphView(graph)
 
-        # Determine relationship configuration from environment.
-        relationship_enabled = os.environ.get(
-            "RELATIONSHIP_RANKING_ENABLED", "true"
-        ) != "false"
-        expansion_enabled = os.environ.get(
-            "RELATIONSHIP_EXPANSION_ENABLED", "true"
-        ) != "false"
+        # Determine relationship configuration from the query (driven by
+        # ContextPlan) with environment-variable fallback for backward
+        # compatibility.
+        relationship_enabled = (
+            os.environ.get("RELATIONSHIP_RANKING_ENABLED", "true") != "false"
+            and query.relationship_expansion
+        )
+        expansion_enabled = (
+            os.environ.get("RELATIONSHIP_EXPANSION_ENABLED", "true") != "false"
+            and query.relationship_expansion
+        )
 
         # Rank candidates by relevance to the query text.
         engine = RankingEngine(

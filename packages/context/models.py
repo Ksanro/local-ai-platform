@@ -21,12 +21,16 @@ class ContextQuery:
         max_symbols: Maximum number of symbols to return.
         max_modules: Maximum number of unique modules in the result.
         max_tokens: Maximum token budget for the assembled context.
+        maximum_depth: Maximum relationship traversal depth (from ContextPlan).
+        relationship_expansion: Whether to expand relationships (from ContextPlan).
     """
 
     text: str
     max_symbols: int = 20
     max_modules: int = 10
     max_tokens: int = 4096
+    maximum_depth: int = 1
+    relationship_expansion: bool = True
 
 
 @dataclass

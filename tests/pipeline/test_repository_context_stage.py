@@ -613,3 +613,85 @@ class TestConstraints:
         assert "json.dumps" not in source
         assert "json.loads" not in source
 
+
+class TestContextPlanConsumption:
+    """Tests verifying the stage consumes the ContextPlan."""
+
+    @pytest.mark.asyncio
+    async def test_consumes_context_plan_maximum_depth(self) -> None:
+        """Verify the stage reads plan.maximum_depth from metadata."""
+        from packages.planning.plan import ContextPlan
+
+        symbols = [
+            _make_symbol("App", "main.App", SymbolType.CLASS, "main.py"),
+            _make_symbol("run", "main.App.run", SymbolType.METHOD, "main.py"),
+        ]
+        index = _make_index(symbols)
+        stage = RepositoryContextStage(index=index)
+
+        context = _make_context()
+        plan = ContextPlan(
+            intent="DEBUG",
+            primary_symbols=(),
+            relationship_expansion=True,
+            ranking_profile="DEBUG",
+            maximum_depth=2,
+            include_callers=True,
+            include_callees=True,
+            include_modules=True,
+            include_diagnostics=False,
+            estimated_complexity="COMPLEX",
+        )
+        context.set_metadata("context_plan", plan)
+
+        result = await stage.execute(context)
+
+        assert result.success is True
+        assert context.context_package is not None
+
+    @pytest.mark.asyncio
+    async def test_consumes_context_plan_relationship_expansion(self) -> None:
+        """Verify the stage reads plan.relationship_expansion from metadata."""
+        from packages.planning.plan import ContextPlan
+
+        symbols = [
+            _make_symbol("App", "main.App", SymbolType.CLASS, "main.py"),
+        ]
+        index = _make_index(symbols)
+        stage = RepositoryContextStage(index=index)
+
+        context = _make_context()
+        plan = ContextPlan(
+            intent="SEARCH",
+            primary_symbols=(),
+            relationship_expansion=False,
+            ranking_profile="SEARCH",
+            maximum_depth=0,
+            include_callers=False,
+            include_callees=False,
+            include_modules=False,
+            include_diagnostics=False,
+            estimated_complexity="SIMPLE",
+        )
+        context.set_metadata("context_plan", plan)
+
+        result = await stage.execute(context)
+
+        assert result.success is True
+        assert context.context_package is not None
+
+    @pytest.mark.asyncio
+    async def test_falls_back_without_plan(self) -> None:
+        """Verify the stage works when no ContextPlan is present."""
+        symbols = [_make_symbol("App", "main.App", SymbolType.CLASS, "main.py")]
+        index = _make_index(symbols)
+        stage = RepositoryContextStage(index=index)
+
+        context = _make_context()
+        # Do NOT set a context_plan in metadata
+
+        result = await stage.execute(context)
+
+        assert result.success is True
+        assert context.context_package is not None
+

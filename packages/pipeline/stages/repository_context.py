@@ -153,12 +153,27 @@ class RepositoryContextStage(PipelineStage):
             query_text = self._extract_query(context)
 
             # Build context from the repository index.
-            query = ContextQuery(
-                text=query_text,
-                max_symbols=20,
-                max_modules=10,
-                max_tokens=4096,
-            )
+            # Read the ContextPlan from metadata -- it is the single source
+            # of truth for retrieval configuration.  When no plan is present
+            # (planning disabled or not yet run), fall back to safe defaults.
+            plan = context.get_metadata("context_plan")
+
+            if plan is not None:
+                query = ContextQuery(
+                    text=query_text,
+                    max_symbols=20,
+                    max_modules=10,
+                    max_tokens=4096,
+                    maximum_depth=plan.maximum_depth,
+                    relationship_expansion=plan.relationship_expansion,
+                )
+            else:
+                query = ContextQuery(
+                    text=query_text,
+                    max_symbols=20,
+                    max_modules=10,
+                    max_tokens=4096,
+                )
 
             builder = ContextBuilder(self._index)
             context_result = builder.build(query)
