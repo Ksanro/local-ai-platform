@@ -171,8 +171,16 @@ class RuleEngine:
 
         Args:
             rules: Optional custom rule list. Defaults to BUILTIN_RULES.
+
+        Raises:
+            ValueError: If custom rules are provided without a DEFAULT rule.
         """
-        self._rules = rules if rules is not None else BUILTIN_RULES
+        rules = rules if rules is not None else BUILTIN_RULES
+        self._rules = rules
+        # Validate that a DEFAULT rule exists when custom rules are used.
+        # This prevents silent fallback to undefined behavior per-request.
+        if rules is not BUILTIN_RULES and not any(r.intent == "DEFAULT" for r in self._rules):
+            raise ValueError("Custom rules must include a DEFAULT rule")
 
     @property
     def rules(self) -> tuple[PlanningRule, ...]:

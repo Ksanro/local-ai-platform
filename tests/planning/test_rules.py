@@ -149,7 +149,7 @@ class TestRuleEngine:
         assert engine.rules == BUILTIN_RULES
 
     def test_rule_engine_custom_rules(self):
-        """RuleEngine accepts custom rules."""
+        """RuleEngine accepts custom rules with DEFAULT fallback."""
         custom_rules = (
             PlanningRule(
                 intent="CUSTOM",
@@ -160,6 +160,16 @@ class TestRuleEngine:
                 include_modules=False,
                 include_diagnostics=False,
                 ranking_profile="CUSTOM",
+            ),
+            PlanningRule(
+                intent="DEFAULT",
+                relationship_expansion=False,
+                maximum_depth=0,
+                include_callers=False,
+                include_callees=False,
+                include_modules=True,
+                include_diagnostics=False,
+                ranking_profile="DEFAULT",
             ),
         )
         engine = RuleEngine(rules=custom_rules)
@@ -315,6 +325,16 @@ class TestFirstMatchBehaviour:
                 include_modules=False,
                 include_diagnostics=True,
                 ranking_profile="SECOND",
+            ),
+            PlanningRule(
+                intent="DEFAULT",
+                relationship_expansion=False,
+                maximum_depth=0,
+                include_callers=False,
+                include_callees=False,
+                include_modules=True,
+                include_diagnostics=False,
+                ranking_profile="DEFAULT",
             ),
         )
         engine = RuleEngine(rules=custom_rules)

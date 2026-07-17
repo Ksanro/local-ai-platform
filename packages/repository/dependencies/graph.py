@@ -34,9 +34,10 @@ class WorkspaceDependencyGraph:
         _edges: All graph edges as a frozenset.
         _outgoing: Adjacency list for outgoing edges (dependencies).
         _incoming: Adjacency list for incoming edges (dependents).
+        _node_lookup: O(1) lookup dict mapping qualified_name → GraphNode.
     """
 
-    __slots__ = ("_nodes", "_edges", "_outgoing", "_incoming")
+    __slots__ = ("_nodes", "_edges", "_outgoing", "_incoming", "_node_lookup")
 
     def __init__(
         self,
@@ -57,6 +58,10 @@ class WorkspaceDependencyGraph:
         self._edges = edges
         self._outgoing = outgoing
         self._incoming = incoming
+        # Build O(1) node lookup dict for efficient traversal.
+        self._node_lookup: dict[str, GraphNode] = {
+            node.qualified_name: node for node in nodes
+        }
 
     # ------------------------------------------------------------------
     # Accessors
@@ -225,6 +230,10 @@ class WorkspaceDependencyGraph:
     ) -> list[GraphNode]:
         """Perform BFS traversal from a starting node.
 
+        Nodes are marked as visited at enqueue time regardless of depth
+        to prevent redundant enqueuing. The depth budget is checked
+        separately from the visited set.
+
         Args:
             start: The starting node.
             adjacency: Adjacency list (outgoing or incoming).
@@ -246,21 +255,26 @@ class WorkspaceDependencyGraph:
             for neighbor in neighbors:
                 if neighbor.qualified_name == exclude:
                     continue
+                # Mark visited at enqueue time regardless of depth
+                # to prevent redundant enqueuing on asymmetric graphs.
                 if neighbor.qualified_name in visited:
                     continue
 
                 new_depth = current_depth + 1
 
-                # Only add to visited and queue if within depth limit.
+                # Only enqueue if within depth budget.
                 if depth == -1 or new_depth <= depth:
                     visited.add(neighbor.qualified_name)
                     queue.append((neighbor, new_depth))
+                # Nodes reached beyond the depth budget are marked
+                # visited but not queued — preventing re-discovery
+                # via other paths at the same or greater depth.
 
         # Build result from visited set, excluding the start node.
         result: list[GraphNode] = []
         for node_name in visited:
             if node_name != exclude:
-                node = self._find_node_by_name(self._nodes, node_name)
+                node = self._node_lookup.get(node_name)
                 if node is not None:
                     result.append(node)
 
@@ -305,13 +319,13 @@ class WorkspaceDependencyGraph:
         if direction == "out":
             for edge in self._edges:
                 if edge.source == node.qualified_name and edge.edge_type == edge_type:
-                    node_obj = self._find_node_by_name(self._nodes, edge.target)
+                    node_obj = self._node_lookup.get(edge.target)
                     if node_obj is not None:
                         result.add(node_obj)
         else:
             for edge in self._edges:
                 if edge.target == node.qualified_name and edge.edge_type == edge_type:
-                    node_obj = self._find_node_by_name(self._nodes, edge.source)
+                    node_obj = self._node_lookup.get(edge.source)
                     if node_obj is not None:
                         result.add(node_obj)
 
@@ -330,7 +344,7 @@ class WorkspaceDependencyGraph:
         Returns:
             The ``GraphNode`` if found, otherwise ``None``.
         """
-        return self._find_node_by_name(self._nodes, qualified_name)
+        return self._node_lookup.get(qualified_name)
 
     # ------------------------------------------------------------------
     # Representation

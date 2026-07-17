@@ -12,7 +12,8 @@ and metrics.
 
 from __future__ import annotations
 
+from packages.pipeline.stages.planning_stage import PlanningStage
 from packages.pipeline.stages.repository_context import RepositoryContextStage
 from packages.pipeline.stages.stages import ProviderStage
 
-__all__ = ["ProviderStage", "RepositoryContextStage"]
+__all__ = ["PlanningStage", "ProviderStage", "RepositoryContextStage"]

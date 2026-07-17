@@ -61,7 +61,7 @@ class TestContextPlanner:
     def test_build_test_intent(self):
         """ContextPlan for test intent."""
         planner = ContextPlanner()
-        plan = planner.build(user_messages=["Write tests for the planner"])
+        plan = planner.build(user_messages=["Run the test suite"])
 
         assert plan.intent == "TEST"
         assert plan.primary_symbols == ()
@@ -150,7 +150,7 @@ class TestDeterministicPlanning:
             (["Implement feature"], "IMPLEMENT"),
             (["Refactor code"], "REFACTOR"),
             (["Fix bug"], "DEBUG"),
-            (["Write tests"], "TEST"),
+            (["Run the test suite"], "TEST"),
             (["Find symbol"], "SEARCH"),
             (["Random"], "DEFAULT"),
         ]

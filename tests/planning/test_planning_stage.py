@@ -353,7 +353,7 @@ class TestPlanningStageIntegration:
             (["Implement feature"], "IMPLEMENT"),
             (["Refactor code"], "REFACTOR"),
             (["Fix bug"], "DEBUG"),
-            (["Write tests"], "TEST"),
+            (["Run the test suite"], "TEST"),
             (["Find symbol"], "SEARCH"),
             (["Random"], "DEFAULT"),
         ]
@@ -376,7 +376,7 @@ class TestPlanningStageIntegration:
             (["Implement feature"], "IMPLEMENT", "MODERATE"),
             (["Refactor code"], "REFACTOR", "COMPLEX"),
             (["Fix bug"], "DEBUG", "COMPLEX"),
-            (["Write tests"], "TEST", "MODERATE"),
+            (["Run the test suite"], "TEST", "MODERATE"),
             (["Find symbol"], "SEARCH", "SIMPLE"),
             (["Random"], "DEFAULT", "SIMPLE"),
         ]

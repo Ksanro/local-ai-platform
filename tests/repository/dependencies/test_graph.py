@@ -1096,3 +1096,205 @@ class TestBuilderConstruction:
         graph = DependencyGraphBuilder().build(index)
         assert graph.edge_count() == 0
         assert graph.node_count() == 1
+
+
+# ---------------------------------------------------------------------------
+# Asymmetric diamond BFS test (visited-set bug regression)
+# ---------------------------------------------------------------------------
+
+
+class TestAsymmetricDiamondBFS:
+    """Tests for asymmetric diamond-shaped graphs at depth boundaries.
+
+    These tests verify the BFS fix where nodes are marked visited at
+    enqueue time regardless of depth, preventing redundant enqueuing
+    on asymmetric graphs.
+    """
+
+    def test_symmetric_diamond_depth_boundary(self) -> None:
+        """Diamond A->B->D, A->C->D at depth=1 should return B,C only."""
+        # Structure: A -> B, A -> C, B -> D, C -> D
+        node_a = _make_node(NodeType.CLASS, "main.A")
+        node_b = _make_node(NodeType.FUNCTION, "main.B")
+        node_c = _make_node(NodeType.FUNCTION, "main.C")
+        node_d = _make_node(NodeType.FUNCTION, "main.D")
+
+        edges = [
+            _make_edge("main.A", "main.B", GraphEdgeType.CALLS),
+            _make_edge("main.A", "main.C", GraphEdgeType.CALLS),
+            _make_edge("main.B", "main.D", GraphEdgeType.CALLS),
+            _make_edge("main.C", "main.D", GraphEdgeType.CALLS),
+        ]
+
+        outgoing = {
+            "main.A": [node_b, node_c],
+            "main.B": [node_d],
+            "main.C": [node_d],
+            "main.D": [],
+        }
+        incoming = {
+            "main.B": [node_a],
+            "main.C": [node_a],
+            "main.D": [node_b, node_c],
+            "main.A": [],
+        }
+
+        graph = WorkspaceDependencyGraph(
+            nodes=frozenset([node_a, node_b, node_c, node_d]),
+            edges=frozenset(edges),
+            outgoing=outgoing,
+            incoming=incoming,
+        )
+
+        # Depth 1: only direct deps (B and C)
+        deps1 = graph.transitive_dependencies(node_a, depth=1)
+        assert len(deps1) == 2
+        assert node_b in deps1
+        assert node_c in deps1
+        assert node_d not in deps1
+
+        # Depth 2: includes D (reached via both B and C)
+        deps2 = graph.transitive_dependencies(node_a, depth=2)
+        assert len(deps2) == 3
+        assert node_b in deps2
+        assert node_c in deps2
+        assert node_d in deps2
+
+    def test_asymmetric_diamond_depth_boundary(self) -> None:
+        """Asymmetric diamond: A->B(depth1), A->C(depth1), B->C(depth2), B->D(depth2), C->D(depth2).
+
+        At depth=2, C is reachable at depth 1 (direct) and also via B at depth 2.
+        C should be returned exactly once. D is reachable at depth 2 via both B and C.
+        D should be returned exactly once.
+        """
+        node_a = _make_node(NodeType.CLASS, "main.A")
+        node_b = _make_node(NodeType.FUNCTION, "main.B")
+        node_c = _make_node(NodeType.FUNCTION, "main.C")
+        node_d = _make_node(NodeType.FUNCTION, "main.D")
+
+        # A -> B, A -> C, B -> C, B -> D, C -> D
+        # This creates an asymmetric diamond where C is reachable via
+        # two paths: A->C (depth 1) and A->B->C (depth 2)
+        edges = [
+            _make_edge("main.A", "main.B", GraphEdgeType.CALLS),
+            _make_edge("main.A", "main.C", GraphEdgeType.CALLS),
+            _make_edge("main.B", "main.C", GraphEdgeType.CALLS),
+            _make_edge("main.B", "main.D", GraphEdgeType.CALLS),
+            _make_edge("main.C", "main.D", GraphEdgeType.CALLS),
+        ]
+
+        outgoing = {
+            "main.A": [node_b, node_c],
+            "main.B": [node_c, node_d],
+            "main.C": [node_d],
+            "main.D": [],
+        }
+        incoming = {
+            "main.B": [node_a],
+            "main.C": [node_a, node_b],
+            "main.D": [node_b, node_c],
+            "main.A": [],
+        }
+
+        graph = WorkspaceDependencyGraph(
+            nodes=frozenset([node_a, node_b, node_c, node_d]),
+            edges=frozenset(edges),
+            outgoing=outgoing,
+            incoming=incoming,
+        )
+
+        # Depth 1: only direct deps (B and C)
+        deps1 = graph.transitive_dependencies(node_a, depth=1)
+        assert len(deps1) == 2
+        assert node_b in deps1
+        assert node_c in deps1
+
+        # Depth 2: B->D and C->D should both be reachable
+        # C is already at depth 1, so it should appear once
+        # D is at depth 2 via B or C, should appear once
+        deps2 = graph.transitive_dependencies(node_a, depth=2)
+        assert len(deps2) == 3
+        assert node_b in deps2
+        assert node_c in deps2
+        assert node_d in deps2
+
+    def test_no_duplicate_nodes_in_result(self) -> None:
+        """BFS should never return the same node twice in the result."""
+        node_a = _make_node(NodeType.CLASS, "main.A")
+        node_b = _make_node(NodeType.FUNCTION, "main.B")
+        node_c = _make_node(NodeType.FUNCTION, "main.C")
+        node_d = _make_node(NodeType.FUNCTION, "main.D")
+
+        # Multiple paths to D: A->B->D and A->C->D
+        edges = [
+            _make_edge("main.A", "main.B", GraphEdgeType.CALLS),
+            _make_edge("main.A", "main.C", GraphEdgeType.CALLS),
+            _make_edge("main.B", "main.D", GraphEdgeType.CALLS),
+            _make_edge("main.C", "main.D", GraphEdgeType.CALLS),
+        ]
+
+        outgoing = {
+            "main.A": [node_b, node_c],
+            "main.B": [node_d],
+            "main.C": [node_d],
+            "main.D": [],
+        }
+        incoming = {
+            "main.B": [node_a],
+            "main.C": [node_a],
+            "main.D": [node_b, node_c],
+            "main.A": [],
+        }
+
+        graph = WorkspaceDependencyGraph(
+            nodes=frozenset([node_a, node_b, node_c, node_d]),
+            edges=frozenset(edges),
+            outgoing=outgoing,
+            incoming=incoming,
+        )
+
+        all_deps = graph.transitive_dependencies(node_a, depth=-1)
+        # All nodes should appear exactly once
+        qualified_names = [n.qualified_name for n in all_deps]
+        assert len(qualified_names) == len(set(qualified_names))
+        assert len(all_deps) == 3
+
+    def test_unlimited_depth_returns_all_reachable(self) -> None:
+        """depth=-1 should return all reachable nodes regardless of graph shape."""
+        node_a = _make_node(NodeType.CLASS, "main.A")
+        node_b = _make_node(NodeType.FUNCTION, "main.B")
+        node_c = _make_node(NodeType.FUNCTION, "main.C")
+        node_d = _make_node(NodeType.FUNCTION, "main.D")
+
+        edges = [
+            _make_edge("main.A", "main.B", GraphEdgeType.CALLS),
+            _make_edge("main.A", "main.C", GraphEdgeType.CALLS),
+            _make_edge("main.B", "main.D", GraphEdgeType.CALLS),
+            _make_edge("main.C", "main.D", GraphEdgeType.CALLS),
+        ]
+
+        outgoing = {
+            "main.A": [node_b, node_c],
+            "main.B": [node_d],
+            "main.C": [node_d],
+            "main.D": [],
+        }
+        incoming = {
+            "main.B": [node_a],
+            "main.C": [node_a],
+            "main.D": [node_b, node_c],
+            "main.A": [],
+        }
+
+        graph = WorkspaceDependencyGraph(
+            nodes=frozenset([node_a, node_b, node_c, node_d]),
+            edges=frozenset(edges),
+            outgoing=outgoing,
+            incoming=incoming,
+        )
+
+        all_deps = graph.transitive_dependencies(node_a, depth=-1)
+        assert len(all_deps) == 3
+        assert node_b in all_deps
+        assert node_c in all_deps
+        assert node_d in all_deps

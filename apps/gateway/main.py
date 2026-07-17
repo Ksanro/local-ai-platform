@@ -16,7 +16,7 @@ from apps.gateway.core.config import get_settings
 from apps.gateway.core.logging import setup_logging
 from apps.gateway.middleware import RequestMiddleware, TimingMiddleware
 from packages.pipeline.engine import PipelineEngine
-from packages.pipeline.stages import ProviderStage
+from packages.pipeline.stages import PlanningStage, ProviderStage
 from packages.pipeline.stages.repository_context import RepositoryContextStage
 from packages.providers import _load_providers
 from packages.providers.factory import create_provider
@@ -48,10 +48,13 @@ async def lifespan(app: FastAPI):
         provider = create_provider(default)
         app.state.provider = provider
         engine = PipelineEngine()
+        # Planning stage runs before repository context to produce
+        # context_plan metadata that RepositoryContextStage consumes.
+        engine.register(PlanningStage())
         # Repository context stage runs before provider execution.
-        # Pass None as graph_view until repository scanning is wired up;
-        # the stage handles this gracefully (no-op when graph_view is None).
-        engine.register(RepositoryContextStage(graph_view=None))
+        # index=None disables context assembly until repository scanning
+        # is wired up; the stage handles this gracefully (no-op when index is None).
+        engine.register(RepositoryContextStage(index=None))
         engine.register(ProviderStage(provider))
         app.state.pipeline = engine
 

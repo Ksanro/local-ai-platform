@@ -48,3 +48,24 @@ def test_create_app_registers_all_routes() -> None:
 
     expected = {"/health", "/version", "/v1/chat/completions"}
     assert paths == expected
+
+
+def test_lifespan_runs_without_error() -> None:
+    """Verify the lifespan context manager runs without raising exceptions.
+
+    This test enters the lifespan via TestClient to catch startup
+    errors (e.g., TypeError from incorrect kwarg names) that route-
+    only tests miss.
+    """
+    from contextlib import asynccontextmanager
+
+    import pytest
+    from starlette.testclient import TestClient
+
+    app = create_app()
+    # TestClient as a context manager enters and exits the lifespan.
+    # If lifespan raises, the test fails.
+    with TestClient(app, raise_server_exceptions=False) as client:
+        # A basic request to verify the app is operational.
+        response = client.get("/health")
+        assert response.status_code == 200
