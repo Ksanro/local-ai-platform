@@ -1,0 +1,27 @@
+{
+    "description": "Golden snapshot for DEBUG intent benchmark case.",
+    "benchmark_id": "debug",
+    "query": "Debug ProviderFactory registration",
+    "planner_intent": "DEBUG",
+    "expected_symbols": [
+        "packages.providers.factory.ProviderFactory",
+        "packages.providers.factory.ProviderFactory.create",
+        "packages.providers.factory.ProviderFactory.register",
+        "packages.providers.registry.ProviderRegistry",
+        "packages.providers.registry.ProviderRegistry.register",
+        "packages.providers.registry.ProviderRegistry.get_registry"
+    ],
+    "expected_modules": [
+        "packages/providers/factory.py",
+        "packages/providers/registry.py",
+        "packages/providers/base.py"
+    ],
+    "expected_relationships": [
+        "packages.providers.factory.ProviderFactory.create→packages.providers.registry.ProviderRegistry.get",
+        "packages.providers.factory.ProviderFactory.register→packages.providers.registry.ProviderRegistry.register",
+        "packages.providers.registry.ProviderRegistry.register→packages.providers.base.ProviderBase"
+    ],
+    "max_context_tokens": 4096,
+    "tags": ["debug", "provider", "registration"],
+    "notes": "This snapshot captures the expected retrieval output for a DEBUG query about ProviderFactory registration. DEBUG intent includes diagnostics and deeper relationship expansion."
+}

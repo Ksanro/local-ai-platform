@@ -1,0 +1,23 @@
+{
+    "description": "Golden snapshot for EXPLAIN intent benchmark case.",
+    "benchmark_id": "explain",
+    "query": "Explain ProviderFactory",
+    "planner_intent": "EXPLAIN",
+    "expected_symbols": [
+        "packages.providers.factory.ProviderFactory",
+        "packages.providers.factory.ProviderFactory.create",
+        "packages.providers.factory.ProviderFactory._resolve_config"
+    ],
+    "expected_modules": [
+        "packages/providers/factory.py",
+        "packages/providers/registry.py",
+        "packages/providers/base.py"
+    ],
+    "expected_relationships": [
+        "packages.providers.factory.ProviderFactory.create→packages.providers.registry.ProviderRegistry.get_registry",
+        "packages.providers.factory.ProviderFactory._resolve_config→packages.providers.registry.ProviderRegistry.get_default_config"
+    ],
+    "max_context_tokens": 4096,
+    "tags": ["explain", "provider", "factory"],
+    "notes": "This snapshot captures the expected retrieval output for an EXPLAIN query about ProviderFactory. Future commits compare actual results against these golden values to detect retrieval regressions."
+}

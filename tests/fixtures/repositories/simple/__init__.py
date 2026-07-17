@@ -1,0 +1,1 @@
+"""Simple fixture repository for benchmark testing."""

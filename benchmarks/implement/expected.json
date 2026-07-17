@@ -1,0 +1,27 @@
+{
+    "description": "Golden snapshot for IMPLEMENT intent benchmark case.",
+    "benchmark_id": "implement",
+    "query": "Add New Provider",
+    "planner_intent": "IMPLEMENT",
+    "expected_symbols": [
+        "packages.providers.base.ProviderBase",
+        "packages.providers.base.ProviderBase.execute",
+        "packages.providers.base.ProviderBase.health_check",
+        "packages.providers.base.ProviderBase.initialize",
+        "packages.providers.registry.ProviderRegistry",
+        "packages.providers.registry.ProviderRegistry.register",
+        "packages.providers.registry.ProviderRegistry.get"
+    ],
+    "expected_modules": [
+        "packages/providers/base.py",
+        "packages/providers/registry.py",
+        "packages/providers/factory.py"
+    ],
+    "expected_relationships": [
+        "packages.providers.factory.ProviderFactory.create→packages.providers.registry.ProviderRegistry.get",
+        "packages.providers.registry.ProviderRegistry.register→packages.providers.base.ProviderBase"
+    ],
+    "max_context_tokens": 4096,
+    "tags": ["implement", "provider", "new"],
+    "notes": "This snapshot captures the expected retrieval output for an IMPLEMENT query about adding a new provider. IMPLEMENT intent focuses on callees and implementation details."
+}
