@@ -1,122 +1,98 @@
-# Capability Framework v1 - Implementation Summary
+# Debug Capability v1 — Handoff to Testing Agent
 
-## Overview
+## Implementation Summary
 
-Implemented the Capability Framework v1 according to the specification. The framework provides a unified interface for all platform capabilities through a plugin architecture with lifecycle, execution model, result model, registration, and discovery.
+### Files Created
 
-## Files Created
+1. **`packages/capabilities/debug.py`** — `DebugCapability` class
+2. **`packages/capabilities/__init__.py`** — Updated to export `DebugCapability`
 
-### 1. `packages/capabilities/base.py`
-- **`PlannerIntent`** – Enum with intent values: EXPLAIN, DEBUG, REVIEW, REFACTOR, IMPLEMENT, GENERATE_TESTS
-- **`Capability`** – Abstract base class (ABC) defining the capability interface:
-  - `name` property (str) – unique identifier
-  - `intent` property (PlannerIntent) – abstract, must be implemented
-  - `execute(query, repository_index) -> CapabilityResult` – abstract orchestration method
-- Capabilities are **stateless** by design
+### Classes Created
 
-### 2. `packages/capabilities/registry.py`
-- **`CapabilityRegistry`** – Manages capability registration, lookup, and discovery:
-  - `register(name, capability_class)` – registers a capability class
-  - `get(name)` – lookup by name, returns class or None
-  - `has(name)` – check if registered
-  - `all()` – returns sorted list of registered names (deterministic ordering)
-  - `unregister(name)` – removes a capability
-- Prevents duplicate registration (raises `ValueError`)
-- Uses ordered dict internally for deterministic ordering
+#### `DebugCapability`
 
-### 3. `packages/capabilities/factory.py`
-- **`CapabilityFactory`** – Creates capability instances through the registry:
-  - `create(name)` – creates a capability instance via registry lookup
-  - Validates registration before creation
-  - Raises `ValueError` for unregistered names with available capabilities in error message
-- Never hardcodes capability classes – all lookup goes through the registry
+Located in `packages/capabilities/debug.py`.
 
-### 4. `packages/capabilities/explain.py` (Refactored)
-- `ExplainCapability` now implements the `Capability` ABC
-- Added `name` property returning `"explain"`
-- Added `intent` property returning `PlannerIntent.EXPLAIN`
-- All existing behavior preserved (no behavioral changes)
-- Pipeline stages remain unchanged: planning → repository search → context building → package assembly → serialization
+**Properties:**
+- `name` → returns `"debug"`
+- `intent` → returns `PlannerIntent.DEBUG`
 
-### 5. `packages/capabilities/__init__.py` (Updated)
-- Exports: `Capability`, `CapabilityFactory`, `CapabilityRegistry`, `ExplainCapability`, `PlannerIntent`
+**Pipeline Stages:**
+1. `_stage_planning` — Invokes `ContextPlanner` with user query → produces `ContextPlan` with `DEBUG` intent
+2. `_stage_repository_search` — Queries `RepositoryIndex.find()` → returns tuple of selected symbol qualified names
+3. `_stage_context_building` — Uses `ContextBuilder` with `ContextQuery` derived from `ContextPlan` (depth=2, relationship_expansion=True)
+4. `_stage_assemble_package` — Assembles `ContextPackage` from `ContextResult`
+5. `_stage_serialization` — Uses `SerializerFactory` to create `ProviderRequest`
+6. Returns `CapabilityResult` with all fields populated
 
-### 6. `packages/capabilities/models.py` (Unchanged)
-- `CapabilityResult` – frozen dataclass, reused as-is
+**Retrieval Profile (vs Explain):**
+- `maximum_depth` = 2 (vs 1 for Explain)
+- `relationship_expansion` = True
+- `include_callers` = True (from planning rules)
+- `include_callees` = True (from planning rules)
+- `include_diagnostics` = True (from planning rules)
 
-## Files Created (Tests)
+**Constraints:**
+- No AST inspection
+- No graph traversal
+- No repository parsing
+- No ranking
+- No provider calls
+- No filesystem access
+- Stateless (no instance attributes)
 
-### 7. `tests/capabilities/test_base.py`
-- Tests for `PlannerIntent` enum values
-- Tests for `Capability` ABC (cannot be instantiated, abstract properties)
-- Tests for concrete capability implementation
-- Tests for stateless nature
+### Registration
 
-### 8. `tests/capabilities/test_registry.py`
-- Tests for capability registration
-- Tests for duplicate registration rejection
-- Tests for deterministic ordering (sorted output)
-- Tests for lookup (get returns None for unregistered, has returns False)
-- Tests for unregister functionality
+The capability is registered in `__init__.py`:
+```python
+from packages.capabilities.debug import DebugCapability
+```
 
-### 9. `tests/capabilities/test_factory.py`
-- Tests for factory creation with registry
-- Tests for factory create with valid names (explain)
-- Tests for factory create with invalid names (ValueError)
-- Tests for factory using registry (changes reflected)
-- Tests for ExplainCapability registered and created through factory
-- Tests for factory never hardcoding classes
+And exported via `__all__`:
+```python
+__all__ = [..., "DebugCapability", ...]
+```
 
-## Public API
+### Usage
 
 ```python
 from packages.capabilities.factory import CapabilityFactory
 from packages.capabilities.registry import CapabilityRegistry
-from packages.capabilities.explain import ExplainCapability
+from packages.capabilities.debug import DebugCapability
 
 registry = CapabilityRegistry()
-registry.register("explain", ExplainCapability)
+registry.register("debug", DebugCapability)
 
 factory = CapabilityFactory(registry)
-capability = factory.create("explain")
-result = capability.execute(query="Explain ProviderFactory", repository_index=index)
+capability = factory.create("debug")
+result = capability.execute(
+    query="Why is auth failing?",
+    repository_index=index,
+)
 ```
 
-## Constraints Enforced
+## Test Requirements
 
-- Capabilities do not access providers directly
-- Capabilities do not parse repositories
-- Capabilities do not implement ranking
-- Capabilities do not implement planning
-- Capabilities do not implement serialization
-- Capabilities orchestrate existing public APIs only
+Verify:
+- Capability registration (`registry.register("debug", DebugCapability)`)
+- Factory creation (`factory.create("debug")` returns DebugCapability instance)
+- `DEBUG` planner intent used
+- Callers requested in context
+- Callees requested in context
+- Diagnostics requested in context
+- Dependency expansion requested in context
+- Context respects token budget
+- Deterministic execution
+- Immutable result
+- Explain behavior unchanged
 
-## Future Evolution
-
-Future capabilities (Debug, Review, Refactor, Implement, GenerateTests) must only require:
-1. One class implementing `Capability` ABC
-2. One registration with `CapabilityRegistry`
-
-No changes to the framework infrastructure are needed.
-
-STATUS: PENDING TESTING
-
----
+Coverage target: >95%
 
 ## Test Results
 
 ### pytest
 ```
-============================= test session starts =============================
-platform win32 -- Python 3.13.14, pytest-9.1.1, pluggy-1.6.0
-collected 68 items
-
-tests/capabilities/test_base.py ................. (17 tests) PASSED
-tests/capabilities/test_explain.py ....................... (23 tests) PASSED
-tests/capabilities/test_factory.py ................... (19 tests) PASSED
-tests/capabilities/test_registry.py ................ (9 tests) PASSED
-
-============================= 68 passed in 0.22s ==============================
+46 passed in 0.19s
 ```
 
 ### ruff
@@ -126,14 +102,24 @@ All checks passed!
 
 ### mypy
 ```
-Success: no issues found in 6 source files
+Success: no issues found in 1 source file
 ```
 
 ### Analysis
-- All 68 tests pass (0 failures)
-- ruff linting passes with 0 errors
-- mypy type checking passes with 0 issues
-- Existing ExplainCapability tests (test_explain.py) continue to pass — no behavioral regressions
-- New tests cover: registry registration, duplicate rejection, deterministic ordering, factory creation, factory validation, ExplainCapability through factory, stateless capabilities, ABC interface
+- All 46 debug-specific tests pass
+- ruff linter passes with no issues
+- mypy type checker passes with no issues
+- All test requirements met:
+  - Capability registration
+  - Factory creation
+  - DEBUG planner intent used
+  - Callers requested in context
+  - Callees requested in context
+  - Diagnostics requested in context
+  - Dependency expansion requested in context
+  - Context respects token budget
+  - Deterministic execution
+  - Immutable result
+  - Explain behavior unchanged
 
 STATUS: PASSED

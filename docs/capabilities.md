@@ -240,6 +240,90 @@ The `CapabilityResult` is an immutable dataclass with these fields:
 | `estimated_tokens` | `int` | Estimated token count |
 | `execution_time_ms` | `float` | Execution time in milliseconds |
 
+## Debug Capability
+
+The **Debug** capability diagnoses errors and produces fix suggestions. It expands the retrieval scope using diagnostics, callers, callees, dependency information and impact analysis.
+
+### Execution Flow
+
+```
+User Query ("Why is auth failing?")
+    ↓
+ContextPlanner (DEBUG intent)
+    ↓
+RepositoryIndex.find()
+    ↓
+ContextBuilder (depth=2, relationship_expansion=True)
+    ↓
+ContextPackage assembly (callers + callees + diagnostics + dependencies)
+    ↓
+Serializer
+    ↓
+CapabilityResult
+```
+
+### Pipeline Stages
+
+1. **Planning** — The `ContextPlanner` detects `DEBUG` intent and produces a `ContextPlan` with diagnostic rules.
+
+2. **Repository Search** — The `RepositoryIndex` is queried for symbols matching the query.
+
+3. **Context Building** — The `ContextBuilder` assembles context with **depth=2** and **relationship expansion enabled**, retrieving callers, callees, and diagnostics.
+
+4. **Package Assembly** — The `ContextPackage` includes primary symbol, supporting symbols, callers, callees, related modules, and diagnostics.
+
+5. **Serialization** — The `SerializerFactory` creates a provider-specific serializer.
+
+6. **Result** — All results are aggregated into an immutable `CapabilityResult`.
+
+### Retrieval Profile
+
+| Option | Debug Value | Explain Value |
+|--------|-------------|---------------|
+| `maximum_depth` | 2 | 1 |
+| `relationship_expansion` | True | False |
+| `include_callers` | True | False |
+| `include_callees` | True | False |
+| `include_diagnostics` | True | False |
+| `include_dependencies` | True | False |
+
+### Implementation
+
+```python
+from packages.capabilities.base import Capability, PlannerIntent
+from packages.capabilities.models import CapabilityResult
+
+class DebugCapability(Capability):
+
+    @property
+    def name(self) -> str:
+        return "debug"
+
+    @property
+    def intent(self) -> PlannerIntent:
+        return PlannerIntent.DEBUG
+
+    def execute(self, query: str, repository_index: RepositoryIndex) -> CapabilityResult:
+        # Stage 1: Planning (DEBUG intent)
+        # Stage 2: Repository search
+        # Stage 3: Context building (depth=2, relationship_expansion)
+        # Stage 4: Package assembly (callers + callees + diagnostics)
+        # Stage 5: Serialization
+        # Aggregate into CapabilityResult
+        ...
+```
+
+### Retrieval Strategy vs Explain
+
+Debug defines **retrieval strategy**, not retrieval algorithms. All expansion logic comes from existing public APIs.
+
+| Capability | Context Strategy |
+|------------|------------------|
+| Explain | minimal — symbol + immediate context |
+| Debug | expanded — callers, callees, diagnostics, dependencies |
+
+The important architectural rule: **Capabilities define retrieval strategy, not retrieval algorithms.** The Repository, Planning, Ranking and Context packages remain the only owners of their respective logic.
+
 ## Future Capabilities
 
 Future capabilities must require **one class and one registration**. No changes
