@@ -57,7 +57,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any
 
-from packages.context.package import ContextPackage
+from packages.context.context_package import ContextPackage
 from packages.serializers.models import ProviderRequest
 from packages.serializers.types import ProviderType
 

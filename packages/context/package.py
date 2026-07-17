@@ -1,26 +1,20 @@
 """Context Package models.
 
-Defines the structured representation produced by the Context Composer.
+Defines the structured representation produced by the Context Builder.
 This is the internal platform model — not a provider payload.
 
 Architecture
 ------------
 
 Context Builder
-       │
-       ▼
-Ranking Engine
-       │
-       ▼
-Context Budget
-       │
-       ▼
-Context Composer
-       │
-       ▼
-ContextPackage
-       │
-       ▼
+       |
+       v
+Context Package v2
+       |
+       v
+Serializer
+       |
+       v
 Provider (serialises)
 
 The Context Package is **not**
@@ -46,16 +40,33 @@ Public API
 
 .. code-block:: python
 
+    from packages.context.context_package import ContextPackage
+
+    package = ContextPackage(
+        primary_symbol="auth.AuthenticationMiddleware",
+        supporting_symbols=["auth.middleware.JWTAuth"],
+        related_callers=["main.create_app"],
+        related_callees=["auth.Tokens.create_token"],
+        related_modules=["auth.py", "main.py"],
+        estimated_tokens=230,
+    )
+
+Backward-Compatible Legacy API
+------------------------------
+
+The legacy ``ContextPackage`` (with ``query``, ``modules``, ``symbols``,
+``metadata``) is still exported for consumers that have not yet migrated.
+It is a thin wrapper around the structured model.
+
+.. code-block:: python
+
+    from packages.context.package import ContextPackage
+
     package = ContextPackage(
         query="authentication middleware",
         modules=["auth.py", "main.py"],
         symbols=["auth.AuthenticationMiddleware", "main.App"],
-        metadata={
-            "estimated_tokens": 230,
-            "estimated_symbols": 2,
-            "estimated_modules": 2,
-            "truncated": False,
-        },
+        metadata={"estimated_tokens": 230},
     )
 """
 
@@ -64,22 +75,26 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from packages.context.context_package import (
+    ContextMetadata,
+    RelationshipSummary,
+)
+from packages.context.context_package import (
+    ContextPackage as ContextPackageStructured,
+)
 
-@dataclass(frozen=True)
-class ContextMetadata:
-    """Budget metadata attached to a context package.
+# Re-export the new models for direct import.
+__all__ = [
+    "ContextMetadata",
+    "ContextPackage",
+    "ContextPackageStructured",
+    "RelationshipSummary",
+]
 
-    Attributes:
-        estimated_tokens: Estimated token count for the context.
-        estimated_symbols: Number of unique symbols in the context.
-        estimated_modules: Number of unique modules in the context.
-        truncated: Whether the context was truncated to fit the budget.
-    """
 
-    estimated_tokens: int = 0
-    estimated_symbols: int = 0
-    estimated_modules: int = 0
-    truncated: bool = False
+# ------------------------------------------------------------------
+# Legacy alias — backward compatible
+# ------------------------------------------------------------------
 
 
 @dataclass(frozen=True)

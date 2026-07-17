@@ -24,7 +24,7 @@ from unittest.mock import patch
 
 import pytest
 
-from packages.context.package import ContextPackage
+from packages.context.context_package import ContextPackage
 from packages.pipeline.base import PipelineStage
 from packages.pipeline.context import PipelineContext
 from packages.pipeline.engine import PipelineEngine
@@ -96,9 +96,17 @@ def _make_index(symbols: list[Any]) -> Any:
             modules[sym.module] = Module(path=sym.module)
         modules[sym.module].symbols.append(sym)
 
-    class_count = sum(1 for s in symbols if getattr(s, "symbol_type", None) == SymbolType.CLASS)
-    function_count = sum(1 for s in symbols if getattr(s, "symbol_type", None) == SymbolType.FUNCTION)
-    method_count = sum(1 for s in symbols if getattr(s, "symbol_type", None) == SymbolType.METHOD)
+    class_count = sum(
+        1 for s in symbols if getattr(s, "symbol_type", None) == SymbolType.CLASS
+    )
+    function_count = sum(
+        1
+        for s in symbols
+        if getattr(s, "symbol_type", None) == SymbolType.FUNCTION
+    )
+    method_count = sum(
+        1 for s in symbols if getattr(s, "symbol_type", None) == SymbolType.METHOD
+    )
 
     statistics = RepositoryStatistics(
         module_count=len(modules),
@@ -202,7 +210,7 @@ class TestContextEnabled:
         assert result.success is True
         assert context.context_package is not None
         assert isinstance(context.context_package, ContextPackage)
-        assert len(context.context_package.symbols) > 0
+        assert len(context.context_package.supporting_symbols) > 0
 
     @pytest.mark.asyncio
     async def test_provider_request_created(self) -> None:
@@ -237,7 +245,8 @@ class TestContextEnabled:
         all_content = " ".join(
             str(msg.get("content", "")) for msg in provider_request.messages
         )
-        assert "Repository symbols" in all_content or "main.App" in all_content
+        # The serializer uses the new ContextPackage v2 format.
+        assert "Primary symbol:" in all_content or "main.App" in all_content
 
 
 # ------------------------------------------------------------------
@@ -662,8 +671,8 @@ class TestDeterministicExecution:
         await stage.execute(context)
 
         assert context.context_package is not None
-        assert context.context_package.symbols == []
-        assert context.context_package.modules == []
+        assert context.context_package.supporting_symbols == []
+        assert context.context_package.related_modules == []
 
     @pytest.mark.asyncio
     async def test_pipeline_deterministic_with_mock_provider(self) -> None:

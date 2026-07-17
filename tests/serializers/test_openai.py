@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from packages.context.package import ContextPackage
+from packages.context.context_package import ContextMetadata, ContextPackage
 from packages.serializers.exceptions import SerializationFormatError
 from packages.serializers.models import ProviderRequest
 from packages.serializers.openai import OpenAISerializer
@@ -63,10 +63,12 @@ class TestOpenAISerializer:
     ) -> None:
         """Verify repository context is included when symbols are present."""
         context_package = ContextPackage(
-            query="authentication middleware",
-            modules=["auth.py", "main.py"],
-            symbols=["auth.AuthenticationMiddleware", "main.App"],
-            metadata={"estimated_tokens": 230},
+            primary_symbol="auth.AuthenticationMiddleware",
+            supporting_symbols=["main.App"],
+            related_callers=["main.create_app"],
+            related_callees=["auth.Token.create"],
+            related_modules=["auth.py", "main.py"],
+            metadata=ContextMetadata(estimated_tokens=230),
         )
         messages = [{"role": "user", "content": "How does auth work?"}]
 
@@ -76,9 +78,9 @@ class TestOpenAISerializer:
         assert len(result.messages) == 3
         assert result.messages[0]["role"] == "system"
         assert result.messages[1]["role"] == "user"
-        assert "Repository symbols:" in result.messages[1]["content"]
+        assert "Primary symbol:" in result.messages[1]["content"]
         assert "auth.AuthenticationMiddleware" in result.messages[1]["content"]
-        assert "Relevant modules:" in result.messages[1]["content"]
+        assert "Related modules:" in result.messages[1]["content"]
         assert result.messages[2]["role"] == "user"
         assert result.messages[2]["content"] == "How does auth work?"
 
@@ -86,11 +88,7 @@ class TestOpenAISerializer:
         self, serializer: OpenAISerializer
     ) -> None:
         """Verify empty context package omits repository context."""
-        context_package = ContextPackage(
-            query="",
-            modules=[],
-            symbols=[],
-        )
+        context_package = ContextPackage()
         messages = [{"role": "user", "content": "Hello"}]
 
         result = serializer.serialize(context_package, messages)
@@ -167,9 +165,9 @@ class TestOpenAISerializer:
     ) -> None:
         """Verify serialization is deterministic — identical input produces identical output."""
         context_package = ContextPackage(
-            query="test query",
-            modules=["a.py", "b.py"],
-            symbols=["A", "B"],
+            primary_symbol="A",
+            supporting_symbols=["B"],
+            related_modules=["a.py", "b.py"],
         )
         messages = [
             {"role": "user", "content": "Hello"},
@@ -188,9 +186,9 @@ class TestOpenAISerializer:
     ) -> None:
         """Verify serialization has no side effects."""
         context_package = ContextPackage(
-            query="test",
-            modules=["test.py"],
-            symbols=["Test"],
+            primary_symbol="Test",
+            supporting_symbols=[],
+            related_modules=["test.py"],
         )
         messages = [{"role": "user", "content": "Test"}]
 
@@ -214,16 +212,16 @@ class TestOpenAIWithSymbols:
     ) -> None:
         """Verify symbols are included in repository context."""
         context_package = ContextPackage(
-            query="find the login function",
-            modules=["auth.py"],
-            symbols=["auth.login", "auth.authenticate"],
+            primary_symbol="auth.login",
+            supporting_symbols=["auth.authenticate"],
+            related_modules=["auth.py"],
         )
         messages = [{"role": "user", "content": "Where is login?"}]
 
         result = serializer.serialize(context_package, messages)
 
         repo_msg = result.messages[1]
-        assert "Repository symbols:" in repo_msg["content"]
+        assert "Primary symbol:" in repo_msg["content"]
         assert "auth.login" in repo_msg["content"]
         assert "auth.authenticate" in repo_msg["content"]
 
@@ -232,35 +230,57 @@ class TestOpenAIWithSymbols:
     ) -> None:
         """Verify modules are included in repository context."""
         context_package = ContextPackage(
-            query="test",
-            modules=["auth.py", "main.py", "utils.py"],
-            symbols=["auth.login"],
+            primary_symbol="auth.login",
+            supporting_symbols=[],
+            related_modules=["auth.py", "main.py", "utils.py"],
         )
         messages = [{"role": "user", "content": "Test"}]
 
         result = serializer.serialize(context_package, messages)
 
         repo_msg = result.messages[1]
-        assert "Relevant modules:" in repo_msg["content"]
+        assert "Related modules:" in repo_msg["content"]
         assert "auth.py" in repo_msg["content"]
         assert "main.py" in repo_msg["content"]
         assert "utils.py" in repo_msg["content"]
 
-    def test_query_included_in_context(
+    def test_callers_included_when_present(
         self, serializer: OpenAISerializer
     ) -> None:
-        """Verify user query is included in repository context."""
+        """Verify callers are included in repository context."""
         context_package = ContextPackage(
-            query="find the login function",
-            modules=["auth.py"],
-            symbols=["auth.login"],
+            primary_symbol="auth.login",
+            supporting_symbols=[],
+            related_callers=["main.create_app", "router.register"],
+            related_modules=["auth.py"],
         )
         messages = [{"role": "user", "content": "Help"}]
 
         result = serializer.serialize(context_package, messages)
 
         repo_msg = result.messages[1]
-        assert "User query: find the login function" in repo_msg["content"]
+        assert "Related callers:" in repo_msg["content"]
+        assert "main.create_app" in repo_msg["content"]
+        assert "router.register" in repo_msg["content"]
+
+    def test_callees_included_when_present(
+        self, serializer: OpenAISerializer
+    ) -> None:
+        """Verify callees are included in repository context."""
+        context_package = ContextPackage(
+            primary_symbol="auth.login",
+            supporting_symbols=[],
+            related_callees=["auth.Token.create", "auth.JWT.verify"],
+            related_modules=["auth.py"],
+        )
+        messages = [{"role": "user", "content": "Help"}]
+
+        result = serializer.serialize(context_package, messages)
+
+        repo_msg = result.messages[1]
+        assert "Related callees:" in repo_msg["content"]
+        assert "auth.Token.create" in repo_msg["content"]
+        assert "auth.JWT.verify" in repo_msg["content"]
 
 
 class TestOpenAIEdgeCases:
@@ -274,11 +294,7 @@ class TestOpenAIEdgeCases:
         self, serializer: OpenAISerializer
     ) -> None:
         """Verify no repository context message when symbols are empty."""
-        context_package = ContextPackage(
-            query="",
-            modules=[],
-            symbols=[],
-        )
+        context_package = ContextPackage()
         messages = [{"role": "user", "content": "Hello"}]
 
         result = serializer.serialize(context_package, messages)
@@ -291,11 +307,7 @@ class TestOpenAIEdgeCases:
         self, serializer: OpenAISerializer
     ) -> None:
         """Verify only system message when context is empty."""
-        context_package = ContextPackage(
-            query="",
-            modules=[],
-            symbols=[],
-        )
+        context_package = ContextPackage()
         messages = [{"role": "user", "content": "Hello"}]
 
         result = serializer.serialize(context_package, messages)
@@ -348,3 +360,34 @@ class TestOpenAIEdgeCases:
         assert result["messages"] == [{"role": "user", "content": "Hello"}]
         assert result["model"] == "gpt-4"
         assert result["temperature"] == 0.7
+
+    def test_relationship_summary_in_output(
+        self, serializer: OpenAISerializer
+    ) -> None:
+        """Verify relationship summary appears in output."""
+        from packages.context.context_package import RelationshipSummary
+
+        context_package = ContextPackage(
+            primary_symbol="auth.Auth",
+            supporting_symbols=["auth.Helper"],
+            related_callers=["main.create_app"],
+            related_callees=["auth.Token.create"],
+            related_modules=["auth.py", "main.py"],
+            relationship_summary=RelationshipSummary(
+                caller_count=1,
+                callee_count=1,
+                module_count=2,
+                symbol_count=3,
+            ),
+        )
+        messages = [{"role": "user", "content": "Test"}]
+
+        result = serializer.serialize(context_package, messages)
+
+        repo_msg = result.messages[1]
+        assert "Relationship summary:" in repo_msg["content"]
+        assert "1 callers" in repo_msg["content"]
+        assert "1 callees" in repo_msg["content"]
+        assert "2 modules" in repo_msg["content"]
+        assert "3 symbols" in repo_msg["content"]
+

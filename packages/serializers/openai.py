@@ -18,8 +18,12 @@ Message Ordering
 ----------------
 
 1. System message (platform system message).
-2. Repository context (from ContextPackage symbols, if available).
-3. Original user messages (copied unchanged).
+2. Primary Symbol section (from ContextPackage).
+3. Supporting Symbols section.
+4. Related Callers section.
+5. Related Callees section.
+6. Related Modules section.
+7. Original user messages (copied unchanged).
 
 Serialization Rules
 -------------------
@@ -46,7 +50,7 @@ Public API
 .. code-block:: python
 
     from packages.serializers.openai import OpenAISerializer
-    from packages.context.package import ContextPackage
+    from packages.context.context_package import ContextPackage
 
     serializer = OpenAISerializer()
 
@@ -61,7 +65,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from packages.context.package import ContextPackage
+from packages.context.context_package import ContextPackage
 from packages.serializers.base import ProviderSerializer
 from packages.serializers.exceptions import SerializationFormatError
 from packages.serializers.models import ProviderRequest
@@ -98,8 +102,12 @@ class OpenAISerializer(ProviderSerializer):
         Builds the message list following the ordering rules:
 
         1. System message (platform system message).
-        2. Repository context (if ContextPackage has symbols).
-        3. Original user messages (copied unchanged).
+        2. Primary Symbol section (if ContextPackage has a primary symbol).
+        3. Supporting Symbols section (if ContextPackage has supporting symbols).
+        4. Related Callers section (if ContextPackage has callers).
+        5. Related Callees section (if ContextPackage has callees).
+        6. Related Modules section (if ContextPackage has modules).
+        7. Original user messages (copied unchanged).
 
         Args:
             context_package: The platform context package, or ``None``.
@@ -130,7 +138,7 @@ class OpenAISerializer(ProviderSerializer):
             all_messages.append(system_message)
 
         # Repository context is included only when ContextPackage
-        # contains symbols. If no symbols, omit repository context.
+        # contains structured data.
         repo_context = self._build_repository_context(context_package)
         if repo_context is not None:
             all_messages.append(repo_context)
@@ -210,8 +218,15 @@ class OpenAISerializer(ProviderSerializer):
         """Build the repository context message.
 
         Includes repository context only when ContextPackage contains
-        symbols. If no symbols are present, returns ``None`` to omit
-        repository context.
+        structured data. If no primary symbol, callers, callees, or
+        modules are present, returns ``None`` to omit repository context.
+
+        Section ordering:
+        1. Primary Symbol
+        2. Supporting Symbols
+        3. Related Callers
+        4. Related Callees
+        5. Related Modules
 
         Args:
             context_package: The platform context package, or ``None``.
@@ -222,24 +237,58 @@ class OpenAISerializer(ProviderSerializer):
         if context_package is None:
             return None
 
-        if not context_package.symbols:
+        # Check if there's any structured content.
+        has_content = (
+            context_package.primary_symbol
+            or context_package.supporting_symbols
+            or context_package.related_callers
+            or context_package.related_callees
+            or context_package.related_modules
+        )
+        if not has_content:
             return None
 
-        # Build repository context from symbols and modules.
+        # Build repository context from structured sections.
         parts: list[str] = []
 
-        if context_package.symbols:
-            parts.append("Repository symbols:")
-            for symbol in context_package.symbols:
+        # Primary Symbol
+        if context_package.primary_symbol:
+            parts.append(f"Primary symbol: {context_package.primary_symbol}")
+
+        # Supporting Symbols
+        if context_package.supporting_symbols:
+            parts.append("Supporting symbols:")
+            for symbol in context_package.supporting_symbols:
                 parts.append(f"  - {symbol}")
 
-        if context_package.modules:
-            parts.append("Relevant modules:")
-            for module in context_package.modules:
+        # Related Callers
+        if context_package.related_callers:
+            parts.append("Related callers:")
+            for symbol in context_package.related_callers:
+                parts.append(f"  - {symbol}")
+
+        # Related Callees
+        if context_package.related_callees:
+            parts.append("Related callees:")
+            for symbol in context_package.related_callees:
+                parts.append(f"  - {symbol}")
+
+        # Related Modules
+        if context_package.related_modules:
+            parts.append("Related modules:")
+            for module in context_package.related_modules:
                 parts.append(f"  - {module}")
 
-        if context_package.query:
-            parts.append(f"\nUser query: {context_package.query}")
+        # Relationship Summary (metadata only, no source code)
+        if context_package.relationship_summary.symbol_count > 0:
+            summary = context_package.relationship_summary
+            parts.append(
+                f"Relationship summary: "
+                f"{summary.caller_count} callers, "
+                f"{summary.callee_count} callees, "
+                f"{summary.module_count} modules, "
+                f"{summary.symbol_count} symbols"
+            )
 
         return {
             "role": "user",

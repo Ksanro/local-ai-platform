@@ -47,6 +47,29 @@ def _ensure_providers_loaded() -> None:
 
 
 @pytest.fixture(autouse=True)
+def _ensure_serializers_loaded() -> None:
+    """Ensure serializer modules are imported and registered.
+
+    Serializers register themselves in the global registry when their
+    module is imported. This fixture guarantees that import happens
+    before any test runs, so the registry is populated regardless of
+    test execution order.
+    """
+    # Import the module to trigger auto-registration.
+    import packages.serializers.openai  # noqa: F401
+
+    # Ensure the serializer is actually registered (re-register if it was
+    # unregistered by a previous test).
+    from packages.serializers.registry import has_serializer, register
+    from packages.serializers.types import ProviderType
+
+    if not has_serializer(ProviderType.openai):
+        from packages.serializers.openai import OpenAISerializer
+
+        register(ProviderType.openai, OpenAISerializer)
+
+
+@pytest.fixture(autouse=True)
 def _guard_network_calls(request: pytest.FixtureRequest) -> Generator[None, None, None]:
     """Prevent unit tests from making real network calls.
 

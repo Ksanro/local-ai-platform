@@ -45,8 +45,8 @@ import time
 
 from packages.context.builder import ContextBuilder
 from packages.context.composer import ContextComposer
+from packages.context.context_package import ContextPackage
 from packages.context.models import ContextQuery
-from packages.context.package import ContextPackage
 from packages.pipeline.base import PipelineStage
 from packages.pipeline.context import PipelineContext
 from packages.pipeline.result import PipelineStageResult
@@ -178,9 +178,9 @@ class RepositoryContextStage(PipelineStage):
 
             elapsed_ms = (time.perf_counter() - start_time) * 1000
 
-            symbols_selected = len(package.symbols)
-            modules_selected = len(package.modules)
-            estimated_tokens = package.metadata.get("estimated_tokens", 0)
+            symbols_selected = len(package.supporting_symbols)
+            modules_selected = len(package.related_modules)
+            estimated_tokens = package.estimated_tokens
 
             logger.info(
                 "repository_context request_id=%s context_enabled=%s "

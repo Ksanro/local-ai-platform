@@ -51,13 +51,17 @@ API.
 from packages.context.budget import ContextBudget
 from packages.context.builder import ContextBuilder
 from packages.context.composer import ContextComposer
+from packages.context.context_package import (
+    ContextMetadata,
+    ContextPackage,
+    RelationshipSummary,
+)
 from packages.context.models import (
     ContextBudgetResult,
     ContextCandidate,
     ContextQuery,
     ContextResult,
 )
-from packages.context.package import ContextMetadata, ContextPackage
 from packages.context.query import normalise_query
 from packages.context.ranking import RankingEngine
 from packages.context.scoring import RankingReason
@@ -74,5 +78,6 @@ __all__ = [
     "ContextResult",
     "RankingEngine",
     "RankingReason",
+    "RelationshipSummary",
     "normalise_query",
 ]

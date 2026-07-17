@@ -12,7 +12,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
-from packages.context.package import ContextPackage
+from packages.context.context_package import ContextPackage
 from packages.pipeline.result import PipelineStageResult
 
 

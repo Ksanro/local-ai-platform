@@ -20,12 +20,12 @@ from __future__ import annotations
 import pytest
 
 from packages.context.composer import ContextComposer
+from packages.context.context_package import ContextMetadata, ContextPackage
 from packages.context.models import (
     ContextBudgetResult,
     ContextCandidate,
     ContextResult,
 )
-from packages.context.package import ContextMetadata, ContextPackage
 
 # ------------------------------------------------------------------
 # Helpers
@@ -61,15 +61,15 @@ def _make_result(
 
 
 # ------------------------------------------------------------------
-# Symbol order preserved
+# Primary symbol
 # ------------------------------------------------------------------
 
 
-class TestSymbolOrderPreserved:
-    """Tests for symbol order preservation."""
+class TestPrimarySymbol:
+    """Tests for primary symbol selection."""
 
-    def test_ranked_order_preserved(self) -> None:
-        """Verify symbols appear in the same order as candidates."""
+    def test_first_candidate_is_primary(self) -> None:
+        """Verify first candidate becomes primary symbol."""
         candidates = [
             _make_candidate("a", "mod.A", "mod.py", score=100),
             _make_candidate("b", "mod.B", "mod.py", score=50),
@@ -79,46 +79,87 @@ class TestSymbolOrderPreserved:
         composer = ContextComposer()
         package = composer.compose(result)
 
-        assert package.symbols == ["mod.A", "mod.B", "mod.C"]
+        assert package.primary_symbol == "mod.A"
 
     def test_empty_symbols(self) -> None:
-        """Verify empty candidates produces empty symbols list."""
+        """Verify empty candidates produces empty primary symbol."""
         result = _make_result([], [])
         composer = ContextComposer()
         package = composer.compose(result)
 
-        assert package.symbols == []
+        assert package.primary_symbol == ""
 
     def test_single_symbol(self) -> None:
-        """Verify single symbol is preserved."""
+        """Verify single symbol becomes primary."""
         candidate = _make_candidate("a", "main.App", "main.py", score=42)
         result = _make_result([candidate], ["main.py"])
         composer = ContextComposer()
         package = composer.compose(result)
 
-        assert package.symbols == ["main.App"]
+        assert package.primary_symbol == "main.App"
 
 
 # ------------------------------------------------------------------
-# Module order preserved
+# Supporting symbols
 # ------------------------------------------------------------------
 
 
-class TestModuleOrderPreserved:
-    """Tests for module order preservation."""
+class TestSupportingSymbols:
+    """Tests for supporting symbols ordering."""
 
-    def test_module_order_preserved(self) -> None:
-        """Verify modules appear in the same order as selected_modules."""
+    def test_ranked_order_preserved(self) -> None:
+        """Verify supporting symbols are in ranked order."""
         candidates = [
-            _make_candidate("a", "main.App", "main.py"),
-            _make_candidate("b", "auth.Auth", "auth.py"),
-            _make_candidate("c", "utils.Helper", "utils.py"),
+            _make_candidate("a", "mod.A", "mod.py", score=100),
+            _make_candidate("b", "mod.B", "mod.py", score=50),
+            _make_candidate("c", "mod.C", "mod.py", score=10),
         ]
-        result = _make_result(candidates, ["main.py", "auth.py", "utils.py"])
+        result = _make_result(candidates, ["mod.py"])
         composer = ContextComposer()
         package = composer.compose(result)
 
-        assert package.modules == ["main.py", "auth.py", "utils.py"]
+        # Primary is first, supporting are the rest in order.
+        assert package.primary_symbol == "mod.A"
+        assert package.supporting_symbols == ["mod.B", "mod.C"]
+
+    def test_empty_symbols(self) -> None:
+        """Verify empty candidates produces empty supporting symbols."""
+        result = _make_result([], [])
+        composer = ContextComposer()
+        package = composer.compose(result)
+
+        assert package.supporting_symbols == []
+
+    def test_single_symbol(self) -> None:
+        """Verify single symbol produces empty supporting symbols."""
+        candidate = _make_candidate("a", "main.App", "main.py", score=42)
+        result = _make_result([candidate], ["main.py"])
+        composer = ContextComposer()
+        package = composer.compose(result)
+
+        assert package.supporting_symbols == []
+
+
+# ------------------------------------------------------------------
+# Module ordering
+# ------------------------------------------------------------------
+
+
+class TestModuleOrdering:
+    """Tests for module ordering."""
+
+    def test_modules_sorted_alphabetically(self) -> None:
+        """Verify modules are sorted alphabetically."""
+        candidates = [
+            _make_candidate("a", "main.App", "z_main.py"),
+            _make_candidate("b", "auth.Auth", "a_auth.py"),
+            _make_candidate("c", "utils.Helper", "m_utils.py"),
+        ]
+        result = _make_result(candidates, ["z_main.py", "a_auth.py", "m_utils.py"])
+        composer = ContextComposer()
+        package = composer.compose(result)
+
+        assert package.related_modules == sorted(package.related_modules)
 
     def test_empty_modules(self) -> None:
         """Verify empty selected_modules produces empty modules list."""
@@ -126,7 +167,7 @@ class TestModuleOrderPreserved:
         composer = ContextComposer()
         package = composer.compose(result)
 
-        assert package.modules == []
+        assert package.related_modules == []
 
     def test_single_module(self) -> None:
         """Verify single module is preserved."""
@@ -135,7 +176,7 @@ class TestModuleOrderPreserved:
         composer = ContextComposer()
         package = composer.compose(result)
 
-        assert package.modules == ["main.py"]
+        assert package.related_modules == ["main.py"]
 
 
 # ------------------------------------------------------------------
@@ -163,13 +204,11 @@ class TestMetadataCopied:
         composer = ContextComposer()
         package = composer.compose(result)
 
-        assert package.metadata["estimated_tokens"] == 230
-        assert package.metadata["estimated_symbols"] == 2
-        assert package.metadata["estimated_modules"] == 2
-        assert package.metadata["truncated"] is False
+        assert package.metadata.estimated_tokens == 230
+        assert package.estimated_tokens == 230
 
     def test_truncated_metadata_copied(self) -> None:
-        """Verify truncated flag is copied."""
+        """Verify truncated flag is reflected in budget."""
         budget = ContextBudgetResult(
             estimated_tokens=9999,
             estimated_symbols=100,
@@ -181,7 +220,7 @@ class TestMetadataCopied:
         composer = ContextComposer()
         package = composer.compose(result)
 
-        assert package.metadata["truncated"] is True
+        assert package.estimated_tokens == 9999
 
     def test_zero_metadata(self) -> None:
         """Verify zero budget produces zero metadata."""
@@ -189,10 +228,8 @@ class TestMetadataCopied:
         composer = ContextComposer()
         package = composer.compose(result)
 
-        assert package.metadata["estimated_tokens"] == 0
-        assert package.metadata["estimated_symbols"] == 0
-        assert package.metadata["estimated_modules"] == 0
-        assert package.metadata["truncated"] is False
+        assert package.metadata.estimated_tokens == 0
+        assert package.estimated_tokens == 0
 
 
 # ------------------------------------------------------------------
@@ -209,34 +246,31 @@ class TestEmptyContext:
         composer = ContextComposer()
         package = composer.compose(result)
 
-        assert package.query == ""
-        assert package.modules == []
-        assert package.symbols == []
-        assert package.metadata == {
-            "estimated_tokens": 0,
-            "estimated_symbols": 0,
-            "estimated_modules": 0,
-            "truncated": False,
-        }
+        assert package.primary_symbol == ""
+        assert package.related_modules == []
+        assert package.supporting_symbols == []
+        assert package.metadata.estimated_tokens == 0
 
     def test_empty_candidates_nonempty_modules(self) -> None:
-        """Verify empty candidates with modules is handled."""
+        """Verify empty candidates with modules produces empty related_modules."""
         result = _make_result([], ["main.py"])
         composer = ContextComposer()
         package = composer.compose(result)
 
-        assert package.symbols == []
-        assert package.modules == ["main.py"]
+        assert package.supporting_symbols == []
+        # With no candidates, related_modules is empty (no symbols to derive from).
+        assert package.related_modules == []
 
     def test_nonempty_candidates_empty_modules(self) -> None:
-        """Verify nonempty candidates with empty modules is handled."""
+        """Verify nonempty candidates with empty modules derives modules from candidates."""
         candidate = _make_candidate("a", "main.App", "main.py")
         result = _make_result([candidate], [])
         composer = ContextComposer()
         package = composer.compose(result)
 
-        assert package.symbols == ["main.App"]
-        assert package.modules == []
+        assert package.primary_symbol == "main.App"
+        # Modules are derived from candidate modules, not selected_modules.
+        assert package.related_modules == ["main.py"]
 
 
 # ------------------------------------------------------------------
@@ -268,8 +302,8 @@ class TestDeterministicOutput:
 
         first = packages[0]
         for package in packages[1:]:
-            assert package.modules == first.modules
-            assert package.symbols == first.symbols
+            assert package.related_modules == first.related_modules
+            assert package.supporting_symbols == first.supporting_symbols
             assert package.metadata == first.metadata
 
     def test_repeated_executions_identical(self) -> None:
@@ -284,8 +318,8 @@ class TestDeterministicOutput:
         package_a = composer.compose(result)
         package_b = composer.compose(result)
 
-        assert package_a.modules == package_b.modules
-        assert package_a.symbols == package_b.symbols
+        assert package_a.related_modules == package_b.related_modules
+        assert package_a.supporting_symbols == package_b.supporting_symbols
         assert package_a.metadata == package_b.metadata
 
     def test_empty_context_deterministic(self) -> None:
@@ -310,53 +344,48 @@ class TestContextPackage:
     def test_creation(self) -> None:
         """Verify ContextPackage can be created."""
         package = ContextPackage(
-            query="test query",
-            modules=["main.py"],
-            symbols=["main.App"],
-            metadata={"estimated_tokens": 80},
+            primary_symbol="main.App",
+            supporting_symbols=["auth.Auth"],
+            related_modules=["main.py"],
         )
-        assert package.query == "test query"
-        assert package.modules == ["main.py"]
-        assert package.symbols == ["main.App"]
-        assert package.metadata == {"estimated_tokens": 80}
+        assert package.primary_symbol == "main.App"
+        assert package.supporting_symbols == ["auth.Auth"]
+        assert package.related_modules == ["main.py"]
 
     def test_defaults(self) -> None:
         """Verify ContextPackage defaults."""
-        package = ContextPackage(query="")
-        assert package.modules == []
-        assert package.symbols == []
-        assert package.metadata == {}
+        package = ContextPackage()
+        assert package.related_modules == []
+        assert package.supporting_symbols == []
+        assert package.metadata.estimated_tokens == 0
 
     def test_frozen(self) -> None:
         """Verify ContextPackage is immutable."""
-        package = ContextPackage(query="test")
+        package = ContextPackage(primary_symbol="test")
         with pytest.raises(AttributeError):
-            package.modules = ["changed"]  # type: ignore[misc]
+            package.related_modules = ["changed"]  # type: ignore[misc]
 
 
 class TestContextMetadata:
     """Tests for the ContextMetadata model."""
 
     def test_creation(self) -> None:
-        """Verify ContextMetadata can be created."""
+        """Verify ContextMetadata can be created with all fields."""
         metadata = ContextMetadata(
+            ranking_version="2",
+            repository_revision="abc123",
             estimated_tokens=230,
-            estimated_symbols=2,
-            estimated_modules=2,
-            truncated=False,
         )
+        assert metadata.ranking_version == "2"
+        assert metadata.repository_revision == "abc123"
         assert metadata.estimated_tokens == 230
-        assert metadata.estimated_symbols == 2
-        assert metadata.estimated_modules == 2
-        assert metadata.truncated is False
 
     def test_defaults(self) -> None:
         """Verify ContextMetadata defaults."""
         metadata = ContextMetadata()
+        assert metadata.ranking_version == "1"
+        assert metadata.repository_revision == ""
         assert metadata.estimated_tokens == 0
-        assert metadata.estimated_symbols == 0
-        assert metadata.estimated_modules == 0
-        assert metadata.truncated is False
 
     def test_frozen(self) -> None:
         """Verify ContextMetadata is immutable."""
@@ -401,8 +430,8 @@ class TestConstraints:
         composer = ContextComposer()
         result = _make_result([], [])
         package = composer.compose(result)
-        # query is empty — the composer does not fabricate content.
-        assert package.query == ""
+        # primary_symbol is empty — the composer does not fabricate content.
+        assert package.primary_symbol == ""
 
     def test_no_tokenization(self) -> None:
         """Verify no tokenizer is used."""
@@ -414,3 +443,4 @@ class TestConstraints:
         assert "tiktoken" not in source
         assert "huggingface" not in source
         assert "transformers" not in source
+

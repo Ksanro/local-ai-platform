@@ -14,7 +14,6 @@ from packages.context.query import normalise_query
 from packages.repository.index.models import (
     Module,
     Relationship,
-    RelationshipType,
     RepositoryIndex,
     RepositoryStatistics,
     Symbol,

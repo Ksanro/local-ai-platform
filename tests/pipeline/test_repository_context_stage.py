@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 import pytest
 
-from packages.context.package import ContextPackage
+from packages.context.context_package import ContextPackage
 from packages.pipeline.base import PipelineStage
 from packages.pipeline.context import PipelineContext
 from packages.pipeline.engine import PipelineEngine
@@ -21,7 +21,6 @@ from packages.pipeline.result import PipelineStageResult
 from packages.pipeline.stages.repository_context import RepositoryContextStage
 from packages.repository.index.models import (
     Module,
-    Relationship,
     RepositoryIndex,
     RepositoryStatistics,
     Symbol,
@@ -118,12 +117,12 @@ class TestContextAttached:
         assert result.success is True
         assert context.context_package is not None
         assert isinstance(context.context_package, ContextPackage)
-        assert len(context.context_package.symbols) > 0
-        assert len(context.context_package.modules) > 0
+        assert len(context.context_package.supporting_symbols) > 0
+        assert len(context.context_package.related_modules) > 0
 
     @pytest.mark.asyncio
-    async def test_context_package_query_is_empty(self) -> None:
-        """Verify the package query is empty (composer does not fabricate)."""
+    async def test_context_package_primary_symbol_set(self) -> None:
+        """Verify the primary symbol is set to the first candidate."""
         symbols = [
             _make_symbol("App", "main.App", SymbolType.CLASS, "main.py"),
         ]
@@ -137,7 +136,7 @@ class TestContextAttached:
 
         assert result.success is True
         assert context.context_package is not None
-        assert context.context_package.query == ""
+        assert context.context_package.primary_symbol == "main.App"
 
     @pytest.mark.asyncio
     async def test_stage_result_contains_package(self) -> None:
@@ -423,8 +422,8 @@ class TestDeterministicExecution:
         assert first is not None
         for package in packages[1:]:
             assert package is not None
-            assert package.symbols == first.symbols
-            assert package.modules == first.modules
+            assert package.supporting_symbols == first.supporting_symbols
+            assert package.related_modules == first.related_modules
             assert package.metadata == first.metadata
 
     @pytest.mark.asyncio
@@ -438,8 +437,8 @@ class TestDeterministicExecution:
 
         assert result.success is True
         assert context.context_package is not None
-        assert context.context_package.symbols == []
-        assert context.context_package.modules == []
+        assert context.context_package.supporting_symbols == []
+        assert context.context_package.related_modules == []
 
 
 # ------------------------------------------------------------------
@@ -496,7 +495,7 @@ class TestLoggingFields:
         result = PipelineStageResult(
             stage_name="repository_context",
             success=True,
-            data=ContextPackage(query="test"),
+            data=ContextPackage(primary_symbol="test"),
         )
 
         logger_name = "packages.pipeline.stages.repository_context"
@@ -534,13 +533,12 @@ class TestQueryExtraction:
         result = await stage.execute(context)
         assert result.success is True
         assert context.context_package is not None
-        # The composer sets query="" (intentionally dumb).
-        # The query text is used internally for ranking but not stored.
-        assert context.context_package.query == ""
+        # Primary symbol is set to the first candidate's qualified name.
+        assert context.context_package.primary_symbol == "main.App"
 
     @pytest.mark.asyncio
     async def test_empty_messages(self) -> None:
-        """Verify empty messages produces empty query."""
+        """Verify empty messages still produces primary symbol from ranking."""
         symbols = [_make_symbol("App", "main.App", SymbolType.CLASS, "main.py")]
         index = _make_index(symbols)
         stage = RepositoryContextStage(index=index)
@@ -550,11 +548,12 @@ class TestQueryExtraction:
 
         assert result.success is True
         assert context.context_package is not None
-        assert context.context_package.query == ""
+        # Primary symbol is set from ranking, not from query.
+        assert context.context_package.primary_symbol == "main.App"
 
     @pytest.mark.asyncio
     async def test_no_user_messages(self) -> None:
-        """Verify only assistant messages produces empty query."""
+        """Verify only assistant messages still produces primary symbol."""
         symbols = [_make_symbol("App", "main.App", SymbolType.CLASS, "main.py")]
         index = _make_index(symbols)
         stage = RepositoryContextStage(index=index)
@@ -566,7 +565,8 @@ class TestQueryExtraction:
 
         assert result.success is True
         assert context.context_package is not None
-        assert context.context_package.query == ""
+        # Primary symbol is set from ranking, not from query.
+        assert context.context_package.primary_symbol == "main.App"
 
 
 # ------------------------------------------------------------------
@@ -612,3 +612,4 @@ class TestConstraints:
         source = inspect.getsource(stage_module)
         assert "json.dumps" not in source
         assert "json.loads" not in source
+
