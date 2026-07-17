@@ -1,39 +1,159 @@
 # Capabilities
 
-## Concept
+## Capability Framework v1
 
-A **capability** is a user-facing abstraction that composes existing platform
-components into coherent workflows. Each capability represents a developer task
-that the platform can solve.
+### Overview
 
-Capabilities are **orchestration only** — they do not duplicate logic. They
-invoke the public APIs of existing platform components and aggregate the
-results into an immutable output.
-
-### Architecture
+The platform exposes developer capabilities through a **reusable plugin architecture** rather than
+standalone classes. Every capability implements a common interface, shares the same lifecycle,
+execution model, result model, registration, and discovery mechanism.
 
 ```
 User Request
     ↓
-Capability (orchestration)
+CapabilityFactory.create("explain")
     ↓
-Planner → Repository → Context → Serializer
+Capability.execute(query, repository_index)
     ↓
 CapabilityResult
 ```
 
+### Architecture
+
+```
+┌──────────────────────────────────────────────────────────┐
+│                    Capability Registry                    │
+│  (registration, lookup, deterministic ordering)          │
+└──────────────────────────────────────────────────────────┘
+                          ↓
+┌──────────────────────────────────────────────────────────┐
+│                   Capability Factory                      │
+│  (create instances via registry, never hardcodes)        │
+└──────────────────────────────────────────────────────────┘
+                          ↓
+┌──────────────────────────────────────────────────────────┐
+│                  Capability (ABC)                         │
+│  name | intent | execute(query, repository_index)        │
+└──────────────────────────────────────────────────────────┘
+                          ↓
+          ┌─────────────────┼─────────────────┐
+          ↓                 ↓                 ↓
+   ExplainCapability   DebugCapability  RefactorCapability
+   (existing)          (future)         (future)
+          ↓                 ↓                 ↓
+   ContextPlanner    ContextPlanner    ContextPlanner
+   RepositoryIndex   RepositoryIndex   RepositoryIndex
+   ContextBuilder    ContextBuilder    ContextBuilder
+   Serializer        Serializer        Serializer
+          ↓                 ↓                 ↓
+   CapabilityResult  CapabilityResult  CapabilityResult
+```
+
 ### Constraints
 
-Capabilities must not
+Capabilities must **not**:
 
-- perform ranking
-- inspect AST
-- access filesystem directly
-- call providers
-- execute HTTP
+- access providers directly
+- parse repositories
+- implement ranking
+- implement planning
+- implement serialization
 - mutate platform state
 
-Only orchestration.
+Capabilities orchestrate existing public APIs only.
+
+## Public API
+
+```python
+from packages.capabilities.factory import CapabilityFactory
+from packages.capabilities.registry import CapabilityRegistry
+from packages.capabilities.explain import ExplainCapability
+
+# Register
+registry = CapabilityRegistry()
+registry.register("explain", ExplainCapability)
+
+# Create through factory
+factory = CapabilityFactory(registry)
+capability = factory.create("explain")
+
+# Execute
+result = capability.execute(
+    query="Explain ProviderFactory",
+    repository_index=index,
+)
+```
+
+## Capability Interface
+
+```python
+class Capability(ABC):
+
+    @property
+    def name(self) -> str:
+        """Unique identifier (e.g. 'explain')."""
+        ...
+
+    @property
+    def intent(self) -> PlannerIntent:
+        """Planner intent enum value."""
+        ...
+
+    def execute(
+        self,
+        query: str,
+        repository_index: RepositoryIndex,
+    ) -> CapabilityResult:
+        """Orchestrate the capability pipeline."""
+        ...
+```
+
+**Capabilities are stateless.** No instance attributes.
+
+## PlannerIntent Enum
+
+```python
+class PlannerIntent(str, Enum):
+    EXPLAIN = "EXPLAIN"
+    DEBUG = "DEBUG"
+    REVIEW = "REVIEW"
+    REFACTOR = "REFACTOR"
+    IMPLEMENT = "IMPLEMENT"
+    GENERATE_TESTS = "GENERATE_TESTS"
+```
+
+## Capability Registry
+
+Manages registration, lookup, and discovery of capabilities.
+
+```python
+from packages.capabilities.registry import CapabilityRegistry
+
+registry = CapabilityRegistry()
+registry.register("explain", ExplainCapability)  # Register
+registry.get("explain")                           # Lookup → class or None
+registry.has("explain")                           # Check → bool
+registry.all()                                    # All names → sorted list
+registry.unregister("explain")                    # Remove
+```
+
+**Deterministic ordering:** `all()` returns names sorted alphabetically.
+
+**Duplicate rejection:** Registering the same name twice raises `ValueError`.
+
+## Capability Factory
+
+Creates capability instances through the registry.
+
+```python
+from packages.capabilities.factory import CapabilityFactory
+
+factory = CapabilityFactory(registry)
+capability = factory.create("explain")  # Returns ExplainCapability instance
+```
+
+**Never hardcodes classes.** All lookup goes through the registry. Unregistered names
+raise `ValueError` with available capabilities in the error message.
 
 ## Explain Capability
 
@@ -78,16 +198,30 @@ CapabilityResult
 
 6. **Result** — All results are aggregated into an immutable `CapabilityResult`.
 
-### Public API
+### Implementation
 
 ```python
-from packages.capabilities.explain import ExplainCapability
+from packages.capabilities.base import Capability, PlannerIntent
+from packages.capabilities.models import CapabilityResult
 
-engine = ExplainCapability()
-result = engine.execute(
-    query="Explain ProviderFactory",
-    repository_index=index,
-)
+class ExplainCapability(Capability):
+
+    @property
+    def name(self) -> str:
+        return "explain"
+
+    @property
+    def intent(self) -> PlannerIntent:
+        return PlannerIntent.EXPLAIN
+
+    def execute(self, query: str, repository_index: RepositoryIndex) -> CapabilityResult:
+        # Stage 1: Planning
+        # Stage 2: Repository search
+        # Stage 3: Context building
+        # Stage 4: Package assembly
+        # Stage 5: Serialization
+        # Aggregate into CapabilityResult
+        ...
 ```
 
 ### Output
@@ -106,44 +240,76 @@ The `CapabilityResult` is an immutable dataclass with these fields:
 | `estimated_tokens` | `int` | Estimated token count |
 | `execution_time_ms` | `float` | Execution time in milliseconds |
 
-### Example
-
-```python
-from packages.capabilities.explain import ExplainCapability
-from packages.repository.index import RepositoryIndexBuilder
-
-# Build the index
-index = RepositoryIndexBuilder().build("./my-project")
-
-# Execute the capability
-engine = ExplainCapability()
-result = engine.execute(
-    query="Explain ProviderFactory",
-    repository_index=index,
-)
-
-# Access results
-print(result.intent)              # "EXPLAIN"
-print(result.selected_symbols)    # ("packages.providers.factory.ProviderFactory", ...)
-print(result.provider_request)    # ProviderRequest ready for provider consumption
-```
-
 ## Future Capabilities
 
-The following capabilities are planned and must follow the same orchestration
-model:
+Future capabilities must require **one class and one registration**. No changes
+to the framework infrastructure.
 
-| Capability | Description |
-|------------|-------------|
-| **Debug** | Diagnose errors and produce fix suggestions |
-| **Implement Feature** | Generate code for a new feature |
-| **Refactor** | Suggest refactoring changes |
-| **Review** | Review code for quality and correctness |
-| **Generate Tests** | Generate test cases for existing code |
+| Capability | Description | Intent |
+|------------|-------------|--------|
+| **Debug** | Diagnose errors and produce fix suggestions | `DEBUG` |
+| **Implement Feature** | Generate code for a new feature | `IMPLEMENT` |
+| **Refactor** | Suggest refactoring changes | `REFACTOR` |
+| **Review** | Review code for quality and correctness | `REVIEW` |
+| **Generate Tests** | Generate test cases for existing code | `GENERATE_TESTS` |
 
-Each capability will:
+### Adding a New Capability
 
-- Reuse existing public APIs only
-- Produce an immutable result
-- Stop after ProviderRequest creation (no provider execution)
-- Be fully testable with mocked components
+```python
+from packages.capabilities.base import Capability, PlannerIntent
+
+class DebugCapability(Capability):
+
+    @property
+    def name(self) -> str:
+        return "debug"
+
+    @property
+    def intent(self) -> PlannerIntent:
+        return PlannerIntent.DEBUG
+
+    def execute(self, query: str, repository_index: RepositoryIndex) -> CapabilityResult:
+        # Orchestrate existing public APIs
+        ...
+
+# Register
+registry = CapabilityRegistry()
+registry.register("debug", DebugCapability)
+
+# Use
+capability = factory.create("debug")
+result = capability.execute(query="Debug auth module", repository_index=index)
+```
+
+## Repository Index
+
+The `RepositoryIndex` provides symbol lookup across the codebase:
+
+```python
+index = RepositoryIndex(...)
+matches = index.find("ProviderFactory")  # Returns list of SymbolMatch
+```
+
+## Context Builder
+
+The `ContextBuilder` assembles ranked symbol candidates:
+
+```python
+from packages.context.builder import ContextBuilder
+from packages.context.models import ContextQuery
+
+query = ContextQuery(text="Explain ProviderFactory", max_symbols=20)
+builder = ContextBuilder(index=index)
+result = builder.build(query=query)
+```
+
+## Serializer
+
+The `SerializerFactory` creates provider-specific serializers:
+
+```python
+from packages.serializers.factory import SerializerFactory
+from packages.serializers.types import ProviderType
+
+serializer = SerializerFactory.create(ProviderType.openai)
+provider_request = serializer.serialize(context_package=package, messages=messages)

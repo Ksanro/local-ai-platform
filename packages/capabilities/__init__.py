@@ -16,10 +16,27 @@ Public API
 
 .. code-block:: python
 
+    from packages.capabilities.factory import CapabilityFactory
+    from packages.capabilities.registry import CapabilityRegistry
     from packages.capabilities.explain import ExplainCapability
 
-    engine = ExplainCapability()
-    result = engine.execute(query="Explain ProviderFactory", repository_index=index)
+    registry = CapabilityRegistry()
+    registry.register("explain", ExplainCapability)
+
+    factory = CapabilityFactory(registry)
+    capability = factory.create("explain")
+    result = capability.execute(
+        query="Explain ProviderFactory",
+        repository_index=index,
+    )
+
+Capability Framework v1
+-----------------------
+
+- **Capability** – ABC that defines the interface for all capabilities.
+- **CapabilityRegistry** – manages registration, lookup, and discovery.
+- **CapabilityFactory** – creates capability instances through the registry.
+- **PlannerIntent** – intent enum mapping capabilities to planner modes.
 
 Future capabilities
 -------------------
@@ -31,6 +48,15 @@ Future capabilities
 - Generate Tests
 """
 
+from packages.capabilities.base import Capability, PlannerIntent
 from packages.capabilities.explain import ExplainCapability
+from packages.capabilities.factory import CapabilityFactory
+from packages.capabilities.registry import CapabilityRegistry
 
-__all__ = ["ExplainCapability"]
+__all__ = [
+    "Capability",
+    "CapabilityFactory",
+    "CapabilityRegistry",
+    "ExplainCapability",
+    "PlannerIntent",
+]

@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import time
 
+from packages.capabilities.base import Capability, PlannerIntent
 from packages.capabilities.models import CapabilityResult
 from packages.context.context_package import ContextPackage
 from packages.context.context_package import RelationshipSummary as RelationshipSummaryPub
@@ -64,12 +65,30 @@ from packages.serializers.models import ProviderRequest
 from packages.serializers.types import ProviderType
 
 
-class ExplainCapability:
+class ExplainCapability(Capability):
     """Orchestrates the explain capability pipeline.
 
     Attributes:
         None — the capability is stateless.
     """
+
+    @property
+    def name(self) -> str:
+        """Unique name of this capability.
+
+        Returns:
+            The capability name string.
+        """
+        return "explain"
+
+    @property
+    def intent(self) -> PlannerIntent:
+        """Planner intent for this capability.
+
+        Returns:
+            PlannerIntent.EXPLAIN.
+        """
+        return PlannerIntent.EXPLAIN
 
     def execute(
         self,
