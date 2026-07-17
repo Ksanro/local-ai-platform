@@ -1,5 +1,7 @@
 """Fixture — calls to unknown symbols (should be ignored)."""
 
+# mypy: disable-error-code="name-defined,no-any-return"
+
 
 def known() -> str:
     """A known function."""
@@ -9,13 +11,13 @@ def known() -> str:
 def uses_unknown() -> str:
     """Calls an unknown function."""
     # external_lib.do_something() — this is not a known symbol
-    result = some_unknown_function()
+    result = some_unknown_function()  # noqa: F821
     return result
 
 
 def uses_mixed() -> str:
     """Calls both known and unknown."""
     a = known()
-    b = unknown_call()
-    c = helper()  # helper is not defined in this file
+    b = unknown_call()  # noqa: F821
+    c = helper()  # noqa: F821  # helper is not defined in this file
     return a + b + c

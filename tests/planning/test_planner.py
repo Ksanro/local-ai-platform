@@ -172,13 +172,13 @@ class TestContextPlanImmutability:
         plan = planner.build(user_messages=["Explain this"])
 
         with pytest.raises(Exception):
-            plan.intent = "DEBUG"
+            plan.intent = "DEBUG"  # type: ignore[misc]
 
         with pytest.raises(Exception):
-            plan.ranking_profile = "CUSTOM"
+            plan.ranking_profile = "CUSTOM"  # type: ignore[misc]
 
         with pytest.raises(Exception):
-            plan.relationship_expansion = False
+            plan.relationship_expansion = False  # type: ignore[misc]
 
     def test_context_plan_primary_symbols_immutable(self):
         """primary_symbols tuple cannot be modified."""
@@ -188,7 +188,7 @@ class TestContextPlanImmutability:
         assert plan.primary_symbols == ()
         # primary_symbols is a tuple, should be immutable
         with pytest.raises(Exception):
-            plan.primary_symbols = ("some_symbol",)
+            plan.primary_symbols = ("some_symbol",)  # type: ignore[misc]
 
 
 class TestCustomRuleEngine:

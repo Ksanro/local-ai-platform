@@ -436,8 +436,20 @@ class TestCallers:
     def test_callers_cross_module(self) -> None:
         """callers() should find callers across modules."""
         symbols = [
-            _make_symbol("caller", "mod_a.caller", SymbolType.FUNCTION, lineno=1, module="mod_a.py"),
-            _make_symbol("callee", "mod_b.callee", SymbolType.FUNCTION, lineno=5, module="mod_b.py"),
+            _make_symbol(
+                "caller",
+                "mod_a.caller",
+                SymbolType.FUNCTION,
+                lineno=1,
+                module="mod_a.py",
+            ),
+            _make_symbol(
+                "callee",
+                "mod_b.callee",
+                SymbolType.FUNCTION,
+                lineno=5,
+                module="mod_b.py",
+            ),
         ]
         relationships_a = [
             Relationship(
@@ -447,9 +459,26 @@ class TestCallers:
             ),
         ]
         relationships_b: list[Relationship] = []
-        module_a = Module(path="mod_a.py", symbols=[s for s in symbols if s.module == "mod_a.py"], relationships=relationships_a)
-        module_b = Module(path="mod_b.py", symbols=[s for s in symbols if s.module == "mod_b.py"], relationships=relationships_b)
-        graph = SymbolGraphView(SymbolGraph(modules={"mod_a.py": module_a, "mod_b.py": module_b}))
+        mod_a_syms = [s for s in symbols if s.module == "mod_a.py"]
+        mod_b_syms = [s for s in symbols if s.module == "mod_b.py"]
+        module_a = Module(
+            path="mod_a.py",
+            symbols=mod_a_syms,
+            relationships=relationships_a,
+        )
+        module_b = Module(
+            path="mod_b.py",
+            symbols=mod_b_syms,
+            relationships=relationships_b,
+        )
+        graph = SymbolGraphView(
+            SymbolGraph(
+                modules={
+                    "mod_a.py": module_a,
+                    "mod_b.py": module_b,
+                }
+            )
+        )
         callee = graph.find("mod_b.callee")[0]
         callers = graph.callers(callee)
         assert len(callers) == 1
@@ -602,8 +631,20 @@ class TestCallees:
     def test_callees_cross_module(self) -> None:
         """callees() should find callees across modules."""
         symbols = [
-            _make_symbol("caller", "mod_a.caller", SymbolType.FUNCTION, lineno=1, module="mod_a.py"),
-            _make_symbol("callee", "mod_b.callee", SymbolType.FUNCTION, lineno=5, module="mod_b.py"),
+            _make_symbol(
+                "caller",
+                "mod_a.caller",
+                SymbolType.FUNCTION,
+                lineno=1,
+                module="mod_a.py",
+            ),
+            _make_symbol(
+                "callee",
+                "mod_b.callee",
+                SymbolType.FUNCTION,
+                lineno=5,
+                module="mod_b.py",
+            ),
         ]
         relationships_a = [
             Relationship(
@@ -613,9 +654,26 @@ class TestCallees:
             ),
         ]
         relationships_b: list[Relationship] = []
-        module_a = Module(path="mod_a.py", symbols=[s for s in symbols if s.module == "mod_a.py"], relationships=relationships_a)
-        module_b = Module(path="mod_b.py", symbols=[s for s in symbols if s.module == "mod_b.py"], relationships=relationships_b)
-        graph = SymbolGraphView(SymbolGraph(modules={"mod_a.py": module_a, "mod_b.py": module_b}))
+        mod_a_syms = [s for s in symbols if s.module == "mod_a.py"]
+        mod_b_syms = [s for s in symbols if s.module == "mod_b.py"]
+        module_a = Module(
+            path="mod_a.py",
+            symbols=mod_a_syms,
+            relationships=relationships_a,
+        )
+        module_b = Module(
+            path="mod_b.py",
+            symbols=mod_b_syms,
+            relationships=relationships_b,
+        )
+        graph = SymbolGraphView(
+            SymbolGraph(
+                modules={
+                    "mod_a.py": module_a,
+                    "mod_b.py": module_b,
+                }
+            )
+        )
         caller = graph.find("mod_a.caller")[0]
         callees = graph.callees(caller)
         assert len(callees) == 1

@@ -32,7 +32,7 @@ class TestPlanningRule:
             estimated_complexity="MODERATE",
         )
         with pytest.raises(Exception):
-            rule.intent = "DEBUG"
+            rule.intent = "DEBUG"  # type: ignore[misc]
 
     def test_planning_rule_defaults(self):
         """PlanningRule has sensible defaults for estimated_complexity."""
@@ -291,7 +291,7 @@ class TestRuleEngine:
         plan = engine.build_plan("EXPLAIN")
 
         with pytest.raises(Exception):
-            plan.intent = "DEBUG"
+            plan.intent = "DEBUG"  # type: ignore[misc]
 
     def test_build_plan_primary_symbols_empty(self):
         """primary_symbols is always empty tuple."""

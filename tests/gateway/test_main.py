@@ -57,9 +57,7 @@ def test_lifespan_runs_without_error() -> None:
     errors (e.g., TypeError from incorrect kwarg names) that route-
     only tests miss.
     """
-    from contextlib import asynccontextmanager
 
-    import pytest
     from starlette.testclient import TestClient
 
     app = create_app()

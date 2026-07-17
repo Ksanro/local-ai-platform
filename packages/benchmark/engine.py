@@ -49,20 +49,18 @@ Constraints
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import time
 
+from packages.benchmark.models import BenchmarkCase, BenchmarkResult
 from packages.context.builder import ContextBuilder
 from packages.context.context_package import ContextPackage
-from packages.context.models import ContextQuery
+from packages.context.models import ContextQuery, ContextResult
 from packages.planning.planner import ContextPlanner
 from packages.repository.index.models import RepositoryIndex
 from packages.serializers.factory import SerializerFactory
 from packages.serializers.models import ProviderRequest
 from packages.serializers.types import ProviderType
-
-from packages.benchmark.models import BenchmarkCase, BenchmarkResult
 
 logger = logging.getLogger(__name__)
 
@@ -112,24 +110,16 @@ class BenchmarkEngine:
         start_time = time.perf_counter()
 
         # Stage 1: Planning
-        planning_start = time.perf_counter()
-        plan = self._stage_planning(case)
-        planning_duration = time.perf_counter() - planning_start
+        self._stage_planning(case)
 
         # Stage 2: Repository Search
-        repo_start = time.perf_counter()
-        found_symbols = self._stage_repository_search(case, repository_index)
-        repo_duration = time.perf_counter() - repo_start
+        self._stage_repository_search(case, repository_index)
 
         # Stage 3: Ranking + Context Building
-        context_start = time.perf_counter()
         context_result = self._stage_context_building(case, repository_index)
-        context_duration = time.perf_counter() - context_start
 
         # Stage 4: Serialization
-        serialization_start = time.perf_counter()
-        provider_request = self._stage_serialization(context_result)
-        serialization_duration = time.perf_counter() - serialization_start
+        self._stage_serialization(context_result)
 
         # Compute metrics
         total_duration = time.perf_counter() - start_time
@@ -224,7 +214,7 @@ class BenchmarkEngine:
         self,
         case: BenchmarkCase,
         repository_index: RepositoryIndex,
-    ) -> object:
+    ) -> ContextResult:
         """Execute the context building stage.
 
         Calls ContextBuilder.build() with a ContextQuery derived from
@@ -375,7 +365,6 @@ class BenchmarkEngine:
             List of failure description strings.
         """
         from packages.benchmark.metrics import (
-            budget_compliance,
             module_precision,
             symbol_precision,
         )

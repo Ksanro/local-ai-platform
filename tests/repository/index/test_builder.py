@@ -8,12 +8,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from packages.repository.index.builder import RepositoryIndexBuilder
 from packages.repository.index.models import RepositoryIndex
 from packages.repository.symbols.python_ast import PythonAstExtractor
-
 
 # ------------------------------------------------------------------
 # Fixtures
@@ -178,22 +175,25 @@ class TestNoForbiddenImports:
 
     def test_no_provider_imports(self) -> None:
         """RepositoryIndexBuilder should not import providers."""
-        import packages.repository.index.builder
         import inspect
+
+        import packages.repository.index.builder
         source = inspect.getsource(packages.repository.index.builder)
         assert "provider" not in source.lower()
 
     def test_no_gateway_imports(self) -> None:
         """RepositoryIndexBuilder should not import gateway."""
-        import packages.repository.index.builder
         import inspect
+
+        import packages.repository.index.builder
         source = inspect.getsource(packages.repository.index.builder)
         assert "gateway" not in source.lower()
 
     def test_no_inference_imports(self) -> None:
         """RepositoryIndexBuilder should not import inference or LLM."""
-        import packages.repository.index.builder
         import inspect
+
+        import packages.repository.index.builder
         source = inspect.getsource(packages.repository.index.builder)
         assert "llm" not in source.lower()
         assert "inference" not in source.lower()

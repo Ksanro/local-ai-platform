@@ -6,7 +6,6 @@ context building, and serialization — without invoking providers.
 
 from __future__ import annotations
 
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -16,13 +15,12 @@ from packages.benchmark.models import (
     BenchmarkCase,
     BenchmarkResult,
 )
-from packages.context.context_package import ContextPackage
-from packages.repository.index.models import RepositoryIndex
+from packages.repository.index.models import (
+    RepositoryIndex,
+    RepositoryStatistics,
+)
 from packages.serializers.models import ProviderRequest
 from packages.serializers.types import ProviderType
-
-
-from packages.repository.index.models import RepositoryStatistics
 
 
 def _make_index() -> RepositoryIndex:

@@ -24,6 +24,12 @@ from abc import ABC, abstractmethod
 from packages.repository.index.models import RepositoryIndex
 from packages.repository.symbols.models import Relationship, RelationshipType
 
+__all__ = [
+    "Relationship",
+    "RelationshipExtractor",
+    "RelationshipType",
+]
+
 
 class RelationshipExtractor(ABC):
     """Abstract base class for relationship extractors.

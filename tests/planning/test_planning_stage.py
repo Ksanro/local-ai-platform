@@ -113,7 +113,7 @@ class TestPlanningStageExecute:
     def test_execute_with_non_dict_request(self):
         """Execute handles non-dict request gracefully."""
         stage = PlanningStage()
-        context = PipelineContext(request="not a dict")
+        context = PipelineContext(request="not a dict")  # type: ignore[arg-type]
 
         result = asyncio.run(stage.execute(context))
 
@@ -253,7 +253,7 @@ class TestMessageExtraction:
 
     def test_extract_messages_non_dict_request(self):
         """Non-dict request returns empty list."""
-        context = PipelineContext(request="not a dict")
+        context = PipelineContext(request="not a dict")  # type: ignore[arg-type]
         messages = PlanningStage._extract_messages(context)
         assert messages == []
 

@@ -29,7 +29,7 @@ def helper_a(value: str) -> str:
     return value.strip().lower()
 
 
-def validate_a(data: dict) -> bool:
+def validate_a(data: dict[str, object]) -> bool:
     """Validate data for module A."""
     if not isinstance(data, dict):
         return False

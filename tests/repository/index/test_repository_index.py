@@ -6,8 +6,6 @@ relationship lookup, deterministic ordering, and repeated builds.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 from packages.repository.index.models import (
@@ -19,7 +17,6 @@ from packages.repository.index.models import (
     Symbol,
     SymbolType,
 )
-
 
 # ------------------------------------------------------------------
 # Fixtures
@@ -528,22 +525,25 @@ class TestNoForbiddenImports:
 
     def test_no_provider_imports(self) -> None:
         """RepositoryIndex should not import providers."""
-        import packages.repository.index.models
         import inspect
+
+        import packages.repository.index.models
         source = inspect.getsource(packages.repository.index.models)
         assert "provider" not in source.lower() or "RepositoryStatistics" in source
 
     def test_no_gateway_imports(self) -> None:
         """RepositoryIndex should not import gateway."""
-        import packages.repository.index.models
         import inspect
+
+        import packages.repository.index.models
         source = inspect.getsource(packages.repository.index.models)
         assert "gateway" not in source.lower()
 
     def test_no_inference_imports(self) -> None:
         """RepositoryIndex should not import inference or LLM."""
-        import packages.repository.index.models
         import inspect
+
+        import packages.repository.index.models
         source = inspect.getsource(packages.repository.index.models)
         assert "llm" not in source.lower()
         assert "inference" not in source.lower()

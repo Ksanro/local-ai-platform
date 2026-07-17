@@ -21,7 +21,6 @@ from packages.repository.symbols.models import (
     Module,
     Relationship,
     Symbol,
-    SymbolGraph,
     SymbolType,
 )
 from packages.repository.symbols.python_ast import PythonAstExtractor

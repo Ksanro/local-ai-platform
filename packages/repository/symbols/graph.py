@@ -10,7 +10,7 @@ No public method exposes Python AST nodes.
 
 from __future__ import annotations
 
-__all__ = ["SymbolGraphView"]
+__all__ = ["SymbolGraph", "SymbolGraphView"]
 
 from typing import TYPE_CHECKING
 

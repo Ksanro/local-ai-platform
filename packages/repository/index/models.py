@@ -24,6 +24,16 @@ from packages.repository.symbols.models import (
     SymbolType,
 )
 
+__all__ = [
+    "Module",
+    "Relationship",
+    "RelationshipType",
+    "RepositoryIndex",
+    "RepositoryStatistics",
+    "Symbol",
+    "SymbolType",
+]
+
 if TYPE_CHECKING:
     from collections.abc import Sequence
 

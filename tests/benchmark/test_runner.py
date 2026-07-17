@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from packages.benchmark import BenchmarkRunner, BenchmarkCase, BenchmarkReport, BenchmarkResult
+from packages.benchmark import BenchmarkCase, BenchmarkResult, BenchmarkRunner
 from packages.repository.index.models import RepositoryIndex, RepositoryStatistics
 from packages.serializers.types import ProviderType
 

@@ -18,15 +18,14 @@ from packages.repository.index.models import RepositoryIndex, RepositoryStatisti
 from packages.repository.relationships.base import RelationshipExtractor, RelationshipType
 from packages.repository.relationships.registry import RelationshipRegistry
 from packages.repository.symbols.models import (
-    Module,
     Relationship,
+)
+from packages.repository.symbols.models import (
     RelationshipType as SymbolRelationshipType,
-    Symbol,
-    SymbolType,
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    pass
 
 
 # ------------------------------------------------------------------
@@ -170,7 +169,13 @@ class TestExtraction:
             modules={},
             _symbols=[],
             _relationships=[],
-            _statistics=RepositoryStatistics(module_count=0, class_count=0, function_count=0, method_count=0, symbol_count=0),
+            _statistics=RepositoryStatistics(
+                module_count=0,
+                class_count=0,
+                function_count=0,
+                method_count=0,
+                symbol_count=0,
+            ),
         )
         relationships = registry.extract(index)
         assert relationships == []
@@ -185,7 +190,13 @@ class TestExtraction:
             modules={},
             _symbols=[],
             _relationships=[],
-            _statistics=RepositoryStatistics(module_count=0, class_count=0, function_count=0, method_count=0, symbol_count=0),
+            _statistics=RepositoryStatistics(
+                module_count=0,
+                class_count=0,
+                function_count=0,
+                method_count=0,
+                symbol_count=0,
+            ),
         )
         relationships = registry.extract(index)
         assert len(relationships) == 1
@@ -203,7 +214,13 @@ class TestExtraction:
             modules={},
             _symbols=[],
             _relationships=[],
-            _statistics=RepositoryStatistics(module_count=0, class_count=0, function_count=0, method_count=0, symbol_count=0),
+            _statistics=RepositoryStatistics(
+                module_count=0,
+                class_count=0,
+                function_count=0,
+                method_count=0,
+                symbol_count=0,
+            ),
         )
         relationships = registry.extract(index)
         assert len(relationships) == 2
@@ -219,7 +236,13 @@ class TestExtraction:
             modules={},
             _symbols=[],
             _relationships=[],
-            _statistics=RepositoryStatistics(module_count=0, class_count=0, function_count=0, method_count=0, symbol_count=0),
+            _statistics=RepositoryStatistics(
+                module_count=0,
+                class_count=0,
+                function_count=0,
+                method_count=0,
+                symbol_count=0,
+            ),
         )
         relationships = registry.extract(index)
         # Both extractors produce the same relationship, should be deduplicated
@@ -236,7 +259,13 @@ class TestExtraction:
             modules={},
             _symbols=[],
             _relationships=[],
-            _statistics=RepositoryStatistics(module_count=0, class_count=0, function_count=0, method_count=0, symbol_count=0),
+            _statistics=RepositoryStatistics(
+                module_count=0,
+                class_count=0,
+                function_count=0,
+                method_count=0,
+                symbol_count=0,
+            ),
         )
         relationships = registry.extract(index)
         # Should be sorted by source, then target

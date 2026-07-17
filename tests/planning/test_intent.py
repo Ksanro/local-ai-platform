@@ -7,10 +7,6 @@ that verify word-boundary matching prevents substring false positives.
 
 from __future__ import annotations
 
-import re
-
-import pytest
-
 from packages.planning.intent import Intent
 from packages.planning.rules import BUILTIN_RULES
 

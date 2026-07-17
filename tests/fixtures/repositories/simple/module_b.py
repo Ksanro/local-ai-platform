@@ -27,7 +27,7 @@ def helper_b(value: int) -> int:
     return value * 2
 
 
-def validate_b(items: list) -> bool:
+def validate_b(items: list[object]) -> bool:
     """Validate items list for module B."""
     if not isinstance(items, list):
         return False

@@ -15,26 +15,22 @@ Verifies call relationship extraction across multiple scenarios:
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import pytest
 
+from packages.repository.index.builder import RepositoryIndexBuilder
 from packages.repository.index.models import RepositoryIndex
-from packages.repository.relationships.call_extractor import CallExtractor
 from packages.repository.relationships.base import RelationshipType
+from packages.repository.relationships.call_extractor import CallExtractor
 from packages.repository.symbols.models import (
     Module,
     Relationship,
-    RelationshipType as SymbolRelationshipType,
     Symbol,
-    SymbolGraph,
     SymbolType,
 )
-from packages.repository.index.builder import RepositoryIndexBuilder
-
-if TYPE_CHECKING:
-    from collections.abc import Sequence
-
+from packages.repository.symbols.models import (
+    RelationshipType as SymbolRelationshipType,
+)
 
 # ------------------------------------------------------------------
 # Fixtures
@@ -76,17 +72,17 @@ def _make_index(
     Returns:
         A RepositoryIndex with modules derived from the symbols.
     """
-    if modules is None:
-        modules: dict[str, Module] = {}
+    mod_map: dict[str, Module] = modules if modules is not None else {}
+    if not mod_map:
         for sym in symbols:
-            if sym.module not in modules:
-                modules[sym.module] = Module(path=sym.module)
-            modules[sym.module].symbols.append(sym)
+            if sym.module not in mod_map:
+                mod_map[sym.module] = Module(path=sym.module)
+            mod_map[sym.module].symbols.append(sym)
 
     rels = relationships or []
     for rel in rels:
-        if rel.source in modules:
-            modules[rel.source].relationships.append(rel)
+        if rel.source in mod_map:
+            mod_map[rel.source].relationships.append(rel)
 
     class_count = sum(1 for s in symbols if s.symbol_type == SymbolType.CLASS)
     function_count = sum(
@@ -97,7 +93,7 @@ def _make_index(
     from packages.repository.index.models import RepositoryStatistics
 
     statistics = RepositoryStatistics(
-        module_count=len(modules),
+        module_count=len(mod_map),
         class_count=class_count,
         function_count=function_count,
         method_count=method_count,
@@ -105,7 +101,7 @@ def _make_index(
     )
 
     return RepositoryIndex(
-        modules=modules,
+        modules=mod_map,
         _symbols=symbols,
         _relationships=rels,
         _statistics=statistics,
@@ -439,8 +435,18 @@ def is_odd(n: int) -> bool:
     ) -> None:
         """Nested recursive function should be detected."""
         symbols = [
-            _make_symbol("nested_recursive", "main.nested_recursive", SymbolType.FUNCTION, "main.py"),
-            _make_symbol("inner_recursive", "main.nested_recursive.inner_recursive", SymbolType.FUNCTION, "main.py"),
+            _make_symbol(
+                "nested_recursive",
+                "main.nested_recursive",
+                SymbolType.FUNCTION,
+                "main.py",
+            ),
+            _make_symbol(
+                "inner_recursive",
+                "main.nested_recursive.inner_recursive",
+                SymbolType.FUNCTION,
+                "main.py",
+            ),
         ]
         modules = {
             "main.py": Module(
@@ -483,10 +489,30 @@ class TestCrossModuleCalls:
     ) -> None:
         """Calls between different modules should be detected."""
         symbols = [
-            _make_symbol("module_a_function", "module_a.module_a_function", SymbolType.FUNCTION, "module_a.py"),
-            _make_symbol("module_a_calls_b", "module_a.module_a_calls_b", SymbolType.FUNCTION, "module_a.py"),
-            _make_symbol("module_b_function", "module_b.module_b_function", SymbolType.FUNCTION, "module_b.py"),
-            _make_symbol("module_b_calls_a", "module_b.module_b_calls_a", SymbolType.FUNCTION, "module_b.py"),
+            _make_symbol(
+                "module_a_function",
+                "module_a.module_a_function",
+                SymbolType.FUNCTION,
+                "module_a.py",
+            ),
+            _make_symbol(
+                "module_a_calls_b",
+                "module_a.module_a_calls_b",
+                SymbolType.FUNCTION,
+                "module_a.py",
+            ),
+            _make_symbol(
+                "module_b_function",
+                "module_b.module_b_function",
+                SymbolType.FUNCTION,
+                "module_b.py",
+            ),
+            _make_symbol(
+                "module_b_calls_a",
+                "module_b.module_b_calls_a",
+                SymbolType.FUNCTION,
+                "module_b.py",
+            ),
         ]
         modules = {
             "module_a.py": Module(

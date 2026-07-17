@@ -25,20 +25,14 @@ Only static analysis of the AST is performed.
 from __future__ import annotations
 
 import ast
-from typing import TYPE_CHECKING
 
 from packages.repository.index.models import RepositoryIndex
 from packages.repository.relationships.base import RelationshipExtractor, RelationshipType
 from packages.repository.symbols.models import (
-    Module,
     Relationship,
-    RelationshipType as SymbolRelationshipType,
     Symbol,
     SymbolType,
 )
-
-if TYPE_CHECKING:
-    from collections.abc import Sequence
 
 
 class _CallVisitor(ast.NodeVisitor):
@@ -188,7 +182,7 @@ class _CallVisitor(ast.NodeVisitor):
                     self._relationships.append(Relationship(
                         source=caller.qualified_name,
                         target=target,
-                        type=SymbolRelationshipType.CALLS,
+                        type=RelationshipType.CALLS,
                     ))
 
         # Continue visiting child nodes.

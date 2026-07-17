@@ -48,7 +48,7 @@ class ProviderFactory:
                 f"Provider '{provider_name}' is not registered. "
                 f"Available providers: {list(self._registry._providers.keys())}"
             )
-        return provider_class(**kwargs)
+        return provider_class(**kwargs)  # type: ignore[no-any-return]
 
     def register(self, name: str, provider_class: type[ProviderBase]) -> None:
         """Register a provider class with the factory.

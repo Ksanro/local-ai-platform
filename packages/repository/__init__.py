@@ -54,11 +54,13 @@ from pathlib import Path
 
 from packages.repository.filters import parse_gitignore, should_ignore_path
 from packages.repository.index import find_extension, find_language, get_file, summary
-from packages.repository.index.models import RepositoryIndex as StructIndex
+from packages.repository.index.builder import RepositoryIndexBuilder
+from packages.repository.index.models import (
+    RepositoryIndex as StructIndex,
+)
 from packages.repository.index.models import (
     RepositoryStatistics,
 )
-from packages.repository.index.builder import RepositoryIndexBuilder
 from packages.repository.models import (
     Directory,
     LanguageSummary,
