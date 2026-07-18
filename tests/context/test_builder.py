@@ -113,14 +113,22 @@ def _make_builder(
 
 @pytest.fixture()
 def multi_module_index() -> RepositoryIndex:
-    """Index with symbols across multiple modules."""
+    """Index with symbols across multiple modules.
+
+    Includes symbols that match common test queries ("authentication",
+    "middleware", "main") so the ranking engine can produce non-trivial
+    scores.
+    """
     symbols = [
-        _make_symbol("auth", "auth.middleware", SymbolType.FUNCTION, "auth.py"),
-        _make_symbol("verify", "auth.verify", SymbolType.FUNCTION, "auth.py"),
+        # Partial match for "authentication" → high score
+        _make_symbol("AuthenticationService", "auth.AuthenticationService", SymbolType.CLASS, "auth.py"),
+        # No match for "authentication" or "middleware"
         _make_symbol("App", "main.App", SymbolType.CLASS, "main.py"),
         _make_symbol("run", "main.App.run", SymbolType.METHOD, "main.py"),
-        _make_symbol("helper", "utils.helper", SymbolType.FUNCTION, "utils.py"),
+        # Partial match for "middleware" → high score
+        _make_symbol("MiddlewareRouter", "utils.MiddlewareRouter", SymbolType.CLASS, "utils.py"),
         _make_symbol("format", "utils.format", SymbolType.FUNCTION, "utils.py"),
+        _make_symbol("helper", "utils.helper", SymbolType.FUNCTION, "utils.py"),
     ]
     return _make_index(symbols)
 
@@ -507,25 +515,20 @@ class TestBuilderAPI:
 class TestRankingIntegration:
     """Tests verifying the builder integrates with the ranking engine.
 
-    NOTE: The two tests below are known to fail because the test fixture
-    symbols do not contain tokens matching the query texts.  All candidates
-    score 0 and fall back to alphabetical ordering.  Fix: update fixture
-    symbols or test queries so the ranking engine can produce non-trivial
-    scores.  Tracked for later review.
+    The fixture symbols include tokens matching the test queries so the
+    ranking engine produces non-trivial scores and meaningful orderings.
     """
 
-    @pytest.mark.xfail(reason="fixture symbols don't match query tokens — all score 0")
     def test_text_affects_ordering(self, multi_module_index: RepositoryIndex) -> None:
         """Verify query text affects ordering (ranking is applied)."""
         builder = ContextBuilder(multi_module_index)
-        result_a = builder.build(ContextQuery(text="authentication"))
-        result_b = builder.build(ContextQuery(text="xyzzy nonsense"))
+        result_a = builder.build(ContextQuery(text="middleware"))
+        result_b = builder.build(ContextQuery(text="authentication"))
         # Different text should produce different orderings.
         names_a = [c.qualified_name for c in result_a.candidates]
         names_b = [c.qualified_name for c in result_b.candidates]
         assert names_a != names_b
 
-    @pytest.mark.xfail(reason="fixture symbols don't match query tokens — all score 0")
     def test_candidates_ranked_by_relevance(
         self, multi_module_index: RepositoryIndex
     ) -> None:
