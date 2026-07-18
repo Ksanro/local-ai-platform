@@ -4,7 +4,7 @@
 **License:** Apache 2.0
 **Python:** 3.12+
 **Last Updated:** 2026-07-18
-**Latest Commit:** Change Impact Analyzer, Relationship Extraction, Planner Rules, Scoring Rules
+**Latest Commit:** Refactoring Advisor — deterministic refactoring recommendations
 
 ---
 
@@ -825,6 +825,28 @@ from packages.context.scoring import (
 )
 ```
 
+### Refactoring Advisor Package (`packages.advisors.refactoring`)
+
+```python
+from packages.advisors.refactoring import (
+    RefactoringAdvisor,          # Main advisor class
+    RefactoringReport,           # Complete refactoring report
+    RefactoringOpportunity,      # Single refactoring opportunity
+    RefactoringCategory,         # Category enum (HIGH_COUPLING, DEAD_CODE, etc.)
+    Severity,                    # Severity levels (HIGH, MEDIUM, LOW, INFO)
+    RefactoringEvidence,         # Supporting evidence item
+    RefactoringConfig,           # Configuration (thresholds, multipliers)
+    DEFAULT_CONFIG,              # Default configuration instance
+    compute_confidence,          # Deterministic confidence computation
+)
+```
+
+**Categories:** `HIGH_COUPLING`, `LARGE_MODULE`, `DEAD_CODE`, `ORPHAN_MODULE`, `CIRCULAR_DEPENDENCY`, `EXCESSIVE_DEPENDENCIES`
+
+**Confidence Formula:** `confidence = base_score * evidence_factor * completeness_factor`, clamped to `[0.0, 1.0]` and rounded to 2 decimal places.
+
+**Determinism:** All collections sorted, IDs computed from deterministic values, no randomness anywhere.
+
 ---
 
 ## Package Structure
@@ -966,7 +988,16 @@ from packages.context.scoring import (
 │   │   └── config.yaml             # Default configuration
 │   │
 │   ├── core/                       # Core business logic
-│   └── telemetry/                  # Telemetry/monitoring
+│   ├── telemetry/                  # Telemetry/monitoring
+│   │
+│   ├── advisors/                   # Deterministic analysis and recommendations
+│   │   ├── __init__.py             # Package exports
+│   │   └── refactoring/            # Refactoring Advisor
+│   │       ├── __init__.py         # Package exports
+│   │       ├── models.py           # Immutable dataclasses (RefactoringReport, Opportunity, etc.)
+│   │       ├── config.py           # RefactoringConfig (thresholds, multipliers)
+│   │       ├── confidence.py       # Deterministic confidence computation
+│   │       └── advisor.py          # RefactoringAdvisor (orchestrates analysis)
 │
 ├── tests/                          # Test suite
 │   ├── conftest.py                 # Shared fixtures
@@ -1000,6 +1031,7 @@ from packages.context.scoring import (
 │   ├── symbol-graph.md             # Symbol Graph documentation
 │   ├── workspace-dependency-graph.md # Workspace dependency graph documentation
 │   ├── change-impact.md            # Change impact analysis documentation
+│   ├── advisors-refactoring.md     # Refactoring Advisor documentation
 │   └── index.md                    # Documentation index
 │
 ├── compose.yaml                    # Docker Compose (gateway, redis, postgres)
@@ -1029,8 +1061,9 @@ from packages.context.scoring import (
 | Relationships | 20 | Extractor base, registry, call extractor |
 | Dependencies | 15 | Graph construction, traversal, determinism, hash stability |
 | Diagnostics | 25 | Engine, analyzers, statistics, deterministic ordering |
+| Refactoring | 74 | Models, config, confidence, advisor orchestration, determinism, immutability |
 
-**Total: 966 tests**
+**Total: 1040 tests**
 
 ### Running Tests
 
@@ -1143,6 +1176,7 @@ Priority: **Environment Variable > Config File > Hardcoded Default**
 - [x] Context Planning Engine — intent detection, ContextPlan, PlanningStage, single source of truth for retrieval configuration
 - [x] Capability Framework — ExplainCapability, DebugCapability, RefactorCapability, CapabilityRegistry, CapabilityFactory, RetrievalProfile
 - [x] Relationship-Aware Context Ranking — relationship signals (DIRECT_CALLER, DIRECT_CALLEE, SHARED_MODULE, SHARED_CLASS, SHARED_PARENT), context expansion
+- [x] Refactoring Advisor — deterministic refactoring recommendations based on repository analysis, confidence scoring, immutable models, 74 tests
 
 ### Planned (Future Sprints)
 

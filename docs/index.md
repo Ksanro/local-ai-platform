@@ -30,6 +30,10 @@ Documentation for Local AI Platform.
 
 - [Capability Framework](capabilities.md) — ExplainCapability, DebugCapability, RefactorCapability, CapabilityRegistry, CapabilityFactory, RetrievalProfile
 
+## Advisors
+
+- [Refactoring Advisor](advisors-refactoring.md) — Deterministic refactoring recommendations, confidence scoring, immutable models
+
 ## Serialization
 
 - [Serialization Layer](serialization.md) — ProviderSerializer ABC, SerializerFactory, OpenAISerializer

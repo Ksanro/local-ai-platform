@@ -12,12 +12,14 @@ A production-ready Python project structure for AI platform development.
 │   ├── pipeline/         # Request processing pipeline (stages, engine, context)
 │   ├── providers/        # AI provider implementations
 │   ├── repository/       # Repository scanner and index
+│   ├── advisors/         # Deterministic analysis and recommendations
 │   └── telemetry/        # Telemetry and monitoring (stub)
 ├── tests/                # Test suite
 │   ├── gateway/          # Gateway unit tests
 │   ├── pipeline/         # Pipeline unit tests
 │   ├── providers/        # Provider unit tests
 │   ├── repository/       # Scanner unit tests
+│   ├── advisors/         # Refactoring advisor tests
 │   └── integration/      # End-to-end integration tests
 ├── scripts/              # Utility scripts
 └── .github/              # GitHub Actions workflows
