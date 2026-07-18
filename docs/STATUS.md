@@ -3,8 +3,8 @@
 **Version:** 0.1.0
 **License:** Apache 2.0
 **Python:** 3.12+
-**Last Updated:** 2026-07-16
-**Latest Commit:** repository index service and tests
+**Last Updated:** 2026-07-18
+**Latest Commit:** Change Impact Analyzer, Relationship Extraction, Planner Rules, Scoring Rules
 
 ---
 
@@ -755,6 +755,76 @@ from packages.pipeline.stages import (
 | `exceptions.py` | `PipelineError`, `StageError`, `PipelineExecutionError` |
 | `request.py` | `PipelineRequest` dataclass |
 
+### Impact Package (`packages.repository.impact`)
+
+```python
+from packages.repository.impact import (
+    ChangeImpactAnalyzer,        # Analyze impact of symbol changes
+    ImpactNode,                  # Single impacted symbol node
+    ImpactReport,                # Complete impact analysis report
+)
+```
+
+### Relationship Package (`packages.repository.relationships`)
+
+```python
+from packages.repository.relationships import (
+    RelationshipExtractor,       # Abstract base class
+    RelationshipRegistry,        # Registry of extractors
+)
+from packages.repository.relationships.call_extractor import (
+    CallExtractor,               # CALLS relationship extractor
+)
+```
+
+### Planning Package (`packages.planning`)
+
+```python
+from packages.planning import (
+    ContextPlanner,              # Intent detection + planning
+    ContextPlan,                 # Immutable planning result
+    Intent,                      # Intent enum
+)
+from packages.planning.rules import (
+    PlanningRule,                # Deterministic planning rule
+    RuleEngine,                  # Rule evaluation engine
+    BUILTIN_RULES,               # Built-in planning rules
+)
+```
+
+### Benchmark Package (`packages.benchmark`)
+
+```python
+from packages.benchmark import (
+    BenchmarkRunner,             # Run benchmarks
+    BenchmarkCase,               # Single benchmark case
+    BenchmarkResult,             # Per-case result
+    BenchmarkReport,             # Aggregate report
+    BenchmarkEngine,             # Pipeline execution engine
+)
+```
+
+### Context Scoring Package (`packages.context`)
+
+```python
+from packages.context.scoring import (
+    score_candidate,             # Lexical scoring
+    score_relationship,          # Relationship scoring
+    RankingReason,               # Explainability signals
+    normalise_query_text,        # Query normalisation
+    WEIGHT_EXACT_MATCH,          # Scoring constants
+    WEIGHT_DIRECT_CALLER,
+    WEIGHT_DIRECT_CALLEE,
+    WEIGHT_SHARED_MODULE,
+    WEIGHT_SHARED_CLASS,
+    WEIGHT_SHARED_PARENT,
+    WEIGHT_TOKEN_OVERLAP,
+    WEIGHT_PUBLIC_SYMBOL,
+    WEIGHT_MODULE,
+    WEIGHT_QUALIFIED_NAME,
+)
+```
+
 ---
 
 ## Package Structure
@@ -801,6 +871,35 @@ from packages.pipeline.stages import (
 │   │   │   ├── extractor.py        # SymbolExtractor ABC
 │   │   │   ├── python_ast.py       # Python AST implementation
 │   │   │   └── graph.py            # SymbolGraphView public API
+│   │   │
+│   │   ├── relationships/          # Relationship extraction
+│   │   │   ├── __init__.py         # Package exports
+│   │   │   ├── base.py             # RelationshipExtractor ABC
+│   │   │   ├── registry.py         # RelationshipRegistry
+│   │   │   └── call_extractor.py   # CallExtractor (CALLS)
+│   │   │
+│   │   ├── dependencies/           # Workspace dependency graph
+│   │   │   ├── __init__.py         # Package exports
+│   │   │   ├── models.py           # NodeType, GraphEdgeType, GraphNode, GraphEdge
+│   │   │   ├── graph.py            # WorkspaceDependencyGraph
+│   │   │   └── builder.py          # DependencyGraphBuilder
+│   │   │
+│   │   ├── diagnostics/            # Repository diagnostics
+│   │   │   ├── __init__.py         # Package exports
+│   │   │   ├── engine.py           # DiagnosticsEngine
+│   │   │   ├── models.py           # RepositoryDiagnostics, analyser models
+│   │   │   └── analyzers/          # Individual analyzers
+│   │   │       ├── base.py         # DiagnosticsAnalyzer ABC
+│   │   │       ├── dead_code.py    # DeadCodeAnalyzer
+│   │   │       ├── large_module.py # LargeModuleAnalyzer
+│   │   │       ├── orphan.py       # OrphanAnalyzer
+│   │   │       ├── module_stats.py # ModuleStatisticsAnalyzer
+│   │   │       └── graph_stats.py  # GraphStatisticsAnalyzer
+│   │   │
+│   │   ├── impact/                 # Change impact analysis
+│   │   │   ├── __init__.py         # Package exports
+│   │   │   ├── analyzer.py         # ChangeImpactAnalyzer
+│   │   │   └── models.py           # ImpactNode, ImpactReport
 │   │
 │   ├── context/                    # Context Builder
 │   │   ├── __init__.py             # Package exports
@@ -811,7 +910,31 @@ from packages.pipeline.stages import (
 │   │   ├── models.py               # ContextCandidate, ContextResult, etc.
 │   │   ├── package.py              # ContextPackage
 │   │   ├── query.py                # ContextQuery
-│   │   └── scoring.py              # ScoringRules
+│   │   └── scoring.py              # ScoringRules, RankingReason, weights
+│   │
+│   ├── capabilities/               # Developer-facing capability framework
+│   │   ├── __init__.py             # Package exports
+│   │   ├── base.py                 # Capability ABC, PlannerIntent
+│   │   ├── models.py               # CapabilityResult, RetrievalProfile
+│   │   ├── registry.py             # CapabilityRegistry
+│   │   ├── factory.py              # CapabilityFactory
+│   │   ├── explain.py              # ExplainCapability
+│   │   ├── debug.py                # DebugCapability
+│   │   └── refactor.py             # RefactorCapability
+│   │
+│   ├── planning/                   # Context Planning Engine
+│   │   ├── __init__.py             # Package exports
+│   │   ├── plan.py                 # ContextPlan model
+│   │   ├── intent.py               # Intent enum + detection
+│   │   ├── rules.py                # PlanningRule, RuleEngine, BUILTIN_RULES
+│   │   └── planner.py              # ContextPlanner
+│   │
+│   ├── benchmark/                  # Deterministic pipeline benchmarking
+│   │   ├── __init__.py             # Package exports
+│   │   ├── models.py               # BenchmarkCase, BenchmarkResult, BenchmarkReport
+│   │   ├── metrics.py              # Scoring functions
+│   │   ├── engine.py               # Pipeline execution engine
+│   │   └── runner.py               # Public API
 │   │
 │   ├── serializers/                # Serialization Layer
 │   │   ├── __init__.py             # Package exports
@@ -861,11 +984,23 @@ from packages.pipeline.stages import (
 │   └── test_gateway.py             # Smoke test script
 │
 ├── docs/
+│   ├── STATUS.md                   # Status & architecture overview (main)
 │   ├── architecture.md             # Architecture documentation
+│   ├── capabilities.md             # Capability framework documentation
 │   ├── context-builder.md          # Context Builder documentation
+│   ├── context-package.md          # Context Package v2 documentation
+│   ├── context-planning.md         # Context Planning Engine documentation
+│   ├── benchmark-framework.md      # Benchmark Framework documentation
+│   ├── relationship-ranking.md     # Relationship-aware ranking documentation
+│   ├── relationship-extraction.md  # Relationship extraction documentation
+│   ├── repository-diagnostics.md   # Repository diagnostics documentation
+│   ├── planner-rules.md            # Planning rules documentation
+│   ├── scoring-rules.md            # Scoring rules documentation
 │   ├── serialization.md            # Serialization Layer documentation
-│   ├── status.md                   # Status & architecture overview
-│   └── symbol-graph.md             # Symbol Graph documentation
+│   ├── symbol-graph.md             # Symbol Graph documentation
+│   ├── workspace-dependency-graph.md # Workspace dependency graph documentation
+│   ├── change-impact.md            # Change impact analysis documentation
+│   └── index.md                    # Documentation index
 │
 ├── compose.yaml                    # Docker Compose (gateway, redis, postgres)
 ├── pyproject.toml                  # Root project config
@@ -887,8 +1022,15 @@ from packages.pipeline.stages import (
 | Context | 118 | Builder integration, ranking engine, budget estimation, composer, scoring rules |
 | Serializers | 37 | Factory, registry, OpenAI serializer, edge cases, determinism |
 | Integration | 31 | E2E gateway → vLLM (3), repository intelligence pipeline (23), symbol graph integration (8) |
+| Planning | 24 | Intent detection, planning rules, context planner, planning stage |
+| Capabilities | 30 | Explain, debug, refactor capabilities, registry, factory, profiles |
+| Benchmark | 18 | Engine, metrics, runner, scoring, golden snapshots |
+| Impact | 57 | Direct impact, transitive impact, confidence, max depth, edge cases, test discovery |
+| Relationships | 20 | Extractor base, registry, call extractor |
+| Dependencies | 15 | Graph construction, traversal, determinism, hash stability |
+| Diagnostics | 25 | Engine, analyzers, statistics, deterministic ordering |
 
-**Total: 466 tests**
+**Total: 966 tests**
 
 ### Running Tests
 
@@ -991,6 +1133,16 @@ Priority: **Environment Variable > Config File > Hardcoded Default**
 - [x] Serialization Layer — OpenAI serializer, factory, registry
 - [x] Repository Index Service — builder, helpers, models
 - [x] Repository Intelligence integration tests — 23 tests covering full pipeline
+- [x] Change Impact Analyzer — deterministic impact analysis with confidence scoring, BFS traversal, max_depth, test discovery
+- [x] Relationship Extraction — language-independent extractors (CallExtractor), registry pattern, pluggable architecture
+- [x] Planner Rules — PlanningRule dataclass, RuleEngine with deterministic rule evaluation, BUILTIN_RULES
+- [x] Scoring Rules — RankingReason enum, score_candidate(), score_relationship(), normalise_query_text(), additive scoring model
+- [x] Workspace Dependency Graph — immutable graph from RepositoryIndex with deterministic traversal, BFS, cycle prevention
+- [x] Repository Diagnostics Engine — DeadCodeAnalyzer, LargeModuleAnalyzer, OrphanAnalyzer, ModuleStatisticsAnalyzer, GraphStatisticsAnalyzer
+- [x] Benchmark Framework — deterministic pipeline benchmarking without LLM calls, scoring, golden snapshots
+- [x] Context Planning Engine — intent detection, ContextPlan, PlanningStage, single source of truth for retrieval configuration
+- [x] Capability Framework — ExplainCapability, DebugCapability, RefactorCapability, CapabilityRegistry, CapabilityFactory, RetrievalProfile
+- [x] Relationship-Aware Context Ranking — relationship signals (DIRECT_CALLER, DIRECT_CALLEE, SHARED_MODULE, SHARED_CLASS, SHARED_PARENT), context expansion
 
 ### Planned (Future Sprints)
 
