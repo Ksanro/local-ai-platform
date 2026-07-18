@@ -27,6 +27,7 @@ from packages.capabilities.debug import DebugCapability
 from packages.capabilities.explain import ExplainCapability
 from packages.capabilities.factory import CapabilityFactory
 from packages.capabilities.models import CapabilityResult
+from packages.capabilities.profiles import REFACTOR_PROFILE, RetrievalProfile
 from packages.capabilities.refactor import RefactorCapability
 from packages.capabilities.registry import CapabilityRegistry
 from packages.context.context_package import ContextPackage
@@ -207,6 +208,7 @@ class TestRefactorRegistration:
         cap = factory.create("refactor")
         assert cap.name == "refactor"
         assert cap.intent == PlannerIntent.REFACTOR
+        assert cap.profile is REFACTOR_PROFILE
 
     def test_refactor_is_subclass_of_capability(self) -> None:
         """RefactorCapability should be a subclass of Capability."""
@@ -240,6 +242,16 @@ class TestRefactorIntent:
         """intent should not be DEBUG."""
         cap = RefactorCapability()
         assert cap.intent != PlannerIntent.DEBUG
+
+    def test_profile_is_refactor_profile(self) -> None:
+        """profile property should return REFACTOR_PROFILE."""
+        cap = RefactorCapability()
+        assert cap.profile is REFACTOR_PROFILE
+
+    def test_profile_is_retrieval_profile(self) -> None:
+        """profile property should return a RetrievalProfile instance."""
+        cap = RefactorCapability()
+        assert isinstance(cap.profile, RetrievalProfile)
 
 
 # ---------------------------------------------------------------------------

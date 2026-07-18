@@ -52,6 +52,12 @@ from packages.capabilities.base import Capability, PlannerIntent
 from packages.capabilities.debug import DebugCapability
 from packages.capabilities.explain import ExplainCapability
 from packages.capabilities.factory import CapabilityFactory
+from packages.capabilities.profiles import (
+    DEBUG_PROFILE,
+    EXPLAIN_PROFILE,
+    REFACTOR_PROFILE,
+    RetrievalProfile,
+)
 from packages.capabilities.refactor import RefactorCapability
 from packages.capabilities.registry import CapabilityRegistry
 
@@ -63,4 +69,8 @@ __all__ = [
     "ExplainCapability",
     "PlannerIntent",
     "RefactorCapability",
+    "DEBUG_PROFILE",
+    "EXPLAIN_PROFILE",
+    "REFACTOR_PROFILE",
+    "RetrievalProfile",
 ]

@@ -77,6 +77,7 @@ import time
 
 from packages.capabilities.base import Capability, PlannerIntent
 from packages.capabilities.models import CapabilityResult
+from packages.capabilities.profiles import REFACTOR_PROFILE, RetrievalProfile
 from packages.context.context_package import ContextPackage
 from packages.context.context_package import RelationshipSummary as RelationshipSummaryPub
 from packages.context.models import ContextCandidate, ContextQuery, ContextResult
@@ -111,6 +112,15 @@ class RefactorCapability(Capability):
             PlannerIntent.REFACTOR.
         """
         return PlannerIntent.REFACTOR
+
+    @property
+    def profile(self) -> RetrievalProfile:
+        """Retrieval profile for this capability.
+
+        Returns:
+            The REFACTOR_PROFILE singleton.
+        """
+        return REFACTOR_PROFILE
 
     def execute(
         self,

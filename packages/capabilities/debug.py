@@ -76,6 +76,7 @@ import time
 
 from packages.capabilities.base import Capability, PlannerIntent
 from packages.capabilities.models import CapabilityResult
+from packages.capabilities.profiles import DEBUG_PROFILE, RetrievalProfile
 from packages.context.context_package import ContextPackage
 from packages.context.context_package import RelationshipSummary as RelationshipSummaryPub
 from packages.context.models import ContextCandidate, ContextQuery, ContextResult
@@ -110,6 +111,15 @@ class DebugCapability(Capability):
             PlannerIntent.DEBUG.
         """
         return PlannerIntent.DEBUG
+
+    @property
+    def profile(self) -> RetrievalProfile:
+        """Retrieval profile for this capability.
+
+        Returns:
+            The DEBUG_PROFILE singleton.
+        """
+        return DEBUG_PROFILE
 
     def execute(
         self,

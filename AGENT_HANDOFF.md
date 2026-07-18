@@ -16,7 +16,7 @@
    - Added import: `from packages.capabilities.refactor import RefactorCapability`
    - Added to `__all__`: `"RefactorCapability"`
 
-3. **`tests/capabilities/test_refactor.py`** — 68 tests covering all requirements
+3. **`tests/capabilities/test_refactor.py`** — 71 tests covering all requirements
 
 ## RefactorCapability Details
 
@@ -60,7 +60,7 @@ result = capability.execute(
 ```
 ============================= test session starts ==============================
 platform win32 -- Python 3.13.14, pytest-9.1.1, pluggy-1.6.0
-collected 68 items
+collected 71 items
 
 tests/capabilities/test_refactor.py::TestRefactorRegistration ... PASSED
 tests/capabilities/test_refactor.py::TestRefactorIntent ... PASSED
@@ -78,7 +78,7 @@ tests/capabilities/test_refactor.py::TestRefactorStages ... PASSED
 tests/capabilities/test_refactor.py::TestRegistryEdgeCases ... PASSED
 tests/capabilities/test_refactor.py::TestCapabilityResultFields ... PASSED
 
-============================== 68 passed in 0.45s ===============================
+============================== 71 passed in 0.26s ===============================
 ```
 
 **Coverage**: 97% (packages/capabilities/refactor.py: 117 stmts, 4 missing)
@@ -101,10 +101,14 @@ STATUS: PASSED — fixes applied
 
 5. **Misleading `supporting_candidates` references** — Multiple test comments said "looked up in supporting_candidates" as if it were a `ContextResult` field. It's actually a local variable (`candidates[1:]`) in the capability code. Comments updated to clarify this.
 
+6. **Missing `profile` property tests** — Added `test_profile_is_refactor_profile` and `test_profile_is_retrieval_profile` to verify the `profile` property returns `REFACTOR_PROFILE`. Also added `cap.profile is REFACTOR_PROFILE` to the factory stateless instance test.
+
+7. **Missing `__init__.py` exports** — Added exports for `REFACTOR_PROFILE`, `DEBUG_PROFILE`, `EXPLAIN_PROFILE`, and `RetrievalProfile` to `packages/capabilities/__init__.py` so they're accessible from the package root as documented.
+
 ## Final State
 
-- 69 tests (was 68, +1 new)
-- 1098 total tests (was 1097, +1 new)
+- 71 tests (was 68, +3 new)
+- 1133 total tests (was 1097, +36 new)
 - Ruff: clean
 - Mypy: clean
 - No regressions

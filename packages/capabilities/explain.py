@@ -55,6 +55,7 @@ import time
 
 from packages.capabilities.base import Capability, PlannerIntent
 from packages.capabilities.models import CapabilityResult
+from packages.capabilities.profiles import EXPLAIN_PROFILE, RetrievalProfile
 from packages.context.context_package import ContextPackage
 from packages.context.context_package import RelationshipSummary as RelationshipSummaryPub
 from packages.context.models import ContextCandidate, ContextQuery, ContextResult
@@ -89,6 +90,15 @@ class ExplainCapability(Capability):
             PlannerIntent.EXPLAIN.
         """
         return PlannerIntent.EXPLAIN
+
+    @property
+    def profile(self) -> RetrievalProfile:
+        """Retrieval profile for this capability.
+
+        Returns:
+            The EXPLAIN_PROFILE singleton.
+        """
+        return EXPLAIN_PROFILE
 
     def execute(
         self,

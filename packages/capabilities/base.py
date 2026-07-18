@@ -44,6 +44,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from packages.capabilities.models import CapabilityResult
+    from packages.capabilities.profiles import RetrievalProfile
     from packages.repository.index.models import RepositoryIndex
 
 
@@ -74,6 +75,7 @@ class Capability(ABC):
 
     - ``name`` property – unique string identifier (e.g. ``"explain"``).
     - ``intent`` property – returns the corresponding ``PlannerIntent``.
+    - ``profile`` property – returns the ``RetrievalProfile`` for retrieval intent.
     - ``execute()`` method – the orchestration pipeline.
     """
 
@@ -93,6 +95,19 @@ class Capability(ABC):
 
         Returns:
             The PlannerIntent enum value.
+        """
+        ...
+
+    @property
+    @abstractmethod
+    def profile(self) -> RetrievalProfile:
+        """Retrieval profile for this capability.
+
+        Returns the immutable ``RetrievalProfile`` that describes what
+        repository context this capability needs.
+
+        Returns:
+            The RetrieProfile instance.
         """
         ...
 

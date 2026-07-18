@@ -16,6 +16,8 @@ import pytest
 from packages.capabilities.base import Capability, PlannerIntent
 from packages.capabilities.explain import ExplainCapability
 from packages.capabilities.factory import CapabilityFactory
+from packages.capabilities.models import CapabilityResult
+from packages.capabilities.profiles import EXPLAIN_PROFILE
 from packages.capabilities.registry import CapabilityRegistry
 
 # ---------------------------------------------------------------------------
@@ -34,8 +36,12 @@ class MockCapability(Capability):
     def intent(self) -> PlannerIntent:
         return PlannerIntent.DEBUG
 
-    def execute(self, query: str, repository_index: object) -> object:
-        return None
+    @property
+    def profile(self):
+        return EXPLAIN_PROFILE
+
+    def execute(self, query: str, repository_index: object) -> "CapabilityResult":
+        return None  # type: ignore[return-value]
 
 
 @pytest.fixture()

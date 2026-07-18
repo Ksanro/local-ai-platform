@@ -15,6 +15,7 @@ from typing import Any
 import pytest
 
 from packages.capabilities.base import Capability, PlannerIntent
+from packages.capabilities.profiles import EXPLAIN_PROFILE
 
 # ---------------------------------------------------------------------------
 # Test: PlannerIntent Enum
@@ -92,6 +93,10 @@ class DummyCapability(Capability):
     @property
     def intent(self) -> PlannerIntent:
         return PlannerIntent.DEBUG
+
+    @property
+    def profile(self):
+        return EXPLAIN_PROFILE
 
     def execute(
         self,

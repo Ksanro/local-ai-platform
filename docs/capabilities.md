@@ -21,6 +21,30 @@ CapabilityResult
 ### Architecture
 
 ```
+User Request
+    ↓
+Capability (defines intent via profile)
+    ↓
+RetrievalProfile (configuration only)
+    ↓
+ContextPlanner (orchestrates retrieval)
+    ↓
+RepositoryIndex
+    ↓
+ContextBuilder
+    ↓
+Serializer
+    ↓
+CapabilityResult
+```
+
+The key architectural principle: **capabilities define *what* they need, not *how* to retrieve it.**
+Retrieval strategy is expressed through immutable `RetrievalProfile` objects. The actual retrieval
+behavior lives in the Planner, Repository, and ContextBuilder packages.
+
+### Architecture
+
+```
 ┌──────────────────────────────────────────────────────────┐
 │                    Capability Registry                    │
 │  (registration, lookup, deterministic ordering)          │
@@ -109,6 +133,64 @@ class Capability(ABC):
 ```
 
 **Capabilities are stateless.** No instance attributes.
+
+## RetrievalProfile
+
+Retrieval profiles are **immutable configuration objects** that describe *what* repository context
+a capability needs. They contain **zero business logic** — purely configuration.
+
+```python
+@dataclass(frozen=True, slots=True)
+class RetrievalProfile:
+    name: str
+    include_callers: bool
+    include_callees: bool
+    include_dependencies: bool
+    include_dependents: bool
+    include_tests: bool
+    include_dead_code: bool
+    include_diagnostics: bool
+    relationship_depth: int
+    max_context_tokens: int
+```
+
+### Built-in Profiles
+
+| Profile | Name | Callers | Callees | Dependencies | Dependents | Tests | Dead Code | Diagnostics | Depth |
+|---------|------|---------|---------|-------------|------------|-------|-----------|-------------|-------|
+| `EXPLAIN_PROFILE` | `"explain"` | False | False | False | False | False | False | False | 1 |
+| `DEBUG_PROFILE` | `"debug"` | True | True | True | False | True | False | True | 2 |
+| `REFACTOR_PROFILE` | `"refactor"` | True | True | True | True | True | True | True | 3 |
+
+### Usage
+
+```python
+from packages.capabilities.explain import ExplainCapability
+
+cap = ExplainCapability()
+profile = cap.profile  # Returns EXPLAIN_PROFILE
+
+# Access configuration
+profile.include_callers   # False
+profile.relationship_depth # 1
+```
+
+### Architecture
+
+```
+Capability
+    ↓
+RetrievalProfile (configuration only)
+    ↓
+ContextPlanner (orchestrates retrieval using profile config)
+    ↓
+RepositoryIndex
+    ↓
+ContextBuilder
+```
+
+Profiles represent **retrieval intent**. All retrieval behavior continues to live in existing
+platform components (Planner, Repository, ContextBuilder).
 
 ## PlannerIntent Enum
 
