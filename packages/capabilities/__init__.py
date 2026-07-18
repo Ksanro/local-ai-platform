@@ -52,6 +52,7 @@ from packages.capabilities.base import Capability, PlannerIntent
 from packages.capabilities.debug import DebugCapability
 from packages.capabilities.explain import ExplainCapability
 from packages.capabilities.factory import CapabilityFactory
+from packages.capabilities.refactor import RefactorCapability
 from packages.capabilities.registry import CapabilityRegistry
 
 __all__ = [
@@ -61,4 +62,5 @@ __all__ = [
     "DebugCapability",
     "ExplainCapability",
     "PlannerIntent",
+    "RefactorCapability",
 ]

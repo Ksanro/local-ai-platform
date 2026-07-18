@@ -244,6 +244,101 @@ The `CapabilityResult` is an immutable dataclass with these fields:
 
 The **Debug** capability diagnoses errors and produces fix suggestions. It expands the retrieval scope using diagnostics, callers, callees, dependency information and impact analysis.
 
+## Refactor Capability
+
+The **Refactor** capability understands code change impact. It retrieves everything necessary for safe refactoring by expanding relationships to their full depth.
+
+### Execution Flow
+
+```
+User Query ("Refactor ProviderFactory")
+    ↓
+ContextPlanner (REFACTOR intent)
+    ↓
+RepositoryIndex.find()
+    ↓
+ContextBuilder (depth=3, relationship_expansion=True)
+    ↓
+ContextPackage assembly (callers + callees + dependencies + diagnostics + dead code + tests)
+    ↓
+Serializer
+    ↓
+CapabilityResult
+```
+
+### Pipeline Stages
+
+1. **Planning** — The `ContextPlanner` detects `REFACTOR` intent and produces a `ContextPlan` with maximum depth and relationship expansion.
+
+2. **Repository Search** — The `RepositoryIndex` is queried for symbols matching the query.
+
+3. **Context Building** — The `ContextBuilder` assembles context with **depth=3** and **relationship expansion enabled**, retrieving callers, callees, diagnostics, dependencies, dead code, and tests.
+
+4. **Package Assembly** — The `ContextPackage` includes primary symbol, supporting symbols, callers, callees, related modules, diagnostics, and relevant tests.
+
+5. **Serialization** — The `SerializerFactory` creates a provider-specific serializer.
+
+6. **Result** — All results are aggregated into an immutable `CapabilityResult`.
+
+### Retrieval Profile
+
+| Option | Refactor Value | Debug Value | Explain Value |
+|--------|---------------|-------------|---------------|
+| `maximum_depth` | 3 | 2 | 1 |
+| `relationship_expansion` | True | True | False |
+| `include_callers` | True | True | False |
+| `include_callees` | True | True | False |
+| `include_dependencies` | True | True | False |
+| `include_diagnostics` | True | True | False |
+| `include_dead_code` | True | False | False |
+| `include_tests` | True | False | False |
+
+### Implementation
+
+```python
+from packages.capabilities.base import Capability, PlannerIntent
+from packages.capabilities.models import CapabilityResult
+
+class RefactorCapability(Capability):
+
+    @property
+    def name(self) -> str:
+        return "refactor"
+
+    @property
+    def intent(self) -> PlannerIntent:
+        return PlannerIntent.REFACTOR
+
+    def execute(self, query: str, repository_index: RepositoryIndex) -> CapabilityResult:
+        # Stage 1: Planning (REFACTOR intent)
+        # Stage 2: Repository search
+        # Stage 3: Context building (depth=3, relationship_expansion)
+        # Stage 4: Package assembly (callers + callees + diagnostics + dead code + tests)
+        # Stage 5: Serialization
+        # Aggregate into CapabilityResult
+        ...
+```
+
+### Retrieval Strategy vs Debug
+
+Refactor differs from Debug in **depth** and **scope**. Debug retrieves callers, callees, diagnostics, and dependencies at depth 2. Refactor retrieves everything Debug does plus dead code and tests at depth 3.
+
+| Capability | Context Strategy |
+|------------|------------------|
+| Explain | minimal — symbol + immediate context |
+| Debug | diagnostic — callers, callees, diagnostics, dependencies |
+| Refactor | impact — callers, callees, diagnostics, dependencies, dead code, tests |
+
+The important architectural rule: **Capabilities define retrieval strategy, not retrieval algorithms.** The Repository, Planning, Ranking and Context packages remain the only owners of their respective logic.
+
+### Comparison Table
+
+| Capability | Retrieval Strategy | Depth | Relationship Expansion | Includes |
+|------------|-------------------|-------|------------------------|----------|
+| Explain | Minimal | 1 | False | Symbol + immediate context |
+| Debug | Diagnostic | 2 | True | Callers, callees, diagnostics, dependencies |
+| Refactor | Impact | 3 | True | Callers, callees, diagnostics, dependencies, dead code, tests |
+
 ### Execution Flow
 
 ```
