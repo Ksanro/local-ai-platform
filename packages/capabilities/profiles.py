@@ -162,4 +162,30 @@ REFACTOR_PROFILE = RetrievalProfile(
     max_context_tokens=4096,
 )
 
+#: Architecture review profile — comprehensive architectural analysis context.
+#:
+#: | Setting            | Value |
+#: |-------------------|-------|
+#: | include_callers   | True  |
+#: | include_callees   | True  |
+#: | include_dependencies | True  |
+#: | include_dependents | True  |
+#: | include_tests     | True  |
+#: | include_dead_code | True  |
+#: | include_diagnostics | True  |
+#: | relationship_depth | 3     |
+#: | max_context_tokens | 8192  |
+ARCHITECTURE_REVIEW_PROFILE = RetrievalProfile(
+    name="architecture-review",
+    include_callers=True,
+    include_callees=True,
+    include_dependencies=True,
+    include_dependents=True,
+    include_tests=True,
+    include_dead_code=True,
+    include_diagnostics=True,
+    relationship_depth=3,
+    max_context_tokens=8192,
+)
+
 

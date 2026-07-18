@@ -53,6 +53,7 @@ from packages.capabilities.debug import DebugCapability
 from packages.capabilities.explain import ExplainCapability
 from packages.capabilities.factory import CapabilityFactory
 from packages.capabilities.profiles import (
+    ARCHITECTURE_REVIEW_PROFILE,
     DEBUG_PROFILE,
     EXPLAIN_PROFILE,
     REFACTOR_PROFILE,
@@ -72,5 +73,6 @@ __all__ = [
     "DEBUG_PROFILE",
     "EXPLAIN_PROFILE",
     "REFACTOR_PROFILE",
+    "ARCHITECTURE_REVIEW_PROFILE",
     "RetrievalProfile",
 ]
