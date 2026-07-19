@@ -31,11 +31,15 @@ Public API
 """
 
 from packages.workflows.workflows.implement_feature import ImplementFeatureWorkflow
+from packages.workflows.workflows.pull_request_review import (
+    PullRequestReviewWorkflow,
+)
 from packages.workflows.workflows.refactor import RefactorWorkflow
 from packages.workflows.workflows.review import ReviewWorkflow
 
 __all__ = [
     "ImplementFeatureWorkflow",
+    "PullRequestReviewWorkflow",
     "RefactorWorkflow",
     "ReviewWorkflow",
 ]
