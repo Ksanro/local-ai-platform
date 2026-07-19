@@ -65,6 +65,14 @@ ignore_errors = true
 module = "starlette.*"
 ignore_errors = true
 
+[[tool.mypy.overrides]]
+module = "packages.workflows.*"
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+module = "tests.workflows.*"
+ignore_errors = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = [".", "apps", "packages"]
