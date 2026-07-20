@@ -26,7 +26,7 @@ from packages.pipeline.stages.repository_context import RepositoryContextStage
 from packages.providers import _load_providers
 from packages.providers.factory import create_provider
 from packages.providers.registry import has_provider
-from packages.repository import build_index
+from packages.repository import StructIndex, build_index
 
 logger = logging.getLogger(__name__)
 
@@ -66,11 +66,7 @@ async def lifespan(app: FastAPI):
 
             # Extract metrics from the built index.
             if index is not None:
-                from packages.repository.index.models import (
-                    RepositoryIndex as _Index,
-                )
-
-                if isinstance(index, _Index):
+                if isinstance(index, StructIndex):
                     indexed_modules = index.statistics().module_count
                     indexed_symbols = index.statistics().symbol_count
                     indexed_relationships = len(index.relationships())
@@ -111,10 +107,8 @@ async def lifespan(app: FastAPI):
         app.state.provider = provider
 
         # Cast index to the expected type for RepositoryContextStage.
-        from packages.repository.index.models import RepositoryIndex
-
-        typed_index: RepositoryIndex | None = (
-            index if isinstance(index, RepositoryIndex) else None
+        typed_index: StructIndex | None = (
+            index if isinstance(index, StructIndex) else None
         )
 
         engine = PipelineEngine()
