@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     cors_origins: list[str] = ["*"]
     default_provider: str = "vllm"
     repository_context_enabled: bool = True
+    repository_path: str = "."
 
     model_config = {"env_prefix": "APP_"}
 
