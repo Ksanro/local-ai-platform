@@ -28,24 +28,42 @@ if TYPE_CHECKING:
 
 
 def _make_request(
+    changed_files: list[str] | None = None,
+    changed_symbols: list[str] | None = None,
+    stack_trace: str | None = None,
+    reproduction_steps: list[str] | None = None,
     suspected_modules: list[str] | None = None,
     suspected_symbols: list[str] | None = None,
-    observed_stacktrace: str | None = None,
-    reproduction_steps: list[str] | None = None,
 ) -> TaskRequest:
-    """Create a TaskRequest for bug investigation."""
+    """Create a TaskRequest for bug investigation.
+
+    Supports both new field names (changed_files, changed_symbols,
+    stack_trace) and old field names (suspected_modules, suspected_symbols,
+    observed_stacktrace) for backward compatibility.
+    """
+    # New field names take precedence
+    modules = changed_files if changed_files is not None else (
+        suspected_modules if suspected_modules is not None else
+        ["packages/auth/", "packages/session/"]
+    )
+    symbols = changed_symbols if changed_symbols is not None else (
+        suspected_symbols if suspected_symbols is not None else
+        ["authenticate", "validate_session"]
+    )
+    trace = stack_trace if stack_trace is not None else "TimeoutError at line 42"
+
+    options: dict[str, object] = {
+        "changed_files": modules,
+        "changed_symbols": symbols,
+        "stack_trace": trace,
+    }
+    if reproduction_steps is not None:
+        options["reproduction_steps"] = reproduction_steps
+
     return TaskRequest(
         query="Auth fails on timeout",
         repository_root=".",
-        options={
-            "suspected_modules": suspected_modules
-            or ["packages/auth/", "packages/session/"],
-            "suspected_symbols": suspected_symbols or ["authenticate", "validate_session"],
-            "observed_stacktrace": observed_stacktrace
-            or "TimeoutError at line 42",
-            "reproduction_steps": reproduction_steps
-            or ["login", "wait", "access protected resource"],
-        },
+        options=options,
         user_messages=("Auth fails on timeout", "Authentication fails when session expires"),
     )
 
@@ -541,7 +559,7 @@ class TestEmptyInput:
         from packages.tasks.investigate_bug import InvestigateBugTask
 
         task = InvestigateBugTask()
-        request = _make_request(observed_stacktrace=None)
+        request = _make_request(stack_trace=None)
         mock_index = _make_mock_index()
 
         plan = task.plan(repository_index=mock_index, request=request)
@@ -576,7 +594,7 @@ class TestStacktraceHandling:
         from packages.tasks.investigate_bug import InvestigateBugTask
 
         task = InvestigateBugTask()
-        request = _make_request(observed_stacktrace="TimeoutError at line 42")
+        request = _make_request(stack_trace="TimeoutError at line 42")
         mock_index = _make_mock_index()
 
         plan = task.plan(repository_index=mock_index, request=request)
@@ -590,7 +608,7 @@ class TestStacktraceHandling:
         from packages.tasks.investigate_bug import InvestigateBugTask
 
         task = InvestigateBugTask()
-        request = _make_request(observed_stacktrace=None)
+        request = _make_request(stack_trace=None)
         mock_index = _make_mock_index()
 
         plan = task.plan(repository_index=mock_index, request=request)
@@ -1011,12 +1029,13 @@ class TestBugInvestigationRequest:
         from packages.tasks.bug_investigation_request import BugInvestigationRequest
 
         req = BugInvestigationRequest(
-            summary="Auth fails",
+            title="Auth fails",
             description="Authentication fails on timeout",
-            suspected_modules=("packages/auth/",),
-            suspected_symbols=("authenticate",),
-            observed_stacktrace="TimeoutError at line 42",
-            reproduction_steps=("login", "wait", "access"),
+            changed_files=("packages/auth/",),
+            changed_symbols=("authenticate",),
+            stack_trace="TimeoutError at line 42",
+            logs=("ERROR: timeout",),
+            tags=("auth", "timeout"),
         )
 
         task_req = req.to_task_request()
@@ -1024,18 +1043,24 @@ class TestBugInvestigationRequest:
         assert task_req is not None
         assert task_req.query == "Auth fails Authentication fails on timeout"
         assert task_req.user_messages == ("Auth fails", "Authentication fails on timeout")
+        assert "changed_files" in task_req.options
+        assert "changed_symbols" in task_req.options
+        assert "stack_trace" in task_req.options
+        assert "logs" in task_req.options
+        assert "tags" in task_req.options
 
     def test_request_to_task_request_no_stacktrace(self) -> None:
         """BugInvestigationRequest should handle no stacktrace."""
         from packages.tasks.bug_investigation_request import BugInvestigationRequest
 
         req = BugInvestigationRequest(
-            summary="Auth fails",
+            title="Auth fails",
             description="Authentication fails",
-            suspected_modules=(),
-            suspected_symbols=(),
-            observed_stacktrace=None,
-            reproduction_steps=(),
+            changed_files=(),
+            changed_symbols=(),
+            stack_trace=None,
+            logs=(),
+            tags=(),
         )
 
         task_req = req.to_task_request()
@@ -1043,18 +1068,22 @@ class TestBugInvestigationRequest:
         assert task_req is not None
         assert task_req.query == "Auth fails Authentication fails"
         assert task_req.user_messages == ("Auth fails", "Authentication fails")
+        assert "stack_trace" not in task_req.options
+        assert "logs" not in task_req.options
+        assert "tags" not in task_req.options
 
     def test_request_to_task_request_empty(self) -> None:
         """BugInvestigationRequest should handle empty inputs."""
         from packages.tasks.bug_investigation_request import BugInvestigationRequest
 
         req = BugInvestigationRequest(
-            summary="",
+            title="",
             description="",
-            suspected_modules=(),
-            suspected_symbols=(),
-            observed_stacktrace=None,
-            reproduction_steps=(),
+            changed_files=(),
+            changed_symbols=(),
+            stack_trace=None,
+            logs=(),
+            tags=(),
         )
 
         task_req = req.to_task_request()

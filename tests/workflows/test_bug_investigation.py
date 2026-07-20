@@ -45,16 +45,21 @@ def _make_mock_index() -> object:
 
 
 def _make_request() -> object:
-    """Create a TaskRequest for bug investigation."""
+    """Create a TaskRequest for bug investigation.
+
+    Supports both new field names (changed_files, changed_symbols,
+    stack_trace) and old field names (suspected_modules, suspected_symbols,
+    observed_stacktrace) for backward compatibility.
+    """
     from packages.tasks.models import TaskRequest
 
     return TaskRequest(
         query="Auth fails on timeout",
         repository_root=".",
         options={
-            "suspected_modules": ["packages/auth/", "packages/session/"],
-            "suspected_symbols": ["authenticate", "validate_session"],
-            "observed_stacktrace": "TimeoutError at line 42",
+            "changed_files": ["packages/auth/", "packages/session/"],
+            "changed_symbols": ["authenticate", "validate_session"],
+            "stack_trace": "TimeoutError at line 42",
             "reproduction_steps": ["login", "wait", "access protected resource"],
         },
         user_messages=(

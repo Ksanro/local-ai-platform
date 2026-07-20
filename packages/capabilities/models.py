@@ -28,6 +28,39 @@ Public API
         estimated_tokens=256,
         execution_time_ms=42.5,
     )
+
+Bug Investigation Report
+------------------------
+
+For bug investigation, the result includes an ``investigation_report``
+field with investigation metadata:
+
+.. code-block:: python
+
+    from packages.capabilities.models import CapabilityResult
+
+    result = CapabilityResult(
+        query="Auth fails on timeout",
+        intent="DEBUG",
+        context_plan=plan,
+        context_package=package,
+        provider_request=request,
+        selected_symbols=("authenticate",),
+        selected_modules=("packages/auth/auth.py",),
+        estimated_tokens=512,
+        execution_time_ms=120.0,
+        investigation_report={
+            "affected_modules": ("packages/auth/auth.py",),
+            "affected_symbols": ("authenticate",),
+            "dependency_summary": "Callers: 0, Callees: 2, Modules: 1",
+            "diagnostics_summary": "Analyzed 3 symbols for diagnostics.",
+            "impact_summary": "Primary symbol: authenticate.",
+            "architectural_findings": (),
+            "refactoring_opportunities": (),
+            "context_statistics": {"primary_symbol": "authenticate"},
+            "estimated_tokens": 512,
+        },
+    )
 """
 
 from __future__ import annotations
@@ -53,6 +86,7 @@ class CapabilityResult:
         selected_modules: Tuple of selected module file paths.
         estimated_tokens: Estimated token count for the context.
         execution_time_ms: Total execution time in milliseconds.
+        investigation_report: Investigation report metadata (bug investigation).
     """
 
     query: str
@@ -64,3 +98,4 @@ class CapabilityResult:
     selected_modules: tuple[str, ...] = ()
     estimated_tokens: int = 0
     execution_time_ms: float = 0.0
+    investigation_report: dict[str, object] | None = None

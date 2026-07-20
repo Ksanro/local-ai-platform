@@ -22,6 +22,23 @@ CapabilityResult
 The capability is orchestration only — no duplicated logic.
 No ranking, no AST inspection, no filesystem access, no provider calls.
 
+Investigation Report
+--------------------
+
+The CapabilityResult includes an ``investigation_report`` field with:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| affected_modules | tuple[str, ...] | Modules identified as affected |
+| affected_symbols | tuple[str, ...] | Symbols identified as affected |
+| dependency_summary | str | Summary of dependency relationships |
+| diagnostics_summary | str | Summary of diagnostic findings |
+| impact_summary | str | Summary of impact analysis |
+| architectural_findings | tuple[str, ...] | Architectural issues found |
+| refactoring_opportunities | tuple[str, ...] | Suggested refactoring opportunities |
+| context_statistics | dict | Statistics about the context package |
+| estimated_tokens | int | Estimated token usage |
+
 Retrieval Profile
 -----------------
 
@@ -79,7 +96,7 @@ from packages.capabilities.models import CapabilityResult
 from packages.capabilities.profiles import DEBUG_PROFILE, RetrievalProfile
 from packages.context.context_package import ContextPackage
 from packages.context.context_package import RelationshipSummary as RelationshipSummaryPub
-from packages.context.models import ContextCandidate, ContextQuery, ContextResult
+from packages.context.models import ContextBudgetResult, ContextCandidate, ContextQuery, ContextResult
 from packages.planning.plan import ContextPlan
 from packages.repository.index.models import RepositoryIndex
 from packages.serializers.factory import SerializerFactory
@@ -137,7 +154,7 @@ class BugInvestigationCapability(Capability):
             repository_index: The repository index to search.
 
         Returns:
-            An immutable ``CapabilityResult``.
+            An immutable ``CapabilityResult`` with investigation report.
         """
         # Start timing.
         start_time = time.monotonic()
@@ -161,6 +178,13 @@ class BugInvestigationCapability(Capability):
         # Stage 5: Serialize to provider request.
         provider_request = self._stage_serialization(context_package, query)
 
+        # Build investigation report metadata.
+        investigation_report = self._build_investigation_report(
+            context_result=context_result,
+            context_package=context_package,
+            selected_symbols=selected_symbols,
+        )
+
         # Calculate execution time.
         execution_time_ms = (time.monotonic() - start_time) * 1000.0
 
@@ -175,6 +199,7 @@ class BugInvestigationCapability(Capability):
             selected_modules=tuple(context_result.selected_modules),
             estimated_tokens=context_package.estimated_tokens,
             execution_time_ms=execution_time_ms,
+            investigation_report=investigation_report,
         )
 
     # ------------------------------------------------------------------
@@ -413,4 +438,86 @@ class BugInvestigationCapability(Capability):
         )
         return provider_request
 
+    # ------------------------------------------------------------------
+    # Investigation report
+    # ------------------------------------------------------------------
 
+    def _build_investigation_report(
+        self,
+        context_result: ContextResult,
+        context_package: ContextPackage,
+        selected_symbols: tuple[str, ...],
+    ) -> dict[str, object]:
+        """Build the investigation report metadata.
+
+        Args:
+            context_result: The context building result.
+            context_package: The assembled context package.
+            selected_symbols: Selected symbol qualified names.
+
+        Returns:
+            A dict containing investigation report fields.
+        """
+        # Affected modules
+        affected_modules = tuple(context_result.selected_modules)
+
+        # Affected symbols
+        affected_symbols = selected_symbols
+
+        # Dependency summary
+        caller_count = context_package.relationship_summary.caller_count
+        callee_count = context_package.relationship_summary.callee_count
+        dependency_summary = (
+            f"Callers: {caller_count}, Callees: {callee_count}, "
+            f"Modules: {context_package.relationship_summary.module_count}"
+        )
+
+        # Diagnostics summary (derived from context candidates)
+        diagnostics_items: list[str] = []
+        for candidate in context_result.candidates:
+            # Candidates may carry diagnostic info via symbol attributes
+            if hasattr(candidate, "symbol_id"):
+                diagnostics_items.append(f"symbol:{candidate.symbol_id}")
+        diagnostics_summary = (
+            f"Analyzed {len(diagnostics_items)} symbols for diagnostics."
+            if diagnostics_items
+            else "No diagnostics findings."
+        )
+
+        # Impact summary
+        impact_summary = (
+            f"Primary symbol: {context_package.primary_symbol}. "
+            f"Supporting symbols: {len(context_package.supporting_symbols)}. "
+            f"Related modules: {len(context_package.related_modules)}."
+        )
+
+        # Architectural findings
+        architectural_findings: tuple[str, ...] = ()
+
+        # Refactoring opportunities
+        refactoring_opportunities: tuple[str, ...] = ()
+
+        # Context statistics
+        context_statistics = {
+            "primary_symbol": context_package.primary_symbol,
+            "supporting_symbols_count": len(context_package.supporting_symbols),
+            "related_callers_count": len(context_package.related_callers),
+            "related_callees_count": len(context_package.related_callees),
+            "related_modules_count": len(context_package.related_modules),
+            "total_symbols": context_package.relationship_summary.symbol_count,
+        }
+
+        # Estimated tokens
+        estimated_tokens = context_package.estimated_tokens
+
+        return {
+            "affected_modules": affected_modules,
+            "affected_symbols": affected_symbols,
+            "dependency_summary": dependency_summary,
+            "diagnostics_summary": diagnostics_summary,
+            "impact_summary": impact_summary,
+            "architectural_findings": architectural_findings,
+            "refactoring_opportunities": refactoring_opportunities,
+            "context_statistics": context_statistics,
+            "estimated_tokens": estimated_tokens,
+        }

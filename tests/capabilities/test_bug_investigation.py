@@ -2169,3 +2169,238 @@ class TestStageAssemblePackageAdditional:
 
 
 
+
+
+# ---------------------------------------------------------------------------
+# Test: Investigation Report
+# ---------------------------------------------------------------------------
+
+
+class TestInvestigationReport:
+    """Tests for investigation_report in CapabilityResult."""
+
+    def test_result_has_investigation_report(self) -> None:
+        """Result should have investigation_report field."""
+        from packages.capabilities.bug_investigation import BugInvestigationCapability
+
+        cap = BugInvestigationCapability()
+        mock_index = _make_mock_index()
+
+        result = cap.execute(query="Test query", repository_index=mock_index)
+
+        assert result.investigation_report is not None
+
+    def test_investigation_report_has_affected_modules(self) -> None:
+        """Investigation report should have affected_modules."""
+        from packages.capabilities.bug_investigation import BugInvestigationCapability
+
+        cap = BugInvestigationCapability()
+        mock_index = _make_mock_index()
+
+        result = cap.execute(query="Test query", repository_index=mock_index)
+
+        report = result.investigation_report
+        assert report is not None
+        assert "affected_modules" in report
+
+    def test_investigation_report_has_affected_symbols(self) -> None:
+        """Investigation report should have affected_symbols."""
+        from packages.capabilities.bug_investigation import BugInvestigationCapability
+
+        cap = BugInvestigationCapability()
+        mock_index = _make_mock_index()
+
+        result = cap.execute(query="Test query", repository_index=mock_index)
+
+        report = result.investigation_report
+        assert report is not None
+        assert "affected_symbols" in report
+
+    def test_investigation_report_has_dependency_summary(self) -> None:
+        """Investigation report should have dependency_summary."""
+        from packages.capabilities.bug_investigation import BugInvestigationCapability
+
+        cap = BugInvestigationCapability()
+        mock_index = _make_mock_index()
+
+        result = cap.execute(query="Test query", repository_index=mock_index)
+
+        report = result.investigation_report
+        assert report is not None
+        assert "dependency_summary" in report
+
+    def test_investigation_report_has_diagnostics_summary(self) -> None:
+        """Investigation report should have diagnostics_summary."""
+        from packages.capabilities.bug_investigation import BugInvestigationCapability
+
+        cap = BugInvestigationCapability()
+        mock_index = _make_mock_index()
+
+        result = cap.execute(query="Test query", repository_index=mock_index)
+
+        report = result.investigation_report
+        assert report is not None
+        assert "diagnostics_summary" in report
+
+    def test_investigation_report_has_impact_summary(self) -> None:
+        """Investigation report should have impact_summary."""
+        from packages.capabilities.bug_investigation import BugInvestigationCapability
+
+        cap = BugInvestigationCapability()
+        mock_index = _make_mock_index()
+
+        result = cap.execute(query="Test query", repository_index=mock_index)
+
+        report = result.investigation_report
+        assert report is not None
+        assert "impact_summary" in report
+
+    def test_investigation_report_has_architectural_findings(self) -> None:
+        """Investigation report should have architectural_findings."""
+        from packages.capabilities.bug_investigation import BugInvestigationCapability
+
+        cap = BugInvestigationCapability()
+        mock_index = _make_mock_index()
+
+        result = cap.execute(query="Test query", repository_index=mock_index)
+
+        report = result.investigation_report
+        assert report is not None
+        assert "architectural_findings" in report
+
+    def test_investigation_report_has_refactoring_opportunities(self) -> None:
+        """Investigation report should have refactoring_opportunities."""
+        from packages.capabilities.bug_investigation import BugInvestigationCapability
+
+        cap = BugInvestigationCapability()
+        mock_index = _make_mock_index()
+
+        result = cap.execute(query="Test query", repository_index=mock_index)
+
+        report = result.investigation_report
+        assert report is not None
+        assert "refactoring_opportunities" in report
+
+    def test_investigation_report_has_context_statistics(self) -> None:
+        """Investigation report should have context_statistics."""
+        from packages.capabilities.bug_investigation import BugInvestigationCapability
+
+        cap = BugInvestigationCapability()
+        mock_index = _make_mock_index()
+
+        result = cap.execute(query="Test query", repository_index=mock_index)
+
+        report = result.investigation_report
+        assert report is not None
+        assert "context_statistics" in report
+
+    def test_investigation_report_has_estimated_tokens(self) -> None:
+        """Investigation report should have estimated_tokens."""
+        from packages.capabilities.bug_investigation import BugInvestigationCapability
+
+        cap = BugInvestigationCapability()
+        mock_index = _make_mock_index()
+
+        result = cap.execute(query="Test query", repository_index=mock_index)
+
+        report = result.investigation_report
+        assert report is not None
+        assert "estimated_tokens" in report
+
+    def test_investigation_report_is_deterministic(self) -> None:
+        """Investigation report should be deterministic."""
+        from packages.capabilities.bug_investigation import BugInvestigationCapability
+
+        cap = BugInvestigationCapability()
+        mock_index = _make_mock_index()
+
+        result1 = cap.execute(query="Test query", repository_index=mock_index)
+        result2 = cap.execute(query="Test query", repository_index=mock_index)
+
+        report1 = result1.investigation_report
+        report2 = result2.investigation_report
+
+        assert report1 is not None
+        assert report2 is not None
+        assert report1["dependency_summary"] == report2["dependency_summary"]
+        assert report1["impact_summary"] == report2["impact_summary"]
+        assert report1["estimated_tokens"] == report2["estimated_tokens"]
+        assert report1["context_statistics"] == report2["context_statistics"]
+
+    def test_investigation_report_affected_modules_is_tuple(self) -> None:
+        """affected_modules should be a tuple."""
+        from packages.capabilities.bug_investigation import BugInvestigationCapability
+
+        cap = BugInvestigationCapability()
+        mock_index = _make_mock_index()
+
+        result = cap.execute(query="Test query", repository_index=mock_index)
+
+        report = result.investigation_report
+        assert report is not None
+        assert isinstance(report["affected_modules"], tuple)
+
+    def test_investigation_report_affected_symbols_is_tuple(self) -> None:
+        """affected_symbols should be a tuple."""
+        from packages.capabilities.bug_investigation import BugInvestigationCapability
+
+        cap = BugInvestigationCapability()
+        mock_index = _make_mock_index()
+
+        result = cap.execute(query="Test query", repository_index=mock_index)
+
+        report = result.investigation_report
+        assert report is not None
+        assert isinstance(report["affected_symbols"], tuple)
+
+    def test_investigation_report_architectural_findings_is_tuple(self) -> None:
+        """architectural_findings should be a tuple."""
+        from packages.capabilities.bug_investigation import BugInvestigationCapability
+
+        cap = BugInvestigationCapability()
+        mock_index = _make_mock_index()
+
+        result = cap.execute(query="Test query", repository_index=mock_index)
+
+        report = result.investigation_report
+        assert report is not None
+        assert isinstance(report["architectural_findings"], tuple)
+
+    def test_investigation_report_dependency_summary_is_string(self) -> None:
+        """dependency_summary should be a string."""
+        from packages.capabilities.bug_investigation import BugInvestigationCapability
+
+        cap = BugInvestigationCapability()
+        mock_index = _make_mock_index()
+
+        result = cap.execute(query="Test query", repository_index=mock_index)
+
+        report = result.investigation_report
+        assert report is not None
+        assert isinstance(report["dependency_summary"], str)
+
+    def test_investigation_report_diagnostics_summary_is_string(self) -> None:
+        """diagnostics_summary should be a string."""
+        from packages.capabilities.bug_investigation import BugInvestigationCapability
+
+        cap = BugInvestigationCapability()
+        mock_index = _make_mock_index()
+
+        result = cap.execute(query="Test query", repository_index=mock_index)
+
+        report = result.investigation_report
+        assert report is not None
+        assert isinstance(report["diagnostics_summary"], str)
+
+    def test_investigation_report_impact_summary_is_string(self) -> None:
+        """impact_summary should be a string."""
+        from packages.capabilities.bug_investigation import BugInvestigationCapability
+
+        cap = BugInvestigationCapability()
+        mock_index = _make_mock_index()
+
+        result = cap.execute(query="Test query", repository_index=mock_index)
+
+        report = result.investigation_report
+        assert report is not None
+        assert isinstance(report["impact_summary"], str)

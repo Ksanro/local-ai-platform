@@ -15,11 +15,11 @@ TaskRequest
     ↓
 BugInvestigationWorkflow
     ↓
-BugInvestigationTask
+BugInvestigationCapability
     ↓
-RepositoryIndex + TaskRequest
+RepositoryIndex + ContextPlanner + ContextBuilder
     ↓
-TaskPlan
+CapabilityResult (with investigation_report)
 ```
 
 ## Workflow DAG
@@ -49,35 +49,44 @@ The immutable input model for bug investigation:
 ```python
 @dataclass(frozen=True, slots=True)
 class BugInvestigationRequest:
-    summary: str
-    description: str
-    suspected_modules: tuple[str, ...]
-    suspected_symbols: tuple[str, ...]
-    observed_stacktrace: str | None
-    reproduction_steps: tuple[str, ...]
+    title: str
+    description: str = ""
+    observed_behavior: str = ""
+    expected_behavior: str = ""
+    changed_files: tuple[str, ...] = ()
+    changed_symbols: tuple[str, ...] = ()
+    stack_trace: str | None = None
+    logs: tuple[str, ...] = ()
+    tags: tuple[str, ...] = ()
 ```
 
 **Attributes:**
 
 | Attribute | Type | Description |
 |-----------|------|-------------|
-| `summary` | `str` | Brief summary of the bug |
+| `title` | `str` | Brief summary of the bug (required) |
 | `description` | `str` | Detailed description of the bug |
-| `suspected_modules` | `tuple[str, ...]` | Module paths suspected to contain the bug |
-| `suspected_symbols` | `tuple[str, ...]` | Symbol names suspected to be involved |
-| `observed_stacktrace` | `str \| None` | Optional stacktrace observed during the bug |
-| `reproduction_steps` | `tuple[str, ...]` | Steps to reproduce the bug |
+| `observed_behavior` | `str` | What actually happens when the bug occurs |
+| `expected_behavior` | `str` | What should happen in normal operation |
+| `changed_files` | `tuple[str, ...]` | File paths that were recently changed |
+| `changed_symbols` | `tuple[str, ...]` | Symbol names that were recently changed |
+| `stack_trace` | `str \| None` | Optional stacktrace observed during the bug |
+| `logs` | `tuple[str, ...]` | Log messages related to the bug |
+| `tags` | `tuple[str, ...]` | Tags for categorizing the bug |
 
 **Mapper:**
 
 ```python
 request = BugInvestigationRequest(
-    summary="Auth fails on timeout",
+    title="Auth fails on timeout",
     description="Authentication fails when session expires",
-    suspected_modules=("packages/auth/", "packages/session/"),
-    suspected_symbols=("authenticate", "validate_session"),
-    observed_stacktrace="TimeoutError at line 42",
-    reproduction_steps=("login", "wait", "access protected resource"),
+    observed_behavior="TimeoutError after 30s",
+    expected_behavior="Successful authentication",
+    changed_files=("packages/auth/auth.py", "packages/session/session.py"),
+    changed_symbols=("authenticate", "validate_session"),
+    stack_trace="TimeoutError at line 42",
+    logs=("ERROR: timeout", "WARN: session expired"),
+    tags=("auth", "timeout", "session"),
 )
 
 task_request = request.to_task_request()
@@ -87,9 +96,9 @@ task_request = request.to_task_request()
 
 The intermediate representation consumed by the task framework. The `BugInvestigationRequest.to_task_request()` method maps fields into:
 
-- `query` — constructed from summary and description
-- `options` — contains suspected_modules, suspected_symbols, observed_stacktrace, reproduction_steps
-- `user_messages` — tuple of (summary, description)
+- `query` — constructed from title and description
+- `options` — contains changed_files, changed_symbols, stack_trace, logs, tags
+- `user_messages` — tuple of (title, description)
 - `repository_root` — always `"."`
 
 ### Workflow
@@ -121,7 +130,7 @@ plan = workflow.plan(repository_index, request)
 - `plan()` — Generates a `WorkflowPlan` from repository data and request
 - `estimate()` — Computes execution estimates
 
-### Tasks
+### Task
 
 #### InvestigateBugTask
 
@@ -136,8 +145,8 @@ plan = task.plan(repository_index, request)
 
 **Responsibilities:**
 
-1. Identify likely affected symbols from `suspected_symbols` in request options
-2. Identify likely affected modules from `suspected_modules` in request options
+1. Identify likely affected symbols from `changed_symbols` in request options
+2. Identify likely affected modules from `changed_files` in request options
 3. Collect dependency information from repository index
 4. Collect diagnostics from repository index
 5. Collect architecture findings from repository index
@@ -203,6 +212,40 @@ result = capability.execute(query="Why is auth failing?", repository_index=index
 | `include_dead_code` | `false` |
 | `include_tests` | `true` |
 
+### Investigation Report
+
+The `CapabilityResult` includes an `investigation_report` field with metadata:
+
+```python
+result = capability.execute(query="Auth fails on timeout", repository_index=index)
+report = result.investigation_report
+```
+
+**Report Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `affected_modules` | `tuple[str, ...]` | Modules identified as affected |
+| `affected_symbols` | `tuple[str, ...]` | Symbols identified as affected |
+| `dependency_summary` | `str` | Summary of dependency relationships |
+| `diagnostics_summary` | `str` | Summary of diagnostic findings |
+| `impact_summary` | `str` | Summary of impact analysis |
+| `architectural_findings` | `tuple[str, ...]` | Architectural issues found |
+| `refactoring_opportunities` | `tuple[str, ...]` | Suggested refactoring opportunities |
+| `context_statistics` | `dict` | Statistics about the context package |
+| `estimated_tokens` | `int` | Estimated token usage |
+
+**Context Statistics:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `primary_symbol` | `str` | Primary symbol qualified name |
+| `supporting_symbols_count` | `int` | Number of supporting symbols |
+| `related_callers_count` | `int` | Number of related callers |
+| `related_callees_count` | `int` | Number of related callees |
+| `related_modules_count` | `int` | Number of related modules |
+| `total_symbols` | `int` | Total symbol count |
+
 ### WorkflowPlan
 
 The `WorkflowPlan` is the final output of the workflow:
@@ -233,42 +276,34 @@ plan = workflow.plan(repository_index, request)
 - **Architecture findings** — Dependency cycles, high coupling modules, layering violations
 - **Investigation context** — Summary of all findings for the AI coding agent
 
-## Repository Search
+## Request Flow
 
-The repository search step identifies affected symbols and modules:
+```
+User Request (BugInvestigationRequest)
+    ↓
+Workflow (BugInvestigationWorkflow)
+    ↓
+Task (InvestigateBugTask)
+    ↓
+Capability (BugInvestigationCapability)
+    ↓
+Repository Intelligence (RepositoryIndex + ContextPlanner + ContextBuilder)
+    ↓
+Context Package (ContextPackage)
+    ↓
+Execution Engine (responsible for execution, not this workflow)
+```
 
-1. Extract suspected symbols and modules from request options
-2. Validate each symbol against `repository_index.find()`
-3. Validate each module against `repository_index.find_module()`
-4. Include both validated and unvalidated items as candidates (external symbols may not be in the index)
+## Why Investigation is Deterministic
 
-## Dependency Analysis
+The bug investigation workflow produces deterministic output because:
 
-Dependency paths are collected from the repository index:
-
-1. Query `repository_index.relationships()` for all relationships
-2. Filter relationships where source or target matches candidate symbols
-3. Build path strings from relationship source → target
-4. Also check module-level dependencies from `repository_index.modules`
-
-## Impact Analysis
-
-Impact analysis identifies the blast radius of the bug:
-
-1. Extract changed symbols from request options
-2. Analyze impact using `ChangeImpactAnalyzer`
-3. Collect callers, callees, and transitive dependencies
-
-## Context Generation
-
-Context is generated by combining:
-
-1. **Primary symbol** — First candidate symbol from repository search
-2. **Supporting symbols** — Remaining candidates ordered by rank
-3. **Related callers** — Symbols that call the primary symbol
-4. **Related callees** — Symbols called by the primary symbol
-5. **Related modules** — All modules containing candidate symbols
-6. **Relationship summary** — Counts of callers, callees, modules, symbols
+1. **No randomness:** All operations use deterministic algorithms — no random sampling, no stochastic ranking.
+2. **Fixed input:** Given the same `BugInvestigationRequest` and `RepositoryIndex`, the same output is always produced.
+3. **No external dependencies:** The workflow does not call providers, LLMs, or any external services.
+4. **Immutable models:** All request, result, and plan models are frozen dataclasses with slots.
+5. **No state mutation:** The workflow does not mutate the repository index or any input data.
+6. **Sorted outputs:** All outputs are sorted (e.g., module names, symbol names) to ensure consistent ordering.
 
 ## Constraints
 
@@ -282,6 +317,7 @@ The implementation must:
 - **NOT** duplicate repository logic
 - **NOT** duplicate diagnostics
 - **NOT** duplicate architecture logic
+- **NOT** invoke the Execution Engine
 
 ## Usage
 
@@ -291,12 +327,15 @@ from packages.workflows.workflows.bug_investigation import BugInvestigationWorkf
 
 # Create the request
 request = BugInvestigationRequest(
-    summary="Auth fails on timeout",
+    title="Auth fails on timeout",
     description="Authentication fails when session expires",
-    suspected_modules=("packages/auth/", "packages/session/"),
-    suspected_symbols=("authenticate", "validate_session"),
-    observed_stacktrace="TimeoutError at line 42",
-    reproduction_steps=("login", "wait", "access protected resource"),
+    observed_behavior="TimeoutError after 30s",
+    expected_behavior="Successful authentication",
+    changed_files=("packages/auth/auth.py", "packages/session/session.py"),
+    changed_symbols=("authenticate", "validate_session"),
+    stack_trace="TimeoutError at line 42",
+    logs=("ERROR: timeout", "WARN: session expired"),
+    tags=("auth", "timeout", "session"),
 )
 
 # Convert to TaskRequest
@@ -322,17 +361,17 @@ Tests verify:
 
 - Immutable request model (`frozen=True`)
 - Deterministic WorkflowPlan
-- Candidate symbols identified
-- Dependency paths included
-- Diagnostics included
-- Architecture findings included
-- Serializer accepts WorkflowPlan
+- Deterministic TaskPlan
+- Deterministic CapabilityResult
+- Workflow uses only public APIs
+- No repository duplication
+- No provider execution
 - >95% coverage
 
 Run tests with:
 
 ```bash
-pytest tests/tasks/test_investigate_bug.py tests/capabilities/test_bug_investigation.py tests/workflows/test_bug_investigation.py -v
+pytest tests/tasks/test_bug_investigation_request.py tests/tasks/test_investigate_bug.py tests/capabilities/test_bug_investigation.py tests/workflows/test_bug_investigation.py -v
 ```
 
 ## Files
@@ -341,8 +380,10 @@ pytest tests/tasks/test_investigate_bug.py tests/capabilities/test_bug_investiga
 |------|-------------|
 | `packages/tasks/bug_investigation_request.py` | `BugInvestigationRequest` dataclass |
 | `packages/tasks/investigate_bug.py` | `InvestigateBugTask` |
+| `packages/tasks/bug_investigation.py` | `BugInvestigationTask` (alias) |
 | `packages/capabilities/bug_investigation.py` | `BugInvestigationCapability` |
 | `packages/workflows/workflows/bug_investigation.py` | `BugInvestigationWorkflow` |
+| `tests/tasks/test_bug_investigation_request.py` | Request model tests |
 | `tests/tasks/test_investigate_bug.py` | Task tests |
 | `tests/capabilities/test_bug_investigation.py` | Capability tests |
 | `tests/workflows/test_bug_investigation.py` | Workflow tests |

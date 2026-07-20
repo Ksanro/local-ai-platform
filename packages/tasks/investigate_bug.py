@@ -115,14 +115,24 @@ class InvestigateBugTask(Task):
         Returns:
             A TaskPlan with investigation scope steps.
         """
-        # Extract suspected symbols and modules from request options
+        # Extract suspected symbols and modules from request options.
+        # Support both old field names (suspected_symbols/suspected_modules)
+        # and new field names (changed_symbols/changed_files).
         suspected_symbols: list[str] = []
         suspected_modules: list[str] = []
 
         if hasattr(request, "options") and request.options:
             options = request.options
-            symbols = options.get("suspected_symbols", [])
-            modules = options.get("suspected_modules", [])
+
+            # New field names (changed_symbols / changed_files)
+            symbols = options.get("changed_symbols", [])
+            modules = options.get("changed_files", [])
+
+            # Fall back to old field names if new ones are absent
+            if not symbols:
+                symbols = options.get("suspected_symbols", [])
+            if not modules:
+                modules = options.get("suspected_modules", [])
 
             if isinstance(symbols, list):
                 suspected_symbols = [str(s) for s in symbols]
@@ -233,10 +243,13 @@ class InvestigateBugTask(Task):
 
         # Step 5: Build investigation context
         stacktrace_info = ""
-        if request.options and "observed_stacktrace" in request.options:
-            stacktrace_info = (
-                f"Stacktrace: {request.options['observed_stacktrace']}. "
+        if request.options:
+            # Support both new (stack_trace) and old (observed_stacktrace) field names
+            stacktrace = request.options.get("stack_trace") or request.options.get(
+                "observed_stacktrace"
             )
+            if stacktrace:
+                stacktrace_info = f"Stacktrace: {stacktrace}. "
 
         steps.append(
             TaskStep(
