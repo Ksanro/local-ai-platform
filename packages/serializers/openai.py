@@ -96,6 +96,7 @@ class OpenAISerializer(ProviderSerializer):
         self,
         context_package: ContextPackage | None,
         messages: list[dict[str, Any]],
+        model: str = "default",
     ) -> ProviderRequest:
         """Serialize into OpenAI Chat Completions format.
 
@@ -149,6 +150,7 @@ class OpenAISerializer(ProviderSerializer):
         return ProviderRequest(
             provider_type=ProviderType.openai,
             messages=all_messages,
+            model=model,
         )
 
     @staticmethod

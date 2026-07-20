@@ -11,6 +11,7 @@ import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -29,6 +30,12 @@ from packages.providers.registry import has_provider
 from packages.repository import StructIndex, build_index
 
 logger = logging.getLogger(__name__)
+
+
+# Load .env file from project root at module import time.
+_env_path = Path(__file__).resolve().parents[2] / ".env"
+if _env_path.is_file():
+    load_dotenv(dotenv_path=_env_path, override=True)
 
 
 @asynccontextmanager

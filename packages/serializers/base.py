@@ -88,6 +88,7 @@ class ProviderSerializer(ABC):
         self,
         context_package: ContextPackage | None,
         messages: list[dict[str, Any]],
+        model: str = "default",
     ) -> ProviderRequest:
         """Serialize platform models into a provider request.
 
@@ -114,17 +115,19 @@ class ProviderSerializer(ABC):
                 if no repository context is available.
             messages: List of message dicts with ``role`` and ``content``
                 keys, as received from the gateway.
+            model: Model identifier for the provider.
 
         Returns:
             A ``ProviderRequest`` ready for provider consumption.
         """
-        return self._serialize(context_package, messages)
+        return self._serialize(context_package, messages, model)
 
     @abstractmethod
     def _serialize(
         self,
         context_package: ContextPackage | None,
         messages: list[dict[str, Any]],
+        model: str,
     ) -> ProviderRequest:
         """Implement the serialization logic.
 
@@ -135,6 +138,7 @@ class ProviderSerializer(ABC):
         Args:
             context_package: The platform context package, or ``None``.
             messages: List of message dicts.
+            model: Model identifier for the provider.
 
         Returns:
             A formatted ``ProviderRequest``.

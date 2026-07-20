@@ -322,11 +322,15 @@ class RepositoryContextStage(PipelineStage):
         if not messages:
             return
 
+        # Extract model from the request.
+        model = request.get("model", "default")
+
         try:
             serializer = SerializerFactory.create(ProviderType.openai)
             provider_request = serializer.serialize(
                 context_package=context_package,
                 messages=messages,
+                model=model,
             )
             context.set_metadata("provider_request", provider_request)
         except Exception as exc:
