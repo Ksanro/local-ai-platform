@@ -3,6 +3,21 @@
 Holds mutable state shared across all pipeline stages during a single
 request's lifecycle. Each stage can read and write context fields to
 pass data between stages.
+
+Integration Milestone v1
+------------------------
+
+PipelineContext now carries the complete engineering execution flow:
+
+    Request
+      → ContextPackage        (RepositoryContextStage)
+      → WorkflowPlan          (WorkflowStage)
+      → ExecutionReport       (ExecutionStage)
+      → VerificationReport    (VerificationStage)
+      → EvaluationReport      (EvaluationStage)
+      → ProviderResponse      (ProviderStage)
+
+All reports survive every stage without serialization loss.
 """
 
 from __future__ import annotations
@@ -10,10 +25,16 @@ from __future__ import annotations
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from packages.context.context_package import ContextPackage
 from packages.pipeline.result import PipelineStageResult
+
+if TYPE_CHECKING:
+    from packages.evaluation.models import EvaluationReport  # noqa: F401
+    from packages.execution.runtime_models import ExecutionReport  # noqa: F401
+    from packages.verification.models import VerificationReport  # noqa: F401
+    from packages.workflows.models import WorkflowPlan  # noqa: F401
 
 
 @dataclass
@@ -32,6 +53,10 @@ class PipelineContext:
         start_time: perf_counter timestamp when the pipeline started.
         context_package: Assembled repository context from the
             RepositoryContextStage. Read-only after population.
+        workflow_plan: WorkflowPlan produced by WorkflowStage.
+        execution_report: ExecutionReport produced by ExecutionStage.
+        verification_report: VerificationReport produced by VerificationStage.
+        evaluation_report: EvaluationReport produced by EvaluationStage.
     """
 
     request_id: str = field(default_factory=lambda: str(uuid.uuid4()))
@@ -40,6 +65,10 @@ class PipelineContext:
     metadata: dict[str, Any] = field(default_factory=dict)
     start_time: float = field(default_factory=time.perf_counter)
     context_package: ContextPackage | None = None
+    workflow_plan: Any = None
+    execution_report: Any = None
+    verification_report: Any = None
+    evaluation_report: Any = None
 
     def get_stage_result(self, stage_name: str) -> PipelineStageResult | None:
         """Get a previously recorded stage result.
