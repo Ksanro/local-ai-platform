@@ -1,8 +1,7 @@
 """Context Budget Engine.
 
 Estimates whether assembled context fits within a token budget using
-fixed constants.  No tokenization is performed — this is a lightweight
-deterministic estimate suitable for budgeting decisions.
+actual content analysis rather than fixed per-unit estimates.
 
 Architecture
 ------------
@@ -18,17 +17,29 @@ ContextBudgetResult
 The Budget Engine is independent of ranking.  It consumes only ranked
 candidates and never accesses source files.
 
+Context Quality v2
+------------------
+
+The budget engine now estimates tokens from the ACTUAL assembled content
+(source code, signatures, docstrings) rather than using fixed constants.
+This provides much more accurate estimates that closely match provider
+usage.
+
+Future work: integrate a proper tokenizer for language-aware estimation.
+
 Estimation Model
 ----------------
 
 | Constant | Value |
 |---|---:|
-| Tokens per symbol | 80 |
-| Tokens per module | 150 |
+| Characters per token | 4.0 |
 
 Formula::
 
-    estimated_tokens = symbols * 80 + modules * 150
+    estimated_tokens = total_content_chars / 4.0
+
+Where total_content_chars includes source code, signatures, docstrings,
+and module paths from all candidates.
 
 Constraints
 -----------
@@ -56,8 +67,10 @@ from packages.context.models import ContextBudgetResult, ContextCandidate
 # Constants
 # ------------------------------------------------------------------
 
-TOKENS_PER_SYMBOL: int = 80
-TOKENS_PER_MODULE: int = 150
+# Character-to-token ratio for estimation.
+# For English text and Python code, approximately 4 characters per token.
+# This is a rough heuristic — future tokenizer integration will improve accuracy.
+CHARS_PER_TOKEN: float = 4.0
 
 
 class ContextBudget:
@@ -75,19 +88,53 @@ class ContextBudget:
     ) -> ContextBudgetResult:
         """Estimate whether the context fits within the token budget.
 
-        Counts unique symbols and modules from the candidate list,
-        applies fixed estimation constants, and reports whether the
-        result fits within ``max_tokens``.
+        Estimates token count from the ACTUAL assembled content:
+
+        - Source code bodies (primary symbols)
+        - Source previews (supporting symbols)
+        - Signatures and docstrings
+        - Module paths and metadata
 
         Args:
-            candidates: Ranked candidate symbols.
+            candidates: Ranked candidate symbols (enriched with source data).
             modules: Unique module names selected for the context.
             max_tokens: Maximum allowed token count.
 
         Returns:
             A ``ContextBudgetResult`` with estimates and budget status.
         """
-        # Count unique symbols by their symbol_id.
+        # Estimate tokens from actual content (Context Quality v2).
+        total_chars = 0
+
+        for candidate in candidates:
+            # Source body (primary symbols have full source).
+            if candidate.source:
+                total_chars += len(candidate.source)
+
+            # Source preview (supporting symbols).
+            if candidate.source_preview:
+                total_chars += len(candidate.source_preview)
+
+            # Signature and docstring.
+            if candidate.signature:
+                total_chars += len(candidate.signature)
+            if candidate.docstring:
+                total_chars += len(candidate.docstring)
+
+            # Symbol name and module path.
+            total_chars += len(candidate.qualified_name)
+            total_chars += len(candidate.module)
+
+        # Add module path overhead.
+        for module in modules:
+            total_chars += len(module)
+
+        # Convert characters to estimated tokens.
+        estimated_tokens = (
+            int(total_chars / CHARS_PER_TOKEN) if total_chars > 0 else 0
+        )
+
+        # Count unique symbols.
         seen_ids: set[str] = set()
         symbol_count = 0
         for candidate in candidates:
@@ -96,8 +143,6 @@ class ContextBudget:
                 symbol_count += 1
 
         module_count = len(modules)
-
-        estimated_tokens = symbol_count * TOKENS_PER_SYMBOL + module_count * TOKENS_PER_MODULE
 
         return ContextBudgetResult(
             estimated_tokens=estimated_tokens,

@@ -27,6 +27,14 @@ The Context Package is **not**
 Providers are responsible for translating ContextPackage into their
 own request format.
 
+Context Quality v2
+------------------
+
+The package now carries source-aware data alongside the original
+identifier-based fields.  This enables serializers to emit actual
+source code (signatures, docstrings, source bodies) instead of
+symbol names alone.
+
 Constraints
 -----------
 
@@ -61,6 +69,13 @@ Public API
             repository_revision="abc123",
             estimated_tokens=230,
         ),
+        primary_symbol_context=SymbolContext(
+            qualified_name="auth.AuthenticationMiddleware",
+            signature="class AuthenticationMiddleware(Middleware):",
+            source="...complete source...",
+        ),
+        supporting_symbol_contexts=[...],
+        module_descriptions=[...],
     )
 """
 
@@ -110,6 +125,49 @@ class RelationshipSummary:
 
 
 @dataclass(frozen=True)
+class SymbolContext:
+    """Source-aware representation of a single symbol.
+
+    Used for both primary and supporting symbols in Context Quality v2.
+
+    Attributes:
+        qualified_name: Fully qualified symbol name.
+        signature: Function/class signature line.
+        docstring: Docstring content (may be empty).
+        decorators: List of decorator names (without ``@``).
+        source: Complete source body for primary, truncated for supporting.
+        source_preview: Short excerpt for supporting symbols.
+        location: Tuple of (module_path, start_line, end_line) or None.
+    """
+
+    qualified_name: str
+    signature: str = ""
+    docstring: str = ""
+    decorators: list[str] = field(default_factory=list)
+    source: str = ""
+    source_preview: str = ""
+    location: tuple[str, int, int | None] | None = None
+
+
+@dataclass(frozen=True)
+class ModuleDescription:
+    """Purpose and relationship summary for a related module.
+
+    Attributes:
+        module_path: Source file path relative to repository root.
+        purpose: Brief description of the module's purpose.
+        relationship_summary: Summary of how this module relates to the
+            primary symbol.
+        symbol_count: Number of symbols from this module in the package.
+    """
+
+    module_path: str
+    purpose: str = ""
+    relationship_summary: str = ""
+    symbol_count: int = 0
+
+
+@dataclass(frozen=True)
 class ContextPackage:
     """A structured context package produced by the Context Builder.
 
@@ -131,6 +189,9 @@ class ContextPackage:
         relationship_summary: Metadata counts for the package.
         estimated_tokens: Estimated token count from the budget engine.
         metadata: Ranking and revision metadata.
+        primary_symbol_context: Source-aware context for the primary symbol.
+        supporting_symbol_contexts: Source-aware contexts for supporting symbols.
+        module_descriptions: Purpose summaries for related modules.
     """
 
     primary_symbol: str = ""
@@ -143,6 +204,10 @@ class ContextPackage:
     )
     estimated_tokens: int = 0
     metadata: ContextMetadata = field(default_factory=ContextMetadata)
+    # Context Quality v2: source-aware fields
+    primary_symbol_context: SymbolContext | None = None
+    supporting_symbol_contexts: list[SymbolContext] = field(default_factory=list)
+    module_descriptions: list[ModuleDescription] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         """Ensure deterministic, duplicate-free collections."""

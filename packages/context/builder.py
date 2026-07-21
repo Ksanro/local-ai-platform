@@ -29,12 +29,31 @@ Current behaviour
 -----------------
 
 Symbols are scored against the query text using the ``RankingEngine``,
+enriched with source data (signatures, docstrings, source bodies),
 estimated against a token budget via ``ContextBudget``, and returned
 in relevance order, bounded by ``max_symbols`` and ``max_modules``.
 
 Relationship-aware ranking is supported via the ``SymbolGraphView``
 from the repository index.  When enabled, relationship signals are
 added to candidates and direct callers/callees may be expanded.
+
+Context Quality v2
+------------------
+
+For the PRIMARY symbol the builder provides:
+
+- Complete source body
+- Signature, docstring, decorators
+- Source location
+
+For SUPPORTING symbols the builder provides:
+
+- Signature and docstring
+- Short source preview (configurable budget)
+- Source location
+
+This replaces the previous identifier-only context with engineering-grade
+source context that substantially improves LLM answer quality.
 
 Future extensions (semantic search, DSPARK, memory, Git awareness)
 will replace the default ranking strategy without changing the public
@@ -58,16 +77,39 @@ class ContextBuilder:
 
     Attributes:
         _index: The repository index to draw symbols from.
+        _primary_symbol_max_tokens: Max tokens for primary symbol source.
+        _supporting_symbol_max_tokens: Shared budget for supporting symbols.
+        _maximum_supporting_symbols: Max supporting symbols to include.
+        _maximum_module_descriptions: Max module descriptions to include.
     """
 
-    def __init__(self, index: RepositoryIndex) -> None:
+    def __init__(
+        self,
+        index: RepositoryIndex,
+        primary_symbol_max_tokens: int = 2048,
+        supporting_symbol_max_tokens: int = 512,
+        maximum_supporting_symbols: int = 20,
+        maximum_module_descriptions: int = 10,
+    ) -> None:
         """Initialise the builder.
 
         Args:
             index: A ``RepositoryIndex`` providing access to repository
                 symbols.
+            primary_symbol_max_tokens: Maximum token budget for the primary
+                symbol's complete source body.
+            supporting_symbol_max_tokens: Maximum token budget shared across
+                all supporting symbols.
+            maximum_supporting_symbols: Maximum number of supporting symbols
+                to include.
+            maximum_module_descriptions: Maximum number of module descriptions
+                to include.
         """
         self._index = index
+        self._primary_symbol_max_tokens = primary_symbol_max_tokens
+        self._supporting_symbol_max_tokens = supporting_symbol_max_tokens
+        self._maximum_supporting_symbols = maximum_supporting_symbols
+        self._maximum_module_descriptions = maximum_module_descriptions
 
     def build(
         self,
@@ -77,8 +119,17 @@ class ContextBuilder:
         """Build context from the given query.
 
         Enumerates all symbols from the repository, scores them against
-        the query text using ``RankingEngine``, and applies
+        the query text using ``RankingEngine``, enriches them with source
+        data (signatures, docstrings, source bodies), and applies
         ``max_symbols`` and ``max_modules`` constraints.
+
+        Context Quality v2 enhancements:
+
+        - PRIMARY symbol receives complete source body, signature, docstring,
+          decorators, and location.
+        - SUPPORTING symbols receive signature, docstring, short source
+          preview, and location.
+        - Source data is fetched from ``RepositoryIndex`` public APIs only.
 
         If a ``primary_symbol`` is provided and relationship-aware ranking
         is enabled (via ``RELATIONSHIP_RANKING_ENABLED`` environment
@@ -91,7 +142,8 @@ class ContextBuilder:
                 and expansion.
 
         Returns:
-            A ``ContextResult`` with candidates and selected modules.
+            A ``ContextResult`` with candidates (enriched with source data)
+            and selected modules.
         """
         # Enumerate all symbols from the repository.
         all_symbols: list[Symbol] = list(self._index.symbols())
@@ -139,6 +191,9 @@ class ContextBuilder:
         else:
             candidates = []
 
+        # Enrich candidates with source data (Context Quality v2).
+        candidates = self._enrich_with_source_data(candidates, primary_symbol)
+
         # Derive selected_modules: unique, insertion order, bounded by max_modules.
         selected_modules: list[str] = []
         seen_modules: set[str] = set()
@@ -153,7 +208,8 @@ class ContextBuilder:
                 if len(selected_modules) >= max_modules:
                     break
 
-        # Estimate context size against the token budget.
+        # Estimate context size against the token budget using actual
+        # assembled content (Context Quality v2).
         budget_engine = ContextBudget()
         budget = budget_engine.estimate(
             candidates=candidates,
@@ -166,3 +222,81 @@ class ContextBuilder:
             selected_modules=selected_modules,
             budget=budget,
         )
+
+    def _enrich_with_source_data(
+        self,
+        candidates: list[ContextCandidate],
+        primary_symbol: ContextCandidate | None,
+    ) -> list[ContextCandidate]:
+        """Enrich candidates with source data from the RepositoryIndex.
+
+        For the PRIMARY symbol: fetch complete source body, signature,
+        docstring, decorators, and location.
+
+        For SUPPORTING symbols: fetch signature, docstring, short source
+        preview, and location.
+
+        Args:
+            candidates: Ranked candidate list.
+            primary_symbol: Optional primary symbol.
+
+        Returns:
+            Enriched candidate list with source data populated.
+        """
+        if not candidates:
+            return candidates
+
+        # Determine which candidate is primary.
+        primary_qualified_name = ""
+        if primary_symbol is not None:
+            primary_qualified_name = primary_symbol.qualified_name
+        elif candidates:
+            primary_qualified_name = candidates[0].qualified_name
+
+        # Track remaining budget for supporting symbols.
+        remaining_support_tokens = self._supporting_symbol_max_tokens
+
+        for i, candidate in enumerate(candidates):
+            is_primary = candidate.qualified_name == primary_qualified_name
+
+            # Fetch full context from RepositoryIndex.
+            full_context = self._index.get_symbol_full_context(
+                candidate.qualified_name
+            )
+
+            if full_context is None:
+                continue
+
+            signature = full_context.get("signature", "")
+            docstring = full_context.get("docstring", "")
+            decorators = full_context.get("decorators", [])
+            location = full_context.get("location", None)
+            source = full_context.get("source", "")
+
+            if is_primary:
+                # PRIMARY: complete source body (within budget).
+                candidate.signature = signature or ""
+                candidate.docstring = docstring or ""
+                candidate.decorators = decorators or []
+                candidate.source = source or ""
+                candidate.location = location if isinstance(location, tuple) else None
+            else:
+                # SUPPORTING: signature, docstring, source preview.
+                candidate.signature = signature or ""
+                candidate.docstring = docstring or ""
+                candidate.decorators = decorators or []
+                candidate.location = location if isinstance(location, tuple) else None
+
+                # Source preview within remaining budget.
+                if source and remaining_support_tokens > 0:
+                    preview = self._index.get_symbol_source_excerpts(
+                        candidate.qualified_name,
+                        max_tokens=remaining_support_tokens,
+                    )
+                    if preview:
+                        candidate.source_preview = preview
+                        # Deduct from remaining budget.
+                        estimated_tokens = len(preview) // 4
+                        remaining_support_tokens = max(0, remaining_support_tokens - estimated_tokens)
+
+        return candidates

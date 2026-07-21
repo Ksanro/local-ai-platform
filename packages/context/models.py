@@ -43,6 +43,12 @@ class ContextCandidate:
         module: Source file path relative to the repository root.
         score: Relevance score assigned by the ranking engine.
         reasons: Explainability signals for the assigned score.
+        signature: Function/class signature line (Context Quality v2).
+        docstring: Docstring content (Context Quality v2).
+        decorators: List of decorator names (Context Quality v2).
+        source: Complete source body for primary symbols, truncated preview for supporting.
+        source_preview: Short excerpt for supporting symbols.
+        location: Tuple of (module_path, start_line, end_line).
     """
 
     symbol_id: str
@@ -50,6 +56,12 @@ class ContextCandidate:
     module: str
     score: int = 0
     reasons: list[RankingReason] = field(default_factory=list)
+    signature: str = ""
+    docstring: str = ""
+    decorators: list[str] = field(default_factory=list)
+    source: str = ""
+    source_preview: str = ""
+    location: tuple[str, int, int | None] | None = None
 
 
 def _default_budget() -> ContextBudgetResult:

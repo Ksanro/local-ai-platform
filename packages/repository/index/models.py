@@ -221,3 +221,174 @@ class RepositoryIndex:
         """
         filtered = [s for s in self._symbols if s.symbol_type == symbol_type]
         return sorted(filtered, key=lambda s: (s.qualified_name, s.lineno))
+
+    # ------------------------------------------------------------------
+    # Source-aware access (Context Quality v2)
+    # ------------------------------------------------------------------
+
+    def get_symbol_source(self, qualified_name: str) -> str | None:
+        """Return the complete source body for a symbol.
+
+        Reads from the stored ``Module.source`` field.  No AST parsing
+        is performed.
+
+        Args:
+            qualified_name: The fully qualified symbol name.
+
+        Returns:
+            The complete source text of the symbol's module, or ``None``
+            if the symbol or its module is not found.
+        """
+        for module in self.modules.values():
+            for sym in module.symbols:
+                if sym.qualified_name == qualified_name:
+                    return module.source if module.source else None
+        return None
+
+    def get_symbol_signature(self, qualified_name: str) -> str | None:
+        """Return the signature line for a symbol.
+
+        Returns the first non-empty line of the symbol's source (typically
+        the ``def`` or ``class`` declaration).
+
+        Args:
+            qualified_name: The fully qualified symbol name.
+
+        Returns:
+            The signature line text, stripped of leading/trailing
+            whitespace, or ``None`` if not found.
+        """
+        source = self.get_symbol_source(qualified_name)
+        if source is None:
+            return None
+        for line in source.splitlines():
+            stripped = line.strip()
+            if stripped and not stripped.startswith("#"):
+                return stripped
+        return None
+
+    def get_symbol_docstring(self, qualified_name: str) -> str | None:
+        """Return the docstring content for a symbol.
+
+        Extracts the first triple-quoted string from the symbol's source.
+
+        Args:
+            qualified_name: The fully qualified symbol name.
+
+        Returns:
+            The docstring content, or ``None`` if no docstring found.
+        """
+        source = self.get_symbol_source(qualified_name)
+        if source is None:
+            return None
+        import re
+        # Match triple-quoted docstrings (single or double quotes)
+        pattern = r'(?<!\w)r?("""|\'\'\'|\3)(.*?)\3'
+        match = re.search(r'^\s*("""|\'\'\')(.*?)\1', source, re.DOTALL)
+        if match:
+            return match.group(2).strip() or None
+        return None
+
+    def get_symbol_location(
+        self, qualified_name: str
+    ) -> tuple[str, int, int | None] | None:
+        """Return the source location for a symbol.
+
+        Args:
+            qualified_name: The fully qualified symbol name.
+
+        Returns:
+            A tuple of ``(module_path, start_line, end_line)`` where
+            ``end_line`` is the last line of the source or ``None`` if
+            the end cannot be determined.  Returns ``None`` if not found.
+        """
+        for module_path, module in self.modules.items():
+            for sym in module.symbols:
+                if sym.qualified_name == qualified_name:
+                    source = module.source
+                    if source:
+                        lines = source.splitlines()
+                        end_line = len(lines) if lines else None
+                        return (module_path, sym.lineno, end_line)
+                    return (module_path, sym.lineno, None)
+        return None
+
+    def get_symbol_decorators(self, qualified_name: str) -> list[str] | None:
+        """Return the decorators for a symbol.
+
+        Args:
+            qualified_name: The fully qualified symbol name.
+
+        Returns:
+            List of decorator names (without ``@``), or ``None`` if not
+            found.
+        """
+        source = self.get_symbol_source(qualified_name)
+        if source is None:
+            return None
+        # Extract the short name from qualified_name (last segment)
+        short_name = qualified_name.rsplit(".", 1)[-1]
+        # Find the symbol definition and collect preceding decorators
+        lines = source.splitlines()
+        in_symbol = False
+        decorators: list[str] = []
+        for line in lines:
+            stripped = line.strip()
+            # Check if this is the symbol's definition line
+            if not in_symbol:
+                if f"def {short_name}" in stripped or f"class {short_name}" in stripped:
+                    in_symbol = True
+            else:
+                if stripped.startswith("@"):
+                    decorators.append(stripped[1:].split("(")[0].split()[0])
+        return decorators if decorators else None
+
+    def get_symbol_source_excerpts(
+        self, qualified_name: str, max_tokens: int = 256
+    ) -> str | None:
+        """Return a truncated source excerpt for supporting symbols.
+
+        Args:
+            qualified_name: The fully qualified symbol name.
+            max_tokens: Maximum token budget for the excerpt.
+
+        Returns:
+            Truncated source text, or ``None`` if not found.
+        """
+        source = self.get_symbol_source(qualified_name)
+        if source is None:
+            return None
+        # Estimate tokens (rough: 4 chars per token)
+        max_chars = max_tokens * 4
+        if len(source) > max_chars:
+            return source[:max_chars] + "\n    # ... (truncated)"
+        return source
+
+    def get_symbol_full_context(
+        self, qualified_name: str
+    ) -> dict[str, str | int | int | None | list[str] | None]:
+        """Return complete source context for a symbol.
+
+        This is the consolidated accessor used by the Context Builder
+        to enrich candidates with engineering-grade information.
+
+        Args:
+            qualified_name: The fully qualified symbol name.
+
+        Returns:
+            Dictionary with keys: ``signature``, ``docstring``,
+            ``decorators``, ``location``, ``source``.
+        """
+        signature = self.get_symbol_signature(qualified_name)
+        docstring = self.get_symbol_docstring(qualified_name)
+        decorators = self.get_symbol_decorators(qualified_name)
+        location = self.get_symbol_location(qualified_name)
+        source = self.get_symbol_source(qualified_name)
+
+        return {
+            "signature": signature or "",
+            "docstring": docstring or "",
+            "decorators": decorators or [],
+            "location": location,
+            "source": source or "",
+        }

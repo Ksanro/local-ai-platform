@@ -16,6 +16,15 @@ ContextPackage
 The Composer owns no repository logic.  It consumes only Context
 Builder output (ContextResult) and produces a ContextPackage.
 
+Context Quality v2
+------------------
+
+The Composer now builds source-aware context:
+
+- ``primary_symbol_context``: Full ``SymbolContext`` for the primary symbol
+- ``supporting_symbol_contexts``: ``SymbolContext`` list for supporting symbols
+- ``module_descriptions``: Purpose summaries for related modules
+
 Current Behaviour
 -----------------
 
@@ -81,7 +90,9 @@ from typing import TYPE_CHECKING
 from packages.context.context_package import (
     ContextMetadata,
     ContextPackage,
+    ModuleDescription,
     RelationshipSummary,
+    SymbolContext,
 )
 from packages.context.models import ContextResult
 
@@ -107,6 +118,9 @@ class ContextComposer:
         symbols (remaining candidates), callers/callees via the
         candidate's module relationships, and copies budget metadata.
         Never modifies ranking, filters results, or reorders symbols.
+
+        Context Quality v2: also builds source-aware context from
+        enriched candidates (signature, docstring, source, location).
 
         Args:
             context_result: The assembled context from the builder.
@@ -256,6 +270,63 @@ class ContextComposer:
             estimated_tokens=budget.estimated_tokens,
         )
 
+        # Context Quality v2: Build source-aware context.
+        primary_symbol_context: SymbolContext | None = None
+        supporting_symbol_contexts: list[SymbolContext] = []
+
+        if primary_candidate is not None:
+            primary_symbol_context = SymbolContext(
+                qualified_name=primary_candidate.qualified_name,
+                signature=primary_candidate.signature or "",
+                docstring=primary_candidate.docstring or "",
+                decorators=primary_candidate.decorators or [],
+                source=primary_candidate.source or "",
+                source_preview=primary_candidate.source_preview or "",
+                location=primary_candidate.location,
+            )
+
+        for candidate in supporting_candidates:
+            supporting_symbol_contexts.append(
+                SymbolContext(
+                    qualified_name=candidate.qualified_name,
+                    signature=candidate.signature or "",
+                    docstring=candidate.docstring or "",
+                    decorators=candidate.decorators or [],
+                    source=candidate.source or "",
+                    source_preview=candidate.source_preview or "",
+                    location=candidate.location,
+                )
+            )
+
+        # Build module descriptions.
+        module_descriptions: list[ModuleDescription] = []
+        for mod_path in related_modules:
+            # Count symbols from this module.
+            mod_symbol_count = 0
+            if primary_candidate and primary_candidate.module == mod_path:
+                mod_symbol_count += 1
+            for candidate in supporting_candidates:
+                if candidate.module == mod_path:
+                    mod_symbol_count += 1
+            for candidate in candidates:
+                if candidate.module == mod_path:
+                    mod_symbol_count += 1
+
+            # Determine purpose from module path.
+            purpose = self._infer_module_purpose(mod_path)
+            relationship_summary_text = self._infer_module_relationship(
+                mod_path, primary_candidate, candidates, supporting_candidates
+            )
+
+            module_descriptions.append(
+                ModuleDescription(
+                    module_path=mod_path,
+                    purpose=purpose,
+                    relationship_summary=relationship_summary_text,
+                    symbol_count=mod_symbol_count,
+                )
+            )
+
         return ContextPackage(
             primary_symbol=primary_symbol_name,
             supporting_symbols=supporting_symbols,
@@ -265,4 +336,82 @@ class ContextComposer:
             relationship_summary=relationship_summary,
             estimated_tokens=budget.estimated_tokens,
             metadata=metadata,
+            primary_symbol_context=primary_symbol_context,
+            supporting_symbol_contexts=supporting_symbol_contexts,
+            module_descriptions=module_descriptions,
         )
+
+    @staticmethod
+    def _infer_module_purpose(module_path: str) -> str:
+        """Infer a brief purpose description from a module path.
+
+        Args:
+            module_path: Source file path relative to repository root.
+
+        Returns:
+            A brief purpose description.
+        """
+        # Simple heuristic: derive purpose from filename.
+        filename = module_path.rsplit("/", 1)[-1] if "/" in module_path else module_path
+        filename_stem = filename.rsplit(".", 1)[0]
+
+        purpose_map: dict[str, str] = {
+            "models": "Data models and schemas",
+            "views": "Request handling and response rendering",
+            "controllers": "Request routing and business logic",
+            "services": "Core business logic and services",
+            "repositories": "Data access and persistence",
+            "middleware": "Request/response middleware",
+            "utils": "Utility and helper functions",
+            "helpers": "Helper functions and utilities",
+            "config": "Configuration and settings",
+            "main": "Application entry point and factory",
+            "app": "Application factory and configuration",
+            "auth": "Authentication and authorization",
+            "tests": "Test files and fixtures",
+            "types": "Type definitions and type aliases",
+        }
+
+        return purpose_map.get(filename_stem, f"Module: {filename}")
+
+    @staticmethod
+    def _infer_module_relationship(
+        module_path: str,
+        primary_candidate: ContextCandidate | None,
+        candidates: list[ContextCandidate],
+        supporting_candidates: list[ContextCandidate],
+    ) -> str:
+        """Infer how a module relates to the primary symbol.
+
+        Args:
+            module_path: Source file path.
+            primary_candidate: The primary symbol candidate.
+            candidates: All ranked candidates.
+            supporting_candidates: Supporting symbol candidates.
+
+        Returns:
+            A relationship summary string.
+        """
+        if primary_candidate is None:
+            return ""
+
+        if module_path == primary_candidate.module:
+            return "Contains the primary symbol"
+
+        # Check if any candidate from this module is a caller/callee.
+        has_caller = False
+        has_callee = False
+        for candidate in candidates + supporting_candidates:
+            if candidate.module == module_path:
+                # Check if it's in the same class scope as primary.
+                if primary_candidate:
+                    primary_class = ".".join(
+                        primary_candidate.qualified_name.rsplit(".", 1)[:-1]
+                    ) if "." in primary_candidate.qualified_name else ""
+                    candidate_class = ".".join(
+                        candidate.qualified_name.rsplit(".", 1)[:-1]
+                    ) if "." in candidate.qualified_name else ""
+                    if primary_class and candidate_class == primary_class:
+                        return f"Shares class scope with primary symbol"
+
+        return f"Supporting module with related symbols"

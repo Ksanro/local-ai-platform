@@ -25,6 +25,31 @@ Message Ordering
 6. Related Modules section.
 7. Original user messages (copied unchanged).
 
+Context Quality v2
+------------------
+
+The serializer now emits engineering-grade source context:
+
+PRIMARY SYMBOL:
+- Qualified name
+- Signature (function/class declaration)
+- Docstring
+- Decorators
+- Complete source body
+- Source location
+
+SUPPORTING SYMBOLS:
+- Qualified name
+- Signature
+- Docstring
+- Short source preview
+- Source location
+
+MODULE DESCRIPTIONS:
+- Module path
+- Purpose description
+- Relationship summary
+
 Serialization Rules
 -------------------
 
@@ -223,12 +248,16 @@ class OpenAISerializer(ProviderSerializer):
         structured data. If no primary symbol, callers, callees, or
         modules are present, returns ``None`` to omit repository context.
 
+        Context Quality v2: emits source code (signatures, docstrings,
+        source bodies) alongside symbol names.
+
         Section ordering:
-        1. Primary Symbol
-        2. Supporting Symbols
+        1. Primary Symbol (with source)
+        2. Supporting Symbols (with signatures and previews)
         3. Related Callers
         4. Related Callees
-        5. Related Modules
+        5. Related Modules (with descriptions)
+        6. Relationship Summary
 
         Args:
             context_package: The platform context package, or ``None``.
@@ -253,35 +282,91 @@ class OpenAISerializer(ProviderSerializer):
         # Build repository context from structured sections.
         parts: list[str] = []
 
-        # Primary Symbol
+        # --- PRIMARY SYMBOL (Context Quality v2) ---
         if context_package.primary_symbol:
             parts.append(f"Primary symbol: {context_package.primary_symbol}")
 
-        # Supporting Symbols
+            # Emit source-aware context if available.
+            primary_ctx = context_package.primary_symbol_context
+            if primary_ctx is not None:
+                parts.append(f"  Signature: {primary_ctx.signature or 'N/A'}")
+                if primary_ctx.decorators:
+                    parts.append(
+                        f"  Decorators: {', '.join(primary_ctx.decorators)}"
+                    )
+                if primary_ctx.docstring:
+                    parts.append(f"  Docstring:\n    {primary_ctx.docstring}")
+                if primary_ctx.location:
+                    mod, line, _ = primary_ctx.location
+                    parts.append(f"  Location: {mod}:{line}")
+
+                # Source body (complete for primary symbol).
+                if primary_ctx.source:
+                    parts.append("  Source:")
+                    # Indent source lines.
+                    for src_line in primary_ctx.source.splitlines():
+                        parts.append(f"    {src_line}")
+
+        # --- SUPPORTING SYMBOLS (Context Quality v2) ---
         if context_package.supporting_symbols:
             parts.append("Supporting symbols:")
-            for symbol in context_package.supporting_symbols:
-                parts.append(f"  - {symbol}")
 
-        # Related Callers
+            # Check if we have source-aware context.
+            if context_package.supporting_symbol_contexts:
+                for ctx in context_package.supporting_symbol_contexts:
+                    parts.append(f"  - {ctx.qualified_name}")
+                    if ctx.signature:
+                        parts.append(f"    Signature: {ctx.signature}")
+                    if ctx.docstring:
+                        parts.append(f"    Docstring: {ctx.docstring}")
+                    if ctx.decorators:
+                        parts.append(
+                            f"    Decorators: {', '.join(ctx.decorators)}"
+                        )
+                    if ctx.location:
+                        mod, line, _ = ctx.location
+                        parts.append(f"    Location: {mod}:{line}")
+                    if ctx.source_preview:
+                        parts.append("    Preview:")
+                        for src_line in ctx.source_preview.splitlines():
+                            parts.append(f"      {src_line}")
+            else:
+                # Fallback: identifier-only (v1 compatibility).
+                for symbol in context_package.supporting_symbols:
+                    parts.append(f"  - {symbol}")
+
+        # --- RELATED CALLERS ---
         if context_package.related_callers:
             parts.append("Related callers:")
             for symbol in context_package.related_callers:
                 parts.append(f"  - {symbol}")
 
-        # Related Callees
+        # --- RELATED CALLEES ---
         if context_package.related_callees:
             parts.append("Related callees:")
             for symbol in context_package.related_callees:
                 parts.append(f"  - {symbol}")
 
-        # Related Modules
+        # --- RELATED MODULES (Context Quality v2) ---
         if context_package.related_modules:
             parts.append("Related modules:")
-            for module in context_package.related_modules:
-                parts.append(f"  - {module}")
 
-        # Relationship Summary (metadata only, no source code)
+            # Check if we have module descriptions.
+            if context_package.module_descriptions:
+                for desc in context_package.module_descriptions:
+                    parts.append(
+                        f"  - {desc.module_path}: {desc.purpose}"
+                    )
+                    if desc.relationship_summary:
+                        parts.append(
+                            f"    Relationship: {desc.relationship_summary}"
+                        )
+            else:
+                # Fallback: identifier-only (v1 compatibility).
+                for module in context_package.related_modules:
+                    parts.append(f"  - {module}")
+
+        # Relationship Summary (metadata)
         if context_package.relationship_summary.symbol_count > 0:
             summary = context_package.relationship_summary
             parts.append(
