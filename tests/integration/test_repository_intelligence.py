@@ -29,10 +29,12 @@ from packages.pipeline.base import PipelineStage
 from packages.pipeline.context import PipelineContext
 from packages.pipeline.engine import PipelineEngine
 from packages.pipeline.request import PipelineRequest
+from packages.pipeline.response import PipelineResponse
 from packages.pipeline.result import PipelineStageResult
 from packages.pipeline.stages.repository_context import RepositoryContextStage
 from packages.pipeline.stages.stages import ProviderStage
 from packages.providers.base import Provider
+from packages.providers.models import ModelDefinition, ResolvedModel
 from packages.serializers.models import ProviderRequest
 from packages.serializers.types import ProviderType
 
@@ -146,15 +148,81 @@ def _make_context(
     )
 
 
+def _make_resolved_model(mock_provider: "_MockProvider") -> ResolvedModel:
+    """Create a ResolvedModel wrapping the given mock provider."""
+    definition = ModelDefinition(
+        model="test-model",
+        provider="vllm",
+        base_url="http://localhost:8000/v1",
+        context_window=131072,
+    )
+    return ResolvedModel(definition=definition, provider=mock_provider)
+
+
 def _make_engine(
     context_stage: RepositoryContextStage,
-    mock_provider: "_MockProvider",
 ) -> PipelineEngine:
-    """Build a pipeline engine with the given stage and mock provider."""
+    """Build a pipeline engine with the given stage and a routing-agnostic ProviderStage."""
     engine = PipelineEngine()
     engine.register(context_stage)
-    engine.register(ProviderStage(mock_provider))
+    engine.register(ProviderStage())
     return engine
+
+
+async def _run_pipeline(
+    context_stage: RepositoryContextStage,
+    mock_provider: "_MockProvider",
+    request: PipelineRequest | None = None,
+) -> PipelineResponse:
+    """Create a context with resolved_model and run the stages.
+
+    The engine's execute() creates its own PipelineContext internally,
+    so we must create the context here, set resolved_model, then run
+    the stages directly.
+    """
+    req = request or _make_request(context_enabled=True)
+    context = PipelineContext(
+        request_id=req.metadata.get("request_id", ""),
+        request=req.to_provider_kwargs(),
+    )
+    context.set_metadata("provider_name", req.provider_name)
+    context.set_metadata("model", req.model)
+    context.set_metadata("context_enabled", req.metadata.get("context_enabled", True))
+    context.resolved_model = _make_resolved_model(mock_provider)
+
+    # Run stages directly (bypassing engine.execute which creates its own context)
+    all_results: dict[str, PipelineStageResult] = {}
+    for stage in [context_stage, ProviderStage()]:
+        try:
+            short_circuit = await stage.before(context)
+            if short_circuit is not None:
+                result = short_circuit
+                if not isinstance(result, PipelineStageResult):
+                    result = PipelineStageResult(
+                        stage_name=stage.name,
+                        success=True,
+                        data=result,
+                    )
+            else:
+                result = await stage.execute(context)
+            after_result = await stage.after(context, result)
+            if after_result is not None and isinstance(after_result, PipelineStageResult):
+                result = after_result
+            context.set_stage_result(stage.name, result)
+            all_results[stage.name] = result
+            if not result.success:
+                break
+        except Exception as exc:
+            error_result = PipelineStageResult(
+                stage_name=stage.name,
+                success=False,
+                error=str(exc),
+                exception=exc,
+            )
+            context.set_stage_result(stage.name, error_result)
+            all_results[stage.name] = error_result
+            break
+    return PipelineResponse.from_context(context)
 
 
 class _MockProvider(Provider):
@@ -299,11 +367,8 @@ class TestProviderReceivesRequest:
         context_stage = RepositoryContextStage(index=index)
         mock_provider = _MockProvider()
 
-        engine = _make_engine(context_stage, mock_provider)
-
-        response = await engine.execute(
-            _make_request(context_enabled=True)
-        )
+        request = _make_request(context_enabled=True)
+        response = await _run_pipeline(context_stage, mock_provider, request)
 
         assert response.success is True
         assert len(mock_provider.chat_calls) == 1
@@ -320,16 +385,21 @@ class TestProviderReceivesRequest:
         context_stage = RepositoryContextStage(index=index)
         mock_provider = _MockProvider()
 
-        engine = _make_engine(context_stage, mock_provider)
-
         request = _make_request(
             context_enabled=True,
             messages=[{"role": "user", "content": "test"}],
         )
         request.stream = True
 
-        await engine.execute(request)
+        context = _make_context(context_enabled=True)
+        context.resolved_model = _make_resolved_model(mock_provider)
 
+        # Run stages directly with the context that has resolved_model set
+        await context_stage.before(context)
+        result = await context_stage.execute(context)
+        await context_stage.after(context, result)
+        provider_result = await ProviderStage().execute(context)
+        assert provider_result.success is True
         assert len(mock_provider.chat_calls) == 1
         assert mock_provider.chat_calls[0]["stream"] is True
 
@@ -416,11 +486,8 @@ class TestResponseUnchanged:
             ]
         }
 
-        engine = _make_engine(context_stage, mock_provider)
-
-        response = await engine.execute(
-            _make_request(context_enabled=True)
-        )
+        request = _make_request(context_enabled=True)
+        response = await _run_pipeline(context_stage, mock_provider, request)
 
         assert response.success is True
         assert response.data["choices"][0]["message"]["content"] == "custom response"
@@ -434,11 +501,8 @@ class TestResponseUnchanged:
         context_stage = RepositoryContextStage(index=index)
         mock_provider = _MockProvider()
 
-        engine = _make_engine(context_stage, mock_provider)
-
-        response = await engine.execute(
-            _make_request(context_enabled=True)
-        )
+        request = _make_request(context_enabled=True)
+        response = await _run_pipeline(context_stage, mock_provider, request)
 
         assert response.success is True
         assert "choices" in response.data
@@ -517,11 +581,8 @@ class TestPipelineOrdering:
         context_stage = RepositoryContextStage(index=index)
         mock_provider = _MockProvider()
 
-        engine = _make_engine(context_stage, mock_provider)
-
-        response = await engine.execute(
-            _make_request(context_enabled=True)
-        )
+        request = _make_request(context_enabled=True)
+        response = await _run_pipeline(context_stage, mock_provider, request)
 
         assert response.success is True
 
@@ -610,19 +671,13 @@ class TestGracefulFailure:
         ) as mock_create:
             mock_create.side_effect = RuntimeError("serializer error")
 
-            engine = PipelineEngine()
-            engine.register(context_stage)
-            engine.register(ProviderStage(mock_provider))
-
-            response = await engine.execute(
-                _make_request(context_enabled=True)
-            )
+            request = _make_request(context_enabled=True)
+            response = await _run_pipeline(context_stage, mock_provider, request)
 
             # Pipeline should still succeed (graceful degradation).
             assert response.success is True
             # Provider should still be called (with fallback).
             assert len(mock_provider.chat_calls) == 1
-
 
 # ------------------------------------------------------------------
 # Repeated execution deterministic
@@ -688,15 +743,11 @@ class TestDeterministicExecution:
             context_stage = RepositoryContextStage(index=index)
             mock_provider = _MockProvider()
 
-            engine = PipelineEngine()
-            engine.register(context_stage)
-            engine.register(ProviderStage(mock_provider))
-
             request = _make_request(
                 context_enabled=True,
                 messages=[{"role": "user", "content": "deterministic test"}],
             )
-            response = await engine.execute(request)
+            response = await _run_pipeline(context_stage, mock_provider, request)
 
             results.append({
                 "success": response.success,
@@ -728,13 +779,11 @@ class TestEndToEnd:
         context_stage = RepositoryContextStage(index=index)
         mock_provider = _MockProvider()
 
-        engine = _make_engine(context_stage, mock_provider)
-
         request = _make_request(
             context_enabled=True,
             messages=[{"role": "user", "content": "test"}],
         )
-        response = await engine.execute(request)
+        response = await _run_pipeline(context_stage, mock_provider, request)
 
         assert response.success is True
         # Repository context stage should have produced a package.
@@ -749,15 +798,13 @@ class TestEndToEnd:
         """Verify pipeline works when context is disabled."""
         mock_provider = _MockProvider()
 
-        engine = PipelineEngine()
-        engine.register(RepositoryContextStage())
-        engine.register(ProviderStage(mock_provider))
+        context_stage = RepositoryContextStage()
 
         request = _make_request(
             context_enabled=False,
             messages=[{"role": "user", "content": "test"}],
         )
-        response = await engine.execute(request)
+        response = await _run_pipeline(context_stage, mock_provider, request)
 
         assert response.success is True
         # Context stage should have returned early with no package.

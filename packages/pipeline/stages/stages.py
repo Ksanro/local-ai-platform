@@ -53,12 +53,14 @@ class ProviderStage(PipelineStage):
 
         provider = resolved.provider
         model = resolved.definition.model
+        backend_model = resolved.definition.backend_model or resolved.definition.model
 
         logger.info(
-            "provider_stage request_id=%s provider=%s model=%s",
+            "provider_stage request_id=%s provider=%s model=%s backend_model=%s",
             context.request_id,
             resolved.definition.provider,
             model,
+            backend_model,
         )
 
         try:
@@ -74,6 +76,9 @@ class ProviderStage(PipelineStage):
             # Ensure stream is always forwarded (ProviderRequest does
             # not carry transport concerns).
             kwargs["stream"] = context.request.get("stream", False)
+
+            # Override model with backend_model for the upstream call.
+            kwargs["model"] = backend_model
 
             result = await provider.chat(**kwargs)
             return PipelineStageResult(

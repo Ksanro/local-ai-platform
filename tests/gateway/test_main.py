@@ -46,7 +46,7 @@ def test_create_app_registers_all_routes() -> None:
     app = create_app()
     paths = _collect_route_paths(app)
 
-    expected = {"/health", "/version", "/v1/chat/completions"}
+    expected = {"/health", "/version", "/v1/chat/completions", "/v1/models"}
     assert paths == expected
 
 

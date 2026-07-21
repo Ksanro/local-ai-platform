@@ -129,11 +129,21 @@ class ModelRegistry:
             supports_tools = entry.get("supports_tools", False)
             supports_reasoning = entry.get("supports_reasoning", False)
             supports_json = entry.get("supports_json", False)
+            # Validate backend_model
+            backend_model = entry.get("backend_model")
+            if backend_model is not None:
+                if not isinstance(backend_model, str) or not backend_model:
+                    raise ValueError(
+                        "backend_model must be a non-empty string, "
+                        "got {!r} at index {}".format(backend_model, idx)
+                    )
+
             tokenizer = entry.get("tokenizer")
             api_key = entry.get("api_key")
 
             definitions[model] = ModelDefinition(
                 model=model,
+                backend_model=backend_model,
                 provider=provider,
                 base_url=base_url,
                 context_window=context_window,

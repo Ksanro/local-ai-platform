@@ -14,6 +14,8 @@ class ModelDefinition:
 
     Attributes:
         model: Required — routing key, unique within the registry.
+        backend_model: Name sent upstream to the backend.  When omitted
+            (``None``), ``model`` is used.
         provider: Required — registered provider name.
         base_url: Required — base URL of the backend.
         context_window: Size of the context window in tokens.
@@ -39,6 +41,7 @@ class ModelDefinition:
     supports_tools: bool = False
     supports_reasoning: bool = False
     supports_json: bool = False
+    backend_model: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
