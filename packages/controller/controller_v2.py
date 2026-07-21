@@ -98,7 +98,8 @@ from packages.controller.models_v2 import (
 from packages.controller.retry_policy import RetryPolicy
 
 if TYPE_CHECKING:
-    pass  # No additional imports needed
+    from packages.engineering_memory.memory import EngineeringMemory
+    from packages.engineering_memory.models import EngineeringSessionRecord
 
 __all__ = [
     "EngineeringControllerV2",
@@ -192,6 +193,7 @@ class EngineeringControllerV2:
         execution_engine: Any | None = None,
         verification_engine: Any | None = None,
         evaluator: Any | None = None,
+        memory: Any | None = None,
     ) -> None:
         """Initialize the controller.
 
@@ -206,6 +208,7 @@ class EngineeringControllerV2:
             execution_engine: Component that executes workflows.
             verification_engine: Component that verifies execution.
             evaluator: Component that evaluates execution quality.
+            memory: EngineeringMemory instance for session persistence.
         """
         self._config = config or ControllerConfig()
         self._workflow_selector = workflow_selector
@@ -213,6 +216,7 @@ class EngineeringControllerV2:
         self._execution_engine = execution_engine
         self._verification_engine = verification_engine
         self._evaluator = evaluator
+        self._memory = memory
 
     @property
     def config(self) -> ControllerConfig:
@@ -243,6 +247,11 @@ class EngineeringControllerV2:
     def evaluator(self) -> Any | None:
         """Evaluator component (if injected)."""
         return self._evaluator
+
+    @property
+    def memory(self) -> Any | None:
+        """EngineeringMemory instance (if injected)."""
+        return self._memory
 
     # -----------------------------------------------------------------------
     # Public API
@@ -632,6 +641,98 @@ class EngineeringControllerV2:
     # Result builders
     # -----------------------------------------------------------------------
 
+    def _store_session_record(
+        self,
+        request: EngineeringRequestV2,
+        session: EngineeringSessionV2,
+        workflow_name: str,
+        execution_report: Any,
+        verification_report: Any,
+        evaluation_report: Any,
+        controller_decision: str,
+    ) -> None:
+        """Store an engineering session record in memory.
+
+        Called after the control loop completes to persist session facts.
+
+        Args:
+            request: Original request.
+            session: Final session state.
+            workflow_name: Name of the workflow executed.
+            execution_report: Execution report.
+            verification_report: Verification report.
+            evaluation_report: Evaluation report.
+            controller_decision: Final controller decision string.
+        """
+        if self._memory is None:
+            return
+
+        # Serialize reports to dicts
+        exec_report_dict = self._serialize_report(execution_report)
+        verif_report_dict = self._serialize_report(verification_report)
+        eval_report_dict = self._serialize_report(evaluation_report)
+
+        # Extract modified modules from metadata
+        modified_modules = []
+        if hasattr(session, "metadata") and session.metadata:
+            modified_modules = session.metadata.get("modified_modules", [])
+
+        # Create the record
+        record = EngineeringSessionRecord(
+            session_id=session.session_id,
+            workflow_name=workflow_name,
+            request_summary=getattr(request, "description", ""),
+            transaction_id=getattr(request, "request_id", ""),
+            execution_report=exec_report_dict,
+            verification_report=verif_report_dict,
+            evaluation_report=eval_report_dict,
+            controller_decision=controller_decision,
+            completed_at=datetime.now(timezone.utc).isoformat(),
+            metadata={
+                "modified_modules": modified_modules,
+                "iteration_count": session.iteration,
+                "request_id": request.request_id,
+            },
+        )
+
+        # Store in memory
+        self._memory.store(record)
+
+    @staticmethod
+    def _serialize_report(report: Any) -> dict[str, Any]:
+        """Serialize a report object to a dictionary.
+
+        Handles both dict objects and objects with __dict__ or to_dict.
+
+        Args:
+            report: The report to serialize.
+
+        Returns:
+            Dictionary representation of the report.
+        """
+        if report is None:
+            return {}
+
+        if isinstance(report, dict):
+            return report
+
+        # Try to_dict method
+        if hasattr(report, "to_dict") and callable(getattr(report, "to_dict")):
+            try:
+                return report.to_dict()  # type: ignore[no-any-return]
+            except Exception:
+                pass
+
+        # Try __dict__
+        if hasattr(report, "__dict__"):
+            try:
+                return dict(report.__dict__)  # type: ignore[no-any-return]
+            except Exception:
+                pass
+
+        # Fallback: empty dict
+        return {}
+
     def _build_complete_result(
         self,
         request: EngineeringRequestV2,
@@ -656,6 +757,17 @@ class EngineeringControllerV2:
         Returns:
             EngineeringResultV2 with COMPLETE decision.
         """
+        # Store session in memory
+        self._store_session_record(
+            request=request,
+            session=session,
+            workflow_name=getattr(workflow_plan, "workflow_name", "unknown"),
+            execution_report=execution_report,
+            verification_report=verification_report,
+            evaluation_report=evaluation_report,
+            controller_decision="COMPLETE",
+        )
+
         return EngineeringResultV2(
             request_id=request.request_id,
             session_id=session.session_id,
@@ -691,6 +803,17 @@ class EngineeringControllerV2:
         Returns:
             EngineeringResultV2 with FAIL decision.
         """
+        # Store failed session in memory
+        self._store_session_record(
+            request=request,
+            session=session,
+            workflow_name=getattr(workflow_plan, "workflow_name", "unknown") if workflow_plan else "unknown",
+            execution_report=execution_report,
+            verification_report=None,
+            evaluation_report=None,
+            controller_decision="FAIL",
+        )
+
         return EngineeringResultV2(
             request_id=request.request_id,
             session_id=session.session_id,
@@ -724,6 +847,17 @@ class EngineeringControllerV2:
         Returns:
             EngineeringResultV2 with REQUEST_REVIEW decision.
         """
+        # Store REQUEST_REVIEW session in memory
+        self._store_session_record(
+            request=request,
+            session=session,
+            workflow_name=getattr(workflow_plan, "workflow_name", "unknown"),
+            execution_report=execution_report,
+            verification_report=None,
+            evaluation_report=evaluation_report,
+            controller_decision="REQUEST_REVIEW",
+        )
+
         return EngineeringResultV2(
             request_id=request.request_id,
             session_id=session.session_id,
