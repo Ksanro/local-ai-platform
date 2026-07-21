@@ -30,12 +30,13 @@ from unittest.mock import MagicMock
 
 from packages.context.models import ContextCandidate
 from packages.context.ranking import RankingEngine
+from packages.context.ranking_config import RankingConfig
+WEIGHT_DIRECT_CALLER = RankingConfig.WEIGHT_CALL_GRAPH_DIRECT_CALLER
+WEIGHT_DIRECT_CALLEE = RankingConfig.WEIGHT_CALL_GRAPH_DIRECT_CALLEE
+WEIGHT_SHARED_CLASS = RankingConfig.WEIGHT_CALL_GRAPH_SAME_CLASS
+WEIGHT_SHARED_MODULE = RankingConfig.WEIGHT_CALL_GRAPH_SAME_MODULE
+WEIGHT_SHARED_PARENT = RankingConfig.WEIGHT_CALL_GRAPH_SHARED_PARENT
 from packages.context.scoring import (
-    WEIGHT_DIRECT_CALLEE,
-    WEIGHT_DIRECT_CALLER,
-    WEIGHT_SHARED_CLASS,
-    WEIGHT_SHARED_MODULE,
-    WEIGHT_SHARED_PARENT,
     RankingReason,
     score_relationship,
 )
@@ -952,7 +953,7 @@ class TestExistingBehaviorPreserved:
         engine = RankingEngine()
         engine.rank("public", [candidate])
         assert candidate.score > 0
-        assert RankingReason.PUBLIC_SYMBOL in candidate.reasons
+        assert RankingReason.PUBLIC_NAME in candidate.reasons
 
     def test_empty_query_zero_scores(self) -> None:
         """Empty query produces zero scores."""

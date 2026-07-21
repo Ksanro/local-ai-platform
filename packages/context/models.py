@@ -49,6 +49,12 @@ class ContextCandidate:
         source: Complete source body for primary symbols, truncated preview for supporting.
         source_preview: Short excerpt for supporting symbols.
         location: Tuple of (module_path, start_line, end_line).
+        symbol_type: Type of symbol (CLASS, FUNCTION, METHOD, VARIABLE).
+            Used by Ranking v2 for engineering-aware scoring.
+        source_lines: Number of lines in the source code.
+            Used by Ranking v2 for implementation size scoring.
+        is_in_init_py: Whether the symbol is exported from package __init__.py.
+            Used by Ranking v2 for public API bonus scoring.
     """
 
     symbol_id: str
@@ -62,6 +68,9 @@ class ContextCandidate:
     source: str = ""
     source_preview: str = ""
     location: tuple[str, int, int | None] | None = None
+    symbol_type: str = ""
+    source_lines: int = 0
+    is_in_init_py: bool = False
 
 
 def _default_budget() -> ContextBudgetResult:

@@ -148,15 +148,22 @@ class ContextBuilder:
         # Enumerate all symbols from the repository.
         all_symbols: list[Symbol] = list(self._index.symbols())
 
-        # Convert to candidates.
-        candidates: list[ContextCandidate] = [
-            ContextCandidate(
+        # Convert to candidates with engineering metadata.
+        candidates: list[ContextCandidate] = []
+        for sym in all_symbols:
+            # Determine if symbol is exported from __init__.py.
+            is_in_init_py = (
+                "packages/__init__.py" in self._index.modules
+                or "app/__init__.py" in self._index.modules
+            ) and sym.module.endswith(("/__init__.py", "\\__init__.py"))
+
+            candidates.append(ContextCandidate(
                 symbol_id=sym.id,
                 qualified_name=sym.qualified_name,
                 module=sym.module,
-            )
-            for sym in all_symbols
-        ]
+                symbol_type=sym.symbol_type.value if hasattr(sym.symbol_type, 'value') else str(sym.symbol_type),
+                is_in_init_py=is_in_init_py,
+            ))
 
         # Build a SymbolGraphView for relationship lookups.
         from packages.repository.symbols.graph import SymbolGraph
@@ -236,6 +243,8 @@ class ContextBuilder:
         For SUPPORTING symbols: fetch signature, docstring, short source
         preview, and location.
 
+        Also populates source_lines for implementation size scoring.
+
         Args:
             candidates: Ranked candidate list.
             primary_symbol: Optional primary symbol.
@@ -280,6 +289,8 @@ class ContextBuilder:
                 candidate.decorators = decorators or []
                 candidate.source = source or ""
                 candidate.location = location if isinstance(location, tuple) else None
+                # Count source lines for implementation size scoring.
+                candidate.source_lines = len(source.splitlines()) if source else 0
             else:
                 # SUPPORTING: signature, docstring, source preview.
                 candidate.signature = signature or ""
@@ -295,8 +306,13 @@ class ContextBuilder:
                     )
                     if preview:
                         candidate.source_preview = preview
+                        # Count source lines for implementation size scoring.
+                        candidate.source_lines = len(source.splitlines()) if source else 0
                         # Deduct from remaining budget.
                         estimated_tokens = len(preview) // 4
                         remaining_support_tokens = max(0, remaining_support_tokens - estimated_tokens)
+                elif source:
+                    # Still count lines even if no preview.
+                    candidate.source_lines = len(source.splitlines()) if source else 0
 
         return candidates

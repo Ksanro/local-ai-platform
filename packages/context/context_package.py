@@ -98,7 +98,7 @@ class ContextMetadata:
             guarantee deterministic output.
     """
 
-    ranking_version: str = "1"
+    ranking_version: str = "2"
     repository_revision: str = ""
     estimated_tokens: int = 0
     generated_at: str | None = None

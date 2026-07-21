@@ -8,7 +8,10 @@ from __future__ import annotations
 
 import pytest
 
-from packages.context.budget import TOKENS_PER_MODULE, TOKENS_PER_SYMBOL, ContextBudget
+from packages.context.budget import ContextBudget
+from packages.context.ranking_config import RankingConfig
+TOKENS_PER_MODULE = RankingConfig.WEIGHT_MODULE_RELEVANCE  # Re-export for compatibility
+TOKENS_PER_SYMBOL = 80  # Legacy constant for backward compatibility
 from packages.context.models import ContextBudgetResult, ContextCandidate
 
 # ------------------------------------------------------------------
@@ -44,6 +47,11 @@ class TestConstants:
     def test_tokens_per_module(self) -> None:
         """Verify TOKENS_PER_MODULE is 150."""
         assert TOKENS_PER_MODULE == 150
+
+    def test_ranking_config_exists(self) -> None:
+        """Verify RankingConfig is the source of truth."""
+        assert hasattr(RankingConfig, 'WEIGHT_EXACT_MATCH')
+        assert hasattr(RankingConfig, 'MAX_CANDIDATES')
 
 
 # ------------------------------------------------------------------

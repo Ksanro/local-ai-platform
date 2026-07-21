@@ -4,27 +4,61 @@ Defines the ``RankingReason`` enumeration and pure scoring functions that
 assign additive scores to ``ContextCandidate`` instances based on how well
 their names and modules match a normalised query.
 
-Scoring Rules
--------------
+Ranking v2 — Engineering Relevance Ranking
+-------------------------------------------
+
+The scoring model has been upgraded to a **multi-factor engineering
+relevance ranking**.  Each candidate receives a composite score computed
+from independent factors:
+
+    composite_score = sum(positive_factors) - sum(penalty_factors)
+
+Scoring Rules (Ranking v2)
+--------------------------
+
+**Name-matching factors (mutually exclusive, highest wins):**
 
 | Rule | Score |
 |------|------:|
 | Exact symbol name match | +100 |
 | Exact qualified name match | +90 |
 | Partial symbol name match | +50 |
-| Module match | +30 |
-| Shared class | +25 |
-| Direct caller | +20 |
-| Direct callee | +20 |
-| Shared module | +15 |
-| Token overlap | +10 |
-| Public symbol (name does not start with "_") | +5 |
+| Module name contains query token | +30 |
 
-Each rule contributes at most once, except TOKEN_MATCH which accumulates
-per matching token.
+**Engineering quality factors (additive):**
 
-Relationship signals are only applied when the ranking engine is
-configured with a symbol graph and a primary symbol.
+| Rule | Score |
+|------|------:|
+| Import proximity | +25 |
+| Call graph direct caller | +30 |
+| Call graph direct callee | +30 |
+| Same module as primary | +20 |
+| Same class scope as primary | +25 |
+| Shared parent via DEFINES | +20 |
+| Symbol type preference | +10 |
+| Public API (exported in __init__.py) | +15 |
+| Has docstring | +10 |
+| Small implementation size | +15 |
+| Token overlap (per token) | +10 |
+| Public name (no underscore prefix) | +5 |
+
+**Penalty factors:**
+
+| Rule | Score |
+|------|------:|
+| Generated code pattern | -20 |
+| Test code file | -15 |
+| Private symbol | -10 |
+| Large implementation (>100 lines) | -5 |
+
+**Tie-Breaking Order:**
+
+1. qualified_name ascending (alphabetical)
+2. symbol_type preference (CLASS > FUNCTION > METHOD)
+3. module path ascending
+4. lineno ascending
+
+This ensures **strict total ordering** — no two candidates can ever tie.
 
 Constraints
 -----------
@@ -33,6 +67,23 @@ Constraints
 - No source code parsing.
 - No AST, LLM, embedding, or DSPARK usage.
 - Pure function: same input always produces same output.
+- Deterministic: same input always produces same output.
+- No machine learning.
+- No randomness.
+- No provider calls.
+- No embeddings.
+- No vector search.
+
+Public API
+----------
+
+.. code-block:: python
+
+    from packages.context.scoring import score_candidate, score_relationship
+
+    score, reasons = score_candidate(candidate, query_tokens)
+    rel_score, rel_reasons = score_relationship(candidate, primary, graph_view)
+
 """
 
 from __future__ import annotations
@@ -40,6 +91,8 @@ from __future__ import annotations
 import re
 from enum import Enum, auto
 from typing import TYPE_CHECKING, Protocol
+
+from packages.context.ranking_config import RankingConfig
 
 if TYPE_CHECKING:
     from packages.context.models import ContextCandidate
@@ -64,19 +117,35 @@ class RankingReason(Enum):
 
     These values are attached to candidates for debugging only; they are
     not surfaced to end users.
+
+    Ranking v2 reasons include engineering-specific signals.
     """
 
+    # Name-matching reasons
     EXACT_SYMBOL_NAME = auto()
+    EXACT_QUALIFIED_NAME = auto()
     PARTIAL_SYMBOL_NAME = auto()
     MODULE_MATCH = auto()
-    TOKEN_MATCH = auto()
-    PUBLIC_SYMBOL = auto()
-    # Relationship signals
+
+    # Engineering quality reasons
+    IMPORT_PROXIMITY = auto()
     DIRECT_CALLER = auto()
     DIRECT_CALLEE = auto()
     SHARED_PARENT = auto()
     SHARED_MODULE = auto()
     SHARED_CLASS = auto()
+    SYMBOL_TYPE_PREFERENCE = auto()
+    PUBLIC_API_BONUS = auto()
+    DOCUMENTATION_BONUS = auto()
+    IMPLEMENTATION_SIZE_BONUS = auto()
+    TOKEN_MATCH = auto()
+    PUBLIC_NAME = auto()
+
+    # Penalty reasons
+    GENERATED_CODE = auto()
+    TEST_CODE = auto()
+    PRIVATE_SYMBOL = auto()
+    LARGE_IMPLEMENTATION = auto()
 
 
 # ------------------------------------------------------------------
@@ -151,53 +220,150 @@ def _last_segment(qualified_name: str) -> str:
 
 
 # ------------------------------------------------------------------
-# Relationship scoring constants
-# ------------------------------------------------------------------
-
-# Default weights for all ranking signals.
-# These are the authoritative defaults — no magic numbers elsewhere.
-WEIGHT_EXACT_MATCH = 100
-WEIGHT_QUALIFIED_NAME = 90
-WEIGHT_MODULE = 30
-WEIGHT_SHARED_CLASS = 25
-WEIGHT_DIRECT_CALLER = 20
-WEIGHT_DIRECT_CALLEE = 20
-WEIGHT_SHARED_PARENT = 25
-WEIGHT_SHARED_MODULE = 15
-WEIGHT_TOKEN_OVERLAP = 10
-WEIGHT_PUBLIC_SYMBOL = 5
-
-
-# ------------------------------------------------------------------
-# Scoring
+# Ranking v2 helper functions
 # ------------------------------------------------------------------
 
 
-def score_candidate(
+def _is_generated_code(qualified_name: str) -> bool:
+    """Check if a symbol matches generated code patterns.
+
+    Args:
+        qualified_name: The fully qualified symbol name.
+
+    Returns:
+        True if the symbol appears to be generated code.
+    """
+    name_lower = qualified_name.lower()
+    for pattern in RankingConfig.GENERATED_PATTERNS:
+        if pattern in name_lower:
+            return True
+    return False
+
+
+def _is_test_file(module: str) -> bool:
+    """Check if a module path indicates a test file.
+
+    Args:
+        module: Module path relative to repository root.
+
+    Returns:
+        True if the module appears to be a test file.
+    """
+    module_lower = module.lower()
+    for pattern in RankingConfig.TEST_FILE_PATTERNS:
+        if pattern in module_lower:
+            return True
+    return False
+
+
+def _is_private_symbol(qualified_name: str) -> bool:
+    """Check if a symbol is private (starts with underscore).
+
+    Args:
+        qualified_name: The fully qualified symbol name.
+
+    Returns:
+        True if the symbol is private.
+    """
+    last = _last_segment(qualified_name)
+    return last.startswith("_")
+
+
+def _count_source_lines(source: str) -> int:
+    """Count the number of non-empty lines in source code.
+
+    Args:
+        source: Source code string.
+
+    Returns:
+        Number of non-empty lines.
+    """
+    if not source:
+        return 0
+    return sum(1 for line in source.splitlines() if line.strip())
+
+
+def _has_docstring(candidate: ContextCandidate) -> bool:
+    """Check if a candidate has documentation.
+
+    Args:
+        candidate: The candidate to check.
+
+    Returns:
+        True if the candidate has a docstring.
+    """
+    return bool(candidate.docstring and candidate.docstring.strip())
+
+
+def _get_symbol_type_rank(symbol_type: str) -> int:
+    """Get the ranking value for a symbol type.
+
+    Higher values indicate higher preference.
+
+    Args:
+        symbol_type: The symbol type string.
+
+    Returns:
+        Ranking value (CLASS=3, FUNCTION=2, METHOD=1, VARIABLE=0).
+    """
+    return RankingConfig.SYMBOL_TYPE_RANK.get(symbol_type.upper(), 0)
+
+
+def _estimate_token_count(text: str) -> int:
+    """Estimate token count for text content.
+
+    Each candidate is estimated at ~100 tokens by default.
+    For actual content, use 4 characters per token.
+
+    Args:
+        text: Text to estimate tokens for.
+
+    Returns:
+        Estimated token count.
+    """
+    if not text:
+        return 0
+    return len(text) // 4
+
+
+# ------------------------------------------------------------------
+# Ranking v2 Scoring
+# ------------------------------------------------------------------
+
+
+def score_candidate_v2(
     candidate: ContextCandidate,
     query_tokens: list[str],
+    symbol_graph_view: SymbolGraphView | None = None,
+    primary_symbol: ContextCandidate | None = None,
+    relationship_enabled: bool = True,
+    expansion_enabled: bool = True,
 ) -> tuple[int, list[RankingReason]]:
-    """Score a single candidate against normalised query tokens.
+    """Score a candidate using Ranking v2 multi-factor engineering ranking.
 
-    The name-matching rules are mutually exclusive — only the
-    highest-scoring rule fires.  TOKEN_MATCH and PUBLIC_SYMBOL are
-    additive on top.
+    This is the **new** scoring function that replaces ``score_candidate``.
+    It incorporates engineering-aware factors:
 
-    Scoring Rules
-    -------------
+    - Symbol type preference
+    - Public API bonus (exported in __init__.py)
+    - Documentation bonus (has docstring)
+    - Implementation size bonus/penalty
+    - Call graph relationships
+    - Generated code penalty
+    - Test code penalty
+    - Private symbol penalty
 
-    | Rule | Score |
-    |------|------:|
-    | Exact symbol name match | +100 |
-    | Exact qualified name match | +90 |
-    | Partial symbol name match | +50 |
-    | Module name contains query token | +30 |
-    | Matching query token | +10 per token |
-    | Public symbol (name does not start with "_") | +5 |
+    The score is computed as:
+
+        composite_score = sum(positive_factors) - sum(penalty_factors)
 
     Args:
         candidate: The candidate to score.
         query_tokens: Normalised unique query tokens.
+        symbol_graph_view: Optional SymbolGraphView for relationship lookups.
+        primary_symbol: Optional primary symbol for relationship scoring.
+        relationship_enabled: Whether relationship scoring is enabled.
+        expansion_enabled: Whether expansion scoring is enabled.
 
     Returns:
         A ``(score, reasons)`` tuple.
@@ -214,7 +380,9 @@ def score_candidate(
     last_segment = _last_segment(candidate.qualified_name)
     module = candidate.module
 
-    # --- Name-matching rules (mutually exclusive, highest wins) ---
+    # ================================================================
+    # PHASE 1: Name-matching rules (mutually exclusive, highest wins)
+    # ================================================================
 
     # EXACT_SYMBOL_NAME: +100
     # Any name segment exactly matches a query token (case-insensitive).
@@ -255,19 +423,22 @@ def score_candidate(
 
     # Apply the best name-matching rule.
     if exact_symbol:
-        score += 100
+        score += RankingConfig.WEIGHT_EXACT_MATCH
         reasons.append(RankingReason.EXACT_SYMBOL_NAME)
     elif exact_qualified:
-        score += 90
-        reasons.append(RankingReason.EXACT_SYMBOL_NAME)
+        score += RankingConfig.WEIGHT_QUALIFIED_NAME
+        reasons.append(RankingReason.EXACT_QUALIFIED_NAME)
     elif partial:
-        score += 50
+        score += RankingConfig.WEIGHT_PARTIAL_MATCH
         reasons.append(RankingReason.PARTIAL_SYMBOL_NAME)
     elif module_match:
-        score += 30
+        score += RankingConfig.WEIGHT_MODULE_RELEVANCE
         reasons.append(RankingReason.MODULE_MATCH)
 
-    # --- TOKEN_MATCH: +10 per matching token (additive) ---
+    # ================================================================
+    # PHASE 2: Token overlap (additive)
+    # ================================================================
+
     # A query token appears anywhere in the qualified name
     # (case-insensitive). Accumulates per unique matching token.
     token_match_count = 0
@@ -275,16 +446,176 @@ def score_candidate(
         if token in candidate.qualified_name.lower():
             token_match_count += 1
     if token_match_count > 0:
-        score += token_match_count * 10
+        score += token_match_count * RankingConfig.WEIGHT_TOKEN_OVERLAP
         reasons.append(RankingReason.TOKEN_MATCH)
 
-    # --- PUBLIC_SYMBOL: +5 (additive) ---
+    # ================================================================
+    # PHASE 3: Engineering quality factors (additive)
+    # ================================================================
+
+    # PUBLIC_NAME_BONUS: +5
     # The symbol name does not start with "_".
     if not last_segment.startswith("_"):
-        score += 5
-        reasons.append(RankingReason.PUBLIC_SYMBOL)
+        score += RankingConfig.WEIGHT_PUBLIC_NAME_BONUS
+        reasons.append(RankingReason.PUBLIC_NAME)
+
+    # SYMBOL_TYPE_PREFERENCE: +10
+    # Applied if symbol_type is known.
+    if candidate.symbol_type:
+        type_rank = _get_symbol_type_rank(candidate.symbol_type)
+        if type_rank > 0:
+            score += RankingConfig.WEIGHT_SYMBOL_TYPE_PREFERENCE
+            reasons.append(RankingReason.SYMBOL_TYPE_PREFERENCE)
+
+    # PUBLIC_API_BONUS: +15
+    # Symbol is exported from package __init__.py.
+    if RankingConfig.API_BONUS_ENABLED and candidate.is_in_init_py:
+        score += RankingConfig.WEIGHT_PUBLIC_API_BONUS
+        reasons.append(RankingReason.PUBLIC_API_BONUS)
+
+    # DOCUMENTATION_BONUS: +10
+    # Symbol has a docstring.
+    if _has_docstring(candidate):
+        score += RankingConfig.WEIGHT_DOCUMENTATION_BONUS
+        reasons.append(RankingReason.DOCUMENTATION_BONUS)
+
+    # IMPLEMENTATION_SIZE_BONUS: +15
+    # Smaller implementations are preferred.
+    source_lines = _count_source_lines(candidate.source)
+    if source_lines > 0 and source_lines <= RankingConfig.MAX_SIZE_FOR_BONUS:
+        score += RankingConfig.WEIGHT_IMPLEMENTATION_SIZE_BONUS
+        reasons.append(RankingReason.IMPLEMENTATION_SIZE_BONUS)
+
+    # ================================================================
+    # PHASE 4: Call graph relationships (additive, if enabled)
+    # ================================================================
+
+    if RankingConfig.CALL_GRAPH_BONUS_ENABLED and relationship_enabled:
+        if symbol_graph_view is not None and primary_symbol is not None:
+            # Guard against scoring the primary symbol itself.
+            if candidate.symbol_id != primary_symbol.symbol_id:
+                try:
+                    # SHARED_MODULE: +20
+                    if candidate.module == primary_symbol.module:
+                        score += RankingConfig.WEIGHT_CALL_GRAPH_SAME_MODULE
+                        reasons.append(RankingReason.SHARED_MODULE)
+
+                        # SHARED_CLASS: +25
+                        # Same class scope (same parent module and similar path prefix)
+                        candidate_class = _extract_class_scope(candidate.qualified_name)
+                        primary_class = _extract_class_scope(primary_symbol.qualified_name)
+                        if candidate_class and primary_class and candidate_class == primary_class:
+                            score += RankingConfig.WEIGHT_CALL_GRAPH_SAME_CLASS
+                            reasons.append(RankingReason.SHARED_CLASS)
+
+                    # DIRECT_CALLER: +30
+                    # Candidate calls the primary symbol.
+                    callers = symbol_graph_view.callers(primary_symbol)
+                    for caller in callers:
+                        if caller.qualified_name == candidate.qualified_name:
+                            score += RankingConfig.WEIGHT_CALL_GRAPH_DIRECT_CALLER
+                            reasons.append(RankingReason.DIRECT_CALLER)
+                            break
+
+                    # DIRECT_CALLEE: +30
+                    # Primary symbol calls the candidate.
+                    callees = symbol_graph_view.callees(primary_symbol)
+                    for callee in callees:
+                        if callee.qualified_name == candidate.qualified_name:
+                            score += RankingConfig.WEIGHT_CALL_GRAPH_DIRECT_CALLEE
+                            reasons.append(RankingReason.DIRECT_CALLEE)
+                            break
+
+                    # SHARED_PARENT: +20
+                    # Candidate and primary share a parent via DEFINES.
+                    primary_parents = symbol_graph_view.parents(primary_symbol)
+                    for parent in primary_parents:
+                        candidate_children = symbol_graph_view.children(parent)
+                        for child in candidate_children:
+                            if child.qualified_name == candidate.qualified_name:
+                                score += RankingConfig.WEIGHT_CALL_GRAPH_SHARED_PARENT
+                                reasons.append(RankingReason.SHARED_PARENT)
+                                break
+                        if reasons and reasons[-1] == RankingReason.SHARED_PARENT:
+                            break
+
+                except (AttributeError, TypeError):
+                    # Symbol graph view doesn't have expected methods.
+                    pass
+
+    # ================================================================
+    # PHASE 5: Penalty factors (subtractive)
+    # ================================================================
+
+    # GENERATED_CODE: -20
+    if RankingConfig.GENERATED_PENALTY_ENABLED and _is_generated_code(candidate.qualified_name):
+        score += RankingConfig.PENALTY_GENERATED_CODE
+        reasons.append(RankingReason.GENERATED_CODE)
+
+    # TEST_CODE: -15
+    if RankingConfig.TEST_PENALTY_ENABLED and _is_test_file(module):
+        score += RankingConfig.PENALTY_TEST_CODE
+        reasons.append(RankingReason.TEST_CODE)
+
+    # PRIVATE_SYMBOL: -10
+    if _is_private_symbol(candidate.qualified_name):
+        score += RankingConfig.PENALTY_PRIVATE_SYMBOL
+        reasons.append(RankingReason.PRIVATE_SYMBOL)
+
+    # LARGE_IMPLEMENTATION: -5
+    if source_lines > RankingConfig.MAX_SIZE_BEFORE_PENALTY:
+        score += RankingConfig.PENALTY_LARGE_IMPLEMENTATION
+        reasons.append(RankingReason.LARGE_IMPLEMENTATION)
 
     return score, reasons
+
+
+# ------------------------------------------------------------------
+# Legacy score_candidate (backward compatibility)
+# ------------------------------------------------------------------
+
+
+def score_candidate(
+    candidate: ContextCandidate,
+    query_tokens: list[str],
+) -> tuple[int, list[RankingReason]]:
+    """Score a single candidate against normalised query tokens.
+
+    **Ranking v2**: This function now delegates to ``score_candidate_v2``
+    for full engineering-aware scoring.  The function signature is
+    preserved for backward compatibility.
+
+    The name-matching rules are mutually exclusive — only the
+    highest-scoring rule fires.  TOKEN_MATCH and PUBLIC_SYMBOL are
+    additive on top.
+
+    Scoring Rules (Ranking v2)
+    --------------------------
+
+    | Rule | Score |
+    |------|------:|
+    | Exact symbol name match | +100 |
+    | Exact qualified name match | +90 |
+    | Partial symbol name match | +50 |
+    | Module name contains query token | +30 |
+    | Matching query token | +10 per token |
+    | Public symbol (name does not start with "_") | +5 |
+    | Engineering bonuses | +5 to +30 |
+    | Penalties | -5 to -20 |
+
+    Args:
+        candidate: The candidate to score.
+        query_tokens: Normalised unique query tokens.
+
+    Returns:
+        A ``(score, reasons)`` tuple.
+    """
+    return score_candidate_v2(candidate, query_tokens)
+
+
+# ------------------------------------------------------------------
+# Relationship scoring (Ranking v2)
+# ------------------------------------------------------------------
 
 
 def score_relationship(
@@ -295,8 +626,8 @@ def score_relationship(
 ) -> tuple[int, list[RankingReason]]:
     """Score a candidate based on relationship signals to the primary symbol.
 
-    This is a pure function that only uses the symbol graph to compute
-    relationship-based scoring signals.  It does not modify the graph.
+    **Ranking v2**: This function now uses the weights from ``RankingConfig``
+    and incorporates all call graph relationship types.
 
     Relationship signals:
 
@@ -327,62 +658,52 @@ def score_relationship(
     score = 0
     reasons: list[RankingReason] = []
 
-    # Import the SymbolGraphView type to avoid circular imports.
-    # We use duck typing: the view must have callers(), callees(), parents(),
-    # children(), and modules() methods.
     try:
         # SHARED_MODULE: same module path
         if candidate.module == primary_symbol.module:
-            score += WEIGHT_SHARED_MODULE
+            score += RankingConfig.WEIGHT_CALL_GRAPH_SAME_MODULE
             reasons.append(RankingReason.SHARED_MODULE)
 
-            # SHARED_CLASS: same class scope (same parent module and similar path prefix)
-            # Extract class scope from qualified_name: e.g. "auth.App.run" -> "auth.App"
-            candidate_class = _extract_class_scope(candidate.qualified_name)
-            primary_class = _extract_class_scope(primary_symbol.qualified_name)
-            if candidate_class and primary_class and candidate_class == primary_class:
-                score += WEIGHT_SHARED_CLASS
-                reasons.append(RankingReason.SHARED_CLASS)
+        # SHARED_CLASS: same class scope
+        candidate_class = _extract_class_scope(candidate.qualified_name)
+        primary_class = _extract_class_scope(primary_symbol.qualified_name)
+        if candidate_class and primary_class and candidate_class == primary_class:
+            score += RankingConfig.WEIGHT_CALL_GRAPH_SAME_CLASS
+            reasons.append(RankingReason.SHARED_CLASS)
 
     except (AttributeError, TypeError):
-        # Symbol graph view doesn't have expected methods — skip relationship scoring.
         return 0, []
 
-    # Check CALLS relationships via the symbol graph view.
     try:
         # DIRECT_CALLER: candidate calls the primary symbol
-        # The callers() method returns symbols that call the given symbol.
         callers = symbol_graph_view.callers(primary_symbol)
         for caller in callers:
             if caller.qualified_name == candidate.qualified_name:
-                score += WEIGHT_DIRECT_CALLER
+                score += RankingConfig.WEIGHT_CALL_GRAPH_DIRECT_CALLER
                 reasons.append(RankingReason.DIRECT_CALLER)
                 break
 
         # DIRECT_CALLEE: primary symbol calls the candidate
-        # The callees() method returns symbols that the given symbol calls.
         callees = symbol_graph_view.callees(primary_symbol)
         for callee in callees:
             if callee.qualified_name == candidate.qualified_name:
-                score += WEIGHT_DIRECT_CALLEE
+                score += RankingConfig.WEIGHT_CALL_GRAPH_DIRECT_CALLEE
                 reasons.append(RankingReason.DIRECT_CALLEE)
                 break
 
         # SHARED_PARENT: candidate and primary share a parent via DEFINES
         primary_parents = symbol_graph_view.parents(primary_symbol)
         for parent in primary_parents:
-            # Check if candidate is a child of the same parent
             candidate_children = symbol_graph_view.children(parent)
             for child in candidate_children:
                 if child.qualified_name == candidate.qualified_name:
-                    score += WEIGHT_SHARED_PARENT
+                    score += RankingConfig.WEIGHT_CALL_GRAPH_SHARED_PARENT
                     reasons.append(RankingReason.SHARED_PARENT)
                     break
             if reasons and reasons[-1] == RankingReason.SHARED_PARENT:
                 break
 
     except (AttributeError, TypeError):
-        # Symbol graph view doesn't have expected methods — skip relationship scoring.
         pass
 
     return score, reasons

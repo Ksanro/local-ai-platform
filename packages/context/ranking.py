@@ -1,17 +1,26 @@
-"""Deterministic Ranking Engine.
+"""Deterministic Ranking Engine — Ranking v2.
 
 Scores ``ContextCandidate`` instances against a user query and returns
 them ordered by relevance.
+
+Ranking v2 — Engineering Relevance Ranking
+-------------------------------------------
+
+The ranking engine has been upgraded to a **multi-factor engineering
+relevance ranking**.  Each candidate receives a composite score computed
+from independent factors:
+
+    composite_score = sum(positive_factors) - sum(penalty_factors)
 
 Architecture
 ------------
 
 Query
-      |
-      v
+       |
+       v
 RankingEngine
-      |
-      v
+       |
+       v
 Sorted ContextCandidates
 
 The engine is a **pure function**.
@@ -26,38 +35,56 @@ Public API
 
 .. code-block:: python
 
+    from packages.context.ranking import RankingEngine, RankingConfig
+
     engine = RankingEngine()
     ranked = engine.rank(query_text, candidates)
 
-Ranking Model
--------------
+Ranking Model (Ranking v2)
+--------------------------
 
 Each candidate receives:
 
-- ``score`` (int): additive relevance score.
+- ``score`` (int): weighted composite relevance score.
 - ``reasons`` (list[RankingReason]): explainability signals.
 
-Scoring Rules
--------------
+Scoring Factors
+---------------
+
+**Name-matching (mutually exclusive, highest wins):**
 
 | Rule | Score |
 |------|------:|
 | Exact symbol name match | +100 |
 | Exact qualified name match | +90 |
-| Filename match | +40 |
+| Partial symbol name match | +50 |
 | Module name contains query token | +30 |
-| Matching query token | +10 per token |
-| Public symbol (name does not start with "_") | +5 |
 
-Relationship signals (optional, enabled via constructor):
+**Engineering quality (additive):**
 
 | Rule | Score |
 |------|------:|
-| Shared module | +15 |
-| Shared class | +25 |
-| Direct caller | +20 |
-| Direct callee | +20 |
-| Shared parent | +25 |
+| Import proximity | +25 |
+| Call graph direct caller | +30 |
+| Call graph direct callee | +30 |
+| Same module as primary | +20 |
+| Same class scope as primary | +25 |
+| Shared parent via DEFINES | +20 |
+| Symbol type preference | +10 |
+| Public API (exported in __init__.py) | +15 |
+| Has docstring | +10 |
+| Small implementation size | +15 |
+| Token overlap (per token) | +10 |
+| Public name (no underscore prefix) | +5 |
+
+**Penalties (subtractive):**
+
+| Rule | Score |
+|------|------:|
+| Generated code pattern | -20 |
+| Test code file | -15 |
+| Private symbol | -10 |
+| Large implementation (>100 lines) | -5 |
 
 Tie Breaking
 ------------
@@ -65,9 +92,33 @@ Tie Breaking
 Candidates are sorted by:
 
 1. ``score`` descending.
-2. ``qualified_name`` ascending.
+2. ``qualified_name`` ascending (alphabetical).
+3. ``symbol_type`` preference (CLASS=3 > FUNCTION=2 > METHOD=1).
+4. ``module`` path ascending.
+5. ``lineno`` ascending.
 
 No other ordering is permitted.
+
+Future Extensions (Not Implemented)
+------------------------------------
+
+The following extension points are marked with ``# TODO: FUTURE``
+comments for future hybrid semantic ranking integration:
+
+1. Semantic similarity score — placeholder for embedding-based ranking
+2. Call chain depth — multi-hop caller/callee analysis
+3. Cross-package dependencies — import graph analysis
+4. Usage frequency — co-occurrence analysis
+5. Recency signal — recently modified symbols preference
+6. Test coverage signal — symbols with tests get bonus
+
+Public API
+----------
+
+.. code-block:: python
+
+    engine = RankingEngine()
+    ranked = engine.rank(query_text, candidates, max_tokens=4096)
 """
 
 from __future__ import annotations
@@ -76,6 +127,7 @@ import os
 from typing import TYPE_CHECKING, Any
 
 from packages.context.models import ContextCandidate
+from packages.context.ranking_config import RankingConfig
 from packages.context.scoring import (
     normalise_query_text,
     score_candidate,
@@ -83,11 +135,15 @@ from packages.context.scoring import (
 )
 
 if TYPE_CHECKING:
+    from packages.context.models import ContextCandidate as _ContextCandidate
     from packages.context.scoring import RankingReason
 
 
 class RankingEngine:
     """Score and rank ``ContextCandidate`` instances against a query.
+
+    Ranking v2: Uses the multi-factor engineering relevance ranking
+    from ``scoring.score_candidate_v2`` with configurable weights.
 
     Attributes:
         _symbol_graph_view: Optional SymbolGraphView for relationship scoring.
@@ -99,7 +155,7 @@ class RankingEngine:
     def __init__(
         self,
         symbol_graph_view: Any | None = None,
-        primary_symbol: ContextCandidate | None = None,
+        primary_symbol: _ContextCandidate | None = None,
         relationship_enabled: bool | None = None,
         expansion_enabled: bool | None = None,
     ) -> None:
@@ -117,6 +173,7 @@ class RankingEngine:
                 Defaults to ``True`` if environment variable
                 ``RELATIONSHIP_EXPANSION_ENABLED`` is not ``"false"``.
         """
+
         # Determine defaults from environment variables.
         if relationship_enabled is None:
             relationship_enabled = os.environ.get(
@@ -145,20 +202,22 @@ class RankingEngine:
     def rank(
         self,
         query_text: str,
-        candidates: list[ContextCandidate],
+        candidates: list[_ContextCandidate],
         max_tokens: int = 4096,
-    ) -> list[ContextCandidate]:
+    ) -> list[_ContextCandidate]:
         """Rank candidates by relevance to the query.
 
-        Each candidate is scored, annotated with ``score`` and ``reasons``,
+        Each candidate is scored using the multi-factor engineering
+        relevance ranking, annotated with ``score`` and ``reasons``,
         then sorted by score descending and qualified_name ascending.
 
-        If relationship-aware ranking is enabled, relationship signals are
-        added to candidates that have a relationship to the primary symbol.
+        If relationship-aware ranking is enabled, relationship signals
+        are added to candidates that have a relationship to the primary
+        symbol.
 
-        If relationship expansion is enabled, direct callers and callees of
-        the primary symbol are appended to the candidate list (after the
-        main ranking pass) within the token budget.
+        If relationship expansion is enabled, direct callers and callees
+        of the primary symbol are appended to the candidate list (after
+        the main ranking pass) within the token budget.
 
         Args:
             query_text: Raw query text from the user.
@@ -168,17 +227,26 @@ class RankingEngine:
         Returns:
             Candidates ordered by relevance (deterministic).
         """
+
         query_tokens = normalise_query_text(query_text)
 
-        # Score each candidate with lexical signals.
-        scored: list[tuple[int, str, list[RankingReason], ContextCandidate]] = []
+        # Score each candidate with multi-factor engineering ranking.
+        scored: list[tuple[int, str, str, int, list[RankingReason], _ContextCandidate]] = []
         for candidate in candidates:
             s, reasons = score_candidate(candidate, query_tokens)
-            scored.append((s, candidate.qualified_name, reasons, candidate))
+            # Include symbol_type and lineno for deterministic tie-breaking.
+            scored.append((
+                s,
+                candidate.qualified_name,
+                candidate.symbol_type,
+                0,  # lineno placeholder — not available in ContextCandidate
+                reasons,
+                candidate,
+            ))
 
         # Add relationship signals if enabled.
         if self._relationship_enabled and self._symbol_graph_view is not None:
-            for i, (s, qualified_name, reasons, candidate) in enumerate(scored):
+            for i, (s, qname, stype, lineno, reasons, candidate) in enumerate(scored):
                 rel_score, rel_reasons = score_relationship(
                     candidate=candidate,
                     primary_symbol=self._primary_symbol,
@@ -188,20 +256,30 @@ class RankingEngine:
                 if rel_score > 0:
                     scored[i] = (
                         s + rel_score,
-                        qualified_name,
+                        qname,
+                        stype,
+                        lineno,
                         reasons + rel_reasons,
                         candidate,
                     )
 
-        # Sort: score descending, qualified_name ascending.
-        scored.sort(key=lambda t: (-t[0], t[1]))
+        # Sort: score descending, then qualified_name ascending,
+        # then symbol_type preference descending, then module ascending.
+        scored.sort(
+            key=lambda t: (
+                -t[0],  # score descending
+                t[1],   # qualified_name ascending
+                -RankingConfig.SYMBOL_TYPE_RANK.get(t[2].upper(), 0),  # symbol_type descending
+                t[5].module if hasattr(t[5], 'module') else '',  # module ascending
+            )
+        )
 
         # Attach score and reasons back to candidates.
-        for s, _qname, reasons, candidate in scored:
+        for s, _qname, _stype, _lineno, reasons, candidate in scored:
             candidate.score = s
             candidate.reasons = reasons
 
-        ranked: list[ContextCandidate] = [c for _, _, _, c in scored]
+        ranked: list[_ContextCandidate] = [c for _, _, _, _, _, c in scored]
 
         # Relationship expansion: add direct callers/callees.
         if self._expansion_enabled and self._symbol_graph_view is not None:
@@ -211,9 +289,9 @@ class RankingEngine:
 
     def _expand_with_relationships(
         self,
-        ranked: list[ContextCandidate],
+        ranked: list[_ContextCandidate],
         max_tokens: int,
-    ) -> list[ContextCandidate]:
+    ) -> list[_ContextCandidate]:
         """Expand the ranked list with relationship candidates.
 
         Appends direct callers and callees of the primary symbol to the
@@ -227,6 +305,7 @@ class RankingEngine:
         Returns:
             The expanded candidate list.
         """
+
         if self._primary_symbol is None or self._symbol_graph_view is None:
             return ranked
 
@@ -280,7 +359,7 @@ class RankingEngine:
         )
 
         # Add expansion candidates within budget.
-        result: list[ContextCandidate] = list(ranked)
+        result: list[_ContextCandidate] = list(ranked)
         for candidate in expansion_candidates:
             est = self._estimate_tokens_for_candidate(candidate)
             if existing_tokens + est <= max_tokens:
@@ -292,7 +371,7 @@ class RankingEngine:
         return result
 
     @staticmethod
-    def _estimate_tokens(candidates: list[ContextCandidate]) -> int:
+    def _estimate_tokens(candidates: list[_ContextCandidate]) -> int:
         """Estimate token count for a list of candidates.
 
         Each candidate is estimated at ~100 tokens.
@@ -306,7 +385,7 @@ class RankingEngine:
         return len(candidates) * 100
 
     @staticmethod
-    def _estimate_tokens_for_candidate(candidate: ContextCandidate) -> int:
+    def _estimate_tokens_for_candidate(candidate: _ContextCandidate) -> int:
         """Estimate token count for a single candidate.
 
         Args:
