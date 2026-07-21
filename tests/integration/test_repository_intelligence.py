@@ -391,15 +391,11 @@ class TestProviderReceivesRequest:
         )
         request.stream = True
 
-        context = _make_context(context_enabled=True)
-        context.resolved_model = _make_resolved_model(mock_provider)
+        # Use _run_pipeline which properly converts PipelineRequest
+        # to context.request via request.to_provider_kwargs()
+        response = await _run_pipeline(context_stage, mock_provider, request)
 
-        # Run stages directly with the context that has resolved_model set
-        await context_stage.before(context)
-        result = await context_stage.execute(context)
-        await context_stage.after(context, result)
-        provider_result = await ProviderStage().execute(context)
-        assert provider_result.success is True
+        assert response.success is True
         assert len(mock_provider.chat_calls) == 1
         assert mock_provider.chat_calls[0]["stream"] is True
 
