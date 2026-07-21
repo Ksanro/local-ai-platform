@@ -8,10 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from packages.context.budget import ContextBudget
-from packages.context.ranking_config import RankingConfig
-TOKENS_PER_MODULE = RankingConfig.WEIGHT_MODULE_RELEVANCE  # Re-export for compatibility
-TOKENS_PER_SYMBOL = 80  # Legacy constant for backward compatibility
+from packages.context.budget import CHARS_PER_TOKEN, ContextBudget
 from packages.context.models import ContextBudgetResult, ContextCandidate
 
 # ------------------------------------------------------------------
@@ -23,13 +20,40 @@ def _make_candidate(
     symbol_id: str,
     qualified_name: str,
     module: str,
+    source: str = "",
+    source_preview: str = "",
+    signature: str = "",
+    docstring: str = "",
 ) -> ContextCandidate:
     """Create a ContextCandidate for testing."""
     return ContextCandidate(
         symbol_id=symbol_id,
         qualified_name=qualified_name,
         module=module,
+        source=source,
+        source_preview=source_preview,
+        signature=signature,
+        docstring=docstring,
     )
+
+
+def _expected_tokens(candidates: list[ContextCandidate], modules: list[str]) -> int:
+    """Compute expected token estimate from actual content using CHARS_PER_TOKEN."""
+    total_chars = 0
+    for candidate in candidates:
+        if candidate.source:
+            total_chars += len(candidate.source)
+        if candidate.source_preview:
+            total_chars += len(candidate.source_preview)
+        if candidate.signature:
+            total_chars += len(candidate.signature)
+        if candidate.docstring:
+            total_chars += len(candidate.docstring)
+        total_chars += len(candidate.qualified_name)
+        total_chars += len(candidate.module)
+    for module in modules:
+        total_chars += len(module)
+    return int(total_chars / CHARS_PER_TOKEN) if total_chars > 0 else 0
 
 
 # ------------------------------------------------------------------
@@ -40,16 +64,13 @@ def _make_candidate(
 class TestConstants:
     """Tests for estimation constants."""
 
-    def test_tokens_per_symbol(self) -> None:
-        """Verify TOKENS_PER_SYMBOL is 80."""
-        assert TOKENS_PER_SYMBOL == 80
-
-    def test_tokens_per_module(self) -> None:
-        """Verify TOKENS_PER_MODULE is 150."""
-        assert TOKENS_PER_MODULE == 150
+    def test_chars_per_token_value(self) -> None:
+        """Verify CHARS_PER_TOKEN is 4.0."""
+        assert CHARS_PER_TOKEN == 4.0
 
     def test_ranking_config_exists(self) -> None:
-        """Verify RankingConfig is the source of truth."""
+        """Verify RankingConfig is accessible."""
+        from packages.context.ranking_config import RankingConfig
         assert hasattr(RankingConfig, 'WEIGHT_EXACT_MATCH')
         assert hasattr(RankingConfig, 'MAX_CANDIDATES')
 
@@ -71,33 +92,33 @@ class TestFormula:
         assert result.estimated_modules == 0
 
     def test_single_symbol(self) -> None:
-        """Verify single symbol produces 80 tokens."""
+        """Verify single symbol estimate matches content-based formula."""
         engine = ContextBudget()
         candidates = [_make_candidate("a", "main.a", "main.py")]
         result = engine.estimate(candidates, [], max_tokens=4096)
-        assert result.estimated_tokens == 80
+        assert result.estimated_tokens == _expected_tokens(candidates, [])
         assert result.estimated_symbols == 1
         assert result.estimated_modules == 0
 
     def test_single_module(self) -> None:
-        """Verify single module produces 150 tokens."""
+        """Verify single module estimate matches content-based formula."""
         engine = ContextBudget()
         result = engine.estimate([], ["main.py"], max_tokens=4096)
-        assert result.estimated_tokens == 150
+        assert result.estimated_tokens == _expected_tokens([], ["main.py"])
         assert result.estimated_symbols == 0
         assert result.estimated_modules == 1
 
     def test_single_symbol_and_module(self) -> None:
-        """Verify one symbol in one module: 80 + 150 = 230."""
+        """Verify one symbol in one module: content-based estimate."""
         engine = ContextBudget()
         candidates = [_make_candidate("a", "main.a", "main.py")]
         result = engine.estimate(candidates, ["main.py"], max_tokens=4096)
-        assert result.estimated_tokens == 230
+        assert result.estimated_tokens == _expected_tokens(candidates, ["main.py"])
         assert result.estimated_symbols == 1
         assert result.estimated_modules == 1
 
     def test_multiple_symbols(self) -> None:
-        """Verify multiple symbols: symbols * 80."""
+        """Verify multiple symbols: content-based estimate."""
         engine = ContextBudget()
         candidates = [
             _make_candidate("a", "main.a", "main.py"),
@@ -105,23 +126,23 @@ class TestFormula:
             _make_candidate("c", "main.c", "main.py"),
         ]
         result = engine.estimate(candidates, [], max_tokens=4096)
-        assert result.estimated_tokens == 240  # 3 * 80
+        assert result.estimated_tokens == _expected_tokens(candidates, [])
 
     def test_multiple_modules(self) -> None:
-        """Verify multiple modules: modules * 150."""
+        """Verify multiple modules: content-based estimate."""
         engine = ContextBudget()
         result = engine.estimate([], ["a.py", "b.py", "c.py"], max_tokens=4096)
-        assert result.estimated_tokens == 450  # 3 * 150
+        assert result.estimated_tokens == _expected_tokens([], ["a.py", "b.py", "c.py"])
 
     def test_symbols_and_modules(self) -> None:
-        """Verify combined: symbols * 80 + modules * 150."""
+        """Verify combined: content-based estimate."""
         engine = ContextBudget()
         candidates = [
             _make_candidate("a", "main.a", "main.py"),
             _make_candidate("b", "utils.b", "utils.py"),
         ]
         result = engine.estimate(candidates, ["main.py", "utils.py"], max_tokens=4096)
-        assert result.estimated_tokens == 460  # 2*80 + 2*150
+        assert result.estimated_tokens == _expected_tokens(candidates, ["main.py", "utils.py"])
 
     def test_duplicate_symbols_count_once(self) -> None:
         """Verify duplicate symbol_ids are counted once."""
@@ -132,7 +153,29 @@ class TestFormula:
         ]
         result = engine.estimate(candidates, ["main.py"], max_tokens=4096)
         assert result.estimated_symbols == 1
-        assert result.estimated_tokens == 230  # 1*80 + 1*150
+        # estimated_tokens uses actual content, not per-symbol constants
+        assert result.estimated_tokens == _expected_tokens(candidates, ["main.py"])
+
+    def test_monotonic_adding_candidate(self) -> None:
+        """Adding a candidate never decreases estimated_tokens."""
+        engine = ContextBudget()
+        candidates = [_make_candidate("a", "main.a", "main.py")]
+        result1 = engine.estimate(candidates, [], max_tokens=4096)
+        candidates.append(_make_candidate("b", "main.b", "main.py"))
+        result2 = engine.estimate(candidates, [], max_tokens=4096)
+        assert result2.estimated_tokens >= result1.estimated_tokens
+
+    def test_long_source_yields_larger_estimate(self) -> None:
+        """Long source yields larger estimate than one with only qualified_name."""
+        engine = ContextBudget()
+        short_candidate = _make_candidate("a", "main.a", "main.py")
+        long_candidate = _make_candidate(
+            "b", "main.b", "main.py",
+            source="def b():\n    " + "x = 1\n" * 100,
+        )
+        result_short = engine.estimate([short_candidate], [], max_tokens=4096)
+        result_long = engine.estimate([long_candidate], [], max_tokens=4096)
+        assert result_long.estimated_tokens > result_short.estimated_tokens
 
 
 # ------------------------------------------------------------------
@@ -153,27 +196,41 @@ class TestBudgetBoundaries:
     def test_exact_boundary(self) -> None:
         """Verify exact boundary: estimated == max_tokens is within budget."""
         engine = ContextBudget()
+        max_tok = 4096
         candidates = [_make_candidate("a", "main.a", "main.py")]
-        result = engine.estimate(candidates, [], max_tokens=80)
-        assert result.within_budget is True
-        assert result.truncated is False
+        result = engine.estimate(candidates, [], max_tokens=max_tok)
+        # The estimate will be some value; within_budget should be True if estimate <= max_tokens
+        assert result.within_budget == (result.estimated_tokens <= max_tok)
+        assert result.truncated == (result.estimated_tokens > max_tok)
 
     def test_budget_exceeded(self) -> None:
         """Verify budget exceeded: estimated > max_tokens."""
         engine = ContextBudget()
         candidates = [_make_candidate("a", "main.a", "main.py")]
-        result = engine.estimate(candidates, [], max_tokens=79)
+        result = engine.estimate(candidates, [], max_tokens=0)
         assert result.within_budget is False
         assert result.truncated is True
 
-    def test_budget_exceeded_by_one(self) -> None:
-        """Verify exceeded by one token."""
+    def test_budget_boundary_inversion(self) -> None:
+        """Verify within_budget is True when estimated <= max_tokens, False otherwise."""
         engine = ContextBudget()
         candidates = [_make_candidate("a", "main.a", "main.py")]
-        result = engine.estimate(candidates, [], max_tokens=79)
-        assert result.estimated_tokens == 80
-        assert result.within_budget is False
-        assert result.truncated is True
+        est = _expected_tokens(candidates, [])
+
+        # Below budget
+        result_below = engine.estimate(candidates, [], max_tokens=est + 1)
+        assert result_below.within_budget is True
+        assert result_below.truncated is False
+
+        # At budget
+        result_at = engine.estimate(candidates, [], max_tokens=est)
+        assert result_at.within_budget is True
+        assert result_at.truncated is False
+
+        # Above budget
+        result_above = engine.estimate(candidates, [], max_tokens=est - 1)
+        assert result_above.within_budget is False
+        assert result_above.truncated is True
 
     def test_large_budget(self) -> None:
         """Verify large budget accepts any reasonable context."""
@@ -320,3 +377,4 @@ class TestConstraints:
         assert "tiktoken" not in source
         assert "huggingface" not in source
         assert "transformers" not in source
+

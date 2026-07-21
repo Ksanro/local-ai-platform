@@ -103,24 +103,25 @@ class TestScoringRules:
     """
 
     def test_exact_symbol_name_match(self) -> None:
-        """Exact symbol name match yields +100 + token + public."""
+        """Exact symbol name match yields +100 + token + public_name."""
         candidate = _candidate("App", "main.App", "main.py")
         score, reasons = score_candidate(candidate, ["app"])
-        # exact name: +100, token "app" in "main.app": +10, public: +5
+        # exact name: +100, token "app" in "main.app": +10, public_name: +5
         assert score == 115
         assert RankingReason.EXACT_SYMBOL_NAME in reasons
         assert RankingReason.TOKEN_MATCH in reasons
-        assert RankingReason.PUBLIC_SYMBOL in reasons
+        assert RankingReason.PUBLIC_NAME in reasons
 
     def test_exact_qualified_name_match(self) -> None:
-        """Exact qualified name match yields +90 + token + public."""
+        """Exact qualified name match yields +90 + token + public_name."""
         candidate = _candidate("App", "main.App", "main.py")
         score, reasons = score_candidate(candidate, ["main.app"])
-        # exact qualified: +90, token "main.app" in "main.app": +10, public: +5
+        # exact qualified: +90, token "main.app" in "main.app": +10, public_name: +5
         assert score == 105
-        assert RankingReason.EXACT_SYMBOL_NAME in reasons
+        # EXACT_QUALIFIED_NAME fires when the full qualified name matches a query token
+        assert RankingReason.EXACT_QUALIFIED_NAME in reasons
         assert RankingReason.TOKEN_MATCH in reasons
-        assert RankingReason.PUBLIC_SYMBOL in reasons
+        assert RankingReason.PUBLIC_NAME in reasons
 
     def test_partial_symbol_name_match(self) -> None:
         """Partial symbol name match: substring within a segment yields +50."""
@@ -128,11 +129,11 @@ class TestScoringRules:
         score, reasons = score_candidate(candidate, ["aut"])
         # "aut" is a substring of "auth" -> partial +50
         # "aut" is also in "auth.authmiddleware" -> token +10
-        # public: +5
+        # public_name: +5
         assert score == 65
         assert RankingReason.PARTIAL_SYMBOL_NAME in reasons
         assert RankingReason.TOKEN_MATCH in reasons
-        assert RankingReason.PUBLIC_SYMBOL in reasons
+        assert RankingReason.PUBLIC_NAME in reasons
 
     def test_module_match(self) -> None:
         """Module name contains query token yields +30."""
@@ -140,10 +141,10 @@ class TestScoringRules:
         score, reasons = score_candidate(candidate, ["middleware"])
         # no name match, module contains "middleware": +30
         # "middleware" not in "main.app" -> no token match
-        # public: +5
+        # public_name: +5
         assert score == 35
         assert RankingReason.MODULE_MATCH in reasons
-        assert RankingReason.PUBLIC_SYMBOL in reasons
+        assert RankingReason.PUBLIC_NAME in reasons
 
     def test_token_match_accumulates(self) -> None:
         """Multiple matching query tokens accumulate +10 each."""
@@ -155,26 +156,28 @@ class TestScoringRules:
         score, reasons = score_candidate(candidate, ["auth", "middleware"])
         # exact name "auth": +100
         # "auth" in qualified: +10, "middleware" in qualified: +10
-        # public: +5
+        # public_name: +5
         assert score == 125
         assert RankingReason.EXACT_SYMBOL_NAME in reasons
         assert RankingReason.TOKEN_MATCH in reasons
-        assert RankingReason.PUBLIC_SYMBOL in reasons
+        assert RankingReason.PUBLIC_NAME in reasons
 
     def test_public_symbol_bonus(self) -> None:
         """Public symbol (name not starting with "_") yields +5."""
         candidate = _candidate("Public", "main.Public", "main.py")
         score, reasons = score_candidate(candidate, ["nonexistent"])
-        # no match -> public: +5
+        # no match -> public_name: +5
         assert score == 5
-        assert RankingReason.PUBLIC_SYMBOL in reasons
+        assert RankingReason.PUBLIC_NAME in reasons
 
     def test_private_symbol_no_bonus(self) -> None:
         """Private symbol (name starting with "_") yields no public bonus."""
         candidate = _candidate("_private", "main._private", "main.py")
         score, reasons = score_candidate(candidate, ["nonexistent"])
-        assert score == 0
-        assert RankingReason.PUBLIC_SYMBOL not in reasons
+        # Private symbol gets PRIVATE_SYMBOL penalty (-10), not zero
+        assert score == -10
+        assert RankingReason.PRIVATE_SYMBOL in reasons
+        assert RankingReason.PUBLIC_NAME not in reasons
 
     def test_empty_query_zero_score(self) -> None:
         """Empty query produces zero score."""
@@ -187,9 +190,9 @@ class TestScoringRules:
         """Completely unrelated query yields only public bonus."""
         candidate = _candidate("App", "main.App", "main.py")
         score, reasons = score_candidate(candidate, ["xyzzy", "blorg"])
-        # no match at all -> public: +5
+        # no match at all -> public_name: +5
         assert score == 5
-        assert RankingReason.PUBLIC_SYMBOL in reasons
+        assert RankingReason.PUBLIC_NAME in reasons
 
 
 # ------------------------------------------------------------------
@@ -229,9 +232,9 @@ class TestRankingEngine:
         candidate = _candidate("Public", "main.Public", "main.py")
         engine = RankingEngine()
         engine.rank("public", [candidate])
-        # exact name: +100, token: +10, public: +5 = 115
+        # exact name: +100, token: +10, public_name: +5 = 115
         assert candidate.score == 115
-        public_reasons = [r for r in candidate.reasons if r == RankingReason.PUBLIC_SYMBOL]
+        public_reasons = [r for r in candidate.reasons if r == RankingReason.PUBLIC_NAME]
         assert len(public_reasons) == 1
 
     def test_multiple_token_matches_accumulate(self) -> None:
@@ -328,9 +331,10 @@ class TestRankingEngine:
         candidate = _candidate("_helper", "utils._helper", "utils.py")
         engine = RankingEngine()
         engine.rank("test", [candidate])
-        assert candidate.score == 0
-        public_reasons = [r for r in candidate.reasons if r == RankingReason.PUBLIC_SYMBOL]
-        assert len(public_reasons) == 0
+        # Private symbol gets PRIVATE_SYMBOL penalty (-10)
+        assert candidate.score == -10
+        private_reasons = [r for r in candidate.reasons if r == RankingReason.PRIVATE_SYMBOL]
+        assert len(private_reasons) == 1
 
 
 # ------------------------------------------------------------------

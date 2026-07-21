@@ -662,7 +662,7 @@ class TestContextMetadata:
     def test_defaults(self) -> None:
         """Verify ContextMetadata defaults."""
         metadata = ContextMetadata()
-        assert metadata.ranking_version == "1"
+        assert metadata.ranking_version == "2"
         assert metadata.repository_revision == ""
         assert metadata.estimated_tokens == 0
         assert metadata.generated_at is None
