@@ -9,8 +9,6 @@ The EngineeringController is the ONLY public API exposed to future:
 - MCP Server
 - Agent integrations
 
-Everything else becomes internal implementation.
-
 Architecture
 ------------
 
@@ -44,33 +42,27 @@ Public API
         OperationType,
         RequestValidationResult,
         ValidationStatus,
-        ValidationSeverity,
         # Controller
         EngineeringController,
         # Registry
         OperationRegistry,
         # Validator
         RequestValidator,
+        # v2 Controller
+        EngineeringControllerV2,
+        # v2 Models
+        ControllerConfig,
+        ControllerDecision,
+        EngineeringRequestV2,
+        EngineeringResultV2,
+        EngineeringSessionV2,
     )
 
-    # Create controller
+    # Legacy controller
     controller = EngineeringController()
 
-    # Create request
-    request = EngineeringRequest(
-        request_id="req-001",
-        operation=OperationType.EXECUTE,
-        description="Fix the bug in module X",
-        workspace_path="/path/to/workspace",
-    )
-
-    # Execute
-    result = controller.execute(request)
-
-    # Access result
-    print(f"Status: {result.status}")
-    print(f"Session: {result.session_id}")
-    print(f"Error: {result.error_message}")
+    # v2 controller (new)
+    controller_v2 = EngineeringControllerV2()
 
 """
 
@@ -90,6 +82,20 @@ __all__ = [
     "OperationRegistry",
     # Validator
     "RequestValidator",
+    # v2 Controller
+    "EngineeringControllerV2",
+    # v2 Models
+    "ControllerConfig",
+    "ControllerDecision",
+    "ControllerReport",
+    "EngineeringRequestV2",
+    "EngineeringResultV2",
+    "EngineeringSessionV2",
+    "SessionHistoryEntry",
+    "SessionStatusV2",
+    # v2 Components
+    "ControllerDecisionMaker",
+    "RetryPolicy",
 ]
 
 # ---------------------------------------------------------------------------
@@ -122,3 +128,21 @@ from packages.controller.registry import OperationRegistry
 # ---------------------------------------------------------------------------
 
 from packages.controller.validator import RequestValidator
+
+# ---------------------------------------------------------------------------
+# v2 Controller
+# ---------------------------------------------------------------------------
+
+from packages.controller.controller_v2 import EngineeringControllerV2
+from packages.controller.decision import ControllerDecisionMaker
+from packages.controller.models_v2 import (
+    ControllerConfig,
+    ControllerDecision,
+    ControllerReport,
+    EngineeringRequestV2,
+    EngineeringResultV2,
+    EngineeringSessionV2,
+    SessionHistoryEntry,
+    SessionStatusV2,
+)
+from packages.controller.retry_policy import RetryPolicy
