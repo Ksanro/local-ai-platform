@@ -184,6 +184,8 @@ class ContextBuilder:
         )
 
         # Rank candidates by relevance to the query text.
+        # The RankingEngine consumes ContextPlan retrieval hints to
+        # bias candidate scoring based on engineering intent.
         engine = RankingEngine(
             symbol_graph_view=graph_view if relationship_enabled else None,
             primary_symbol=primary_symbol if relationship_enabled else None,

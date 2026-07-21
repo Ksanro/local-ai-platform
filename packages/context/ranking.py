@@ -133,6 +133,7 @@ from packages.context.scoring import (
     score_candidate,
     score_relationship,
 )
+from packages.planning.plan import ContextPlan
 
 if TYPE_CHECKING:
     from packages.context.models import ContextCandidate as _ContextCandidate

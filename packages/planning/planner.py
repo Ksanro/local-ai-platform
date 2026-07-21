@@ -10,6 +10,8 @@ User Messages
     ↓
 Intent Detection (intent.py)
     ↓
+Engineering Intent Resolution (intent_rules.py)
+    ↓
 Rule Matching (rules.py)
     ↓
 ContextPlan
@@ -43,6 +45,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from packages.planning.intent import Intent
+from packages.planning.intent_rules import IntentRuleEngine
 from packages.planning.plan import ContextPlan
 from packages.planning.rules import RuleEngine
 
@@ -53,14 +56,16 @@ if TYPE_CHECKING:
 class ContextPlanner:
     """Deterministic context planner.
 
-    Detects intent from user messages, matches planning rules,
-    and produces an immutable ContextPlan.
+    Detects intent from user messages, resolves engineering intent,
+    matches planning rules, and produces an immutable ContextPlan
+    with retrieval hints.
 
     The planner is stateless and deterministic. Same input always
     produces the same output.
 
     Attributes:
         _rule_engine: The rule engine used for rule matching.
+        _intent_rule_engine: The engine used for engineering intent resolution.
     """
 
     def __init__(self, rule_engine: RuleEngine | None = None) -> None:
@@ -71,6 +76,7 @@ class ContextPlanner:
                 RuleEngine() with BUILTIN_RULES.
         """
         self._rule_engine = rule_engine if rule_engine is not None else RuleEngine()
+        self._intent_rule_engine = IntentRuleEngine()
 
     def build(
         self,
@@ -79,8 +85,9 @@ class ContextPlanner:
     ) -> ContextPlan:
         """Build a ContextPlan from user messages.
 
-        Detects intent from messages, matches against planning rules,
-        and returns an immutable ContextPlan.
+        Detects intent from messages, resolves engineering intent
+        via IntentRuleEngine, matches against planning rules,
+        and returns an immutable ContextPlan with retrieval hints.
 
         The repository_index parameter is accepted for API compatibility
         but is not used. Planning is not retrieval.
@@ -90,12 +97,40 @@ class ContextPlanner:
             repository_index: Optional RepositoryIndex (not used).
 
         Returns:
-            An immutable ContextPlan.
+            An immutable ContextPlan with retrieval hints.
         """
-        # Detect intent from user messages.
+        # Combine messages for intent detection and engineering resolution.
+        combined = " ".join(m for m in user_messages if m and m.strip())
+
+        # Step 1: Detect high-level intent from user messages.
         intent = Intent.detect(user_messages)
 
-        # Match rule and build plan.
+        # Step 2: Resolve engineering intent (retrieval profile + hints).
+        engineering_plan = self._intent_rule_engine.resolve(combined, intent)
+
+        # Step 3: Match planning rule for structural configuration.
         plan = self._rule_engine.build_plan(intent)
 
-        return plan
+        # Step 4: Merge engineering hints into the plan.
+        # The structural config comes from the PlanningRule,
+        # while the retrieval hints come from the EngineeringIntentRule.
+        return ContextPlan(
+            intent=plan.intent,
+            primary_symbols=plan.primary_symbols,
+            relationship_expansion=plan.relationship_expansion,
+            ranking_profile=plan.ranking_profile,
+            maximum_depth=plan.maximum_depth,
+            include_callers=plan.include_callers,
+            include_callees=plan.include_callees,
+            include_modules=plan.include_modules,
+            include_diagnostics=plan.include_diagnostics,
+            estimated_complexity=plan.estimated_complexity,
+            # Engineering retrieval hints from IntentRuleEngine.
+            retrieval_profile=engineering_plan.retrieval_profile,
+            preferred_symbol_types=engineering_plan.preferred_symbol_types,
+            preferred_module_patterns=engineering_plan.preferred_module_patterns,
+            relationship_preferences=engineering_plan.relationship_preferences,
+            excluded_patterns=engineering_plan.excluded_patterns,
+            priority_packages=engineering_plan.priority_packages,
+            secondary_packages=engineering_plan.secondary_packages,
+        )

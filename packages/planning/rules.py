@@ -4,6 +4,30 @@ Defines deterministic rules for each intent and provides the rule
 matching engine. Rules are evaluated in order. First matching rule
 wins.
 
+Planning v2 - Engineering Intent Resolution
+-------------------------------------------
+
+The rule engine now integrates with ``IntentRuleEngine`` from
+``intent_rules.py``. When a custom ``query_text`` is provided, the
+engine resolves engineering intent first, then uses the resulting
+retrieval profile to select the appropriate PlanningRule.
+
+The planning pipeline is now:
+
+    User Messages
+           |
+           v
+    Intent Detection (intent.py)
+           |
+           v
+    Engineering Intent Resolution (intent_rules.py)
+           |
+           v
+    Rule Matching (rules.py) - selects PlanningRule
+           |
+           v
+    ContextPlan (with retrieval hints)
+
 Rules Table
 -----------
 
@@ -47,6 +71,11 @@ from dataclasses import dataclass
 from packages.planning.plan import ContextPlan
 
 
+# ---------------------------------------------------------------------------
+# Extended PlanningRule with retrieval profile support
+# ---------------------------------------------------------------------------
+
+
 @dataclass(frozen=True)
 class PlanningRule:
     """A single deterministic planning rule.
@@ -60,7 +89,13 @@ class PlanningRule:
         include_modules: Whether to include module-level context.
         include_diagnostics: Whether to include diagnostic information.
         ranking_profile: Ranking profile to use for symbol scoring.
-        estimated_complexity: Estimated complexity of requests with this intent.
+        estimated_complexity: Estimated complexity of the request.
+        retrieval_profile: Engineering goal label for retrieval (Planning v2).
+
+    Planning v2:
+        retrieval_profile is populated by IntentRuleEngine when
+        engineering intent is resolved. It describes the engineering
+        goal (IMPLEMENTATION, INTERFACE, REGISTRY, etc.).
     """
 
     intent: str
@@ -72,6 +107,7 @@ class PlanningRule:
     include_diagnostics: bool
     ranking_profile: str
     estimated_complexity: str = "MODERATE"
+    retrieval_profile: str = "DEFAULT"
 
 
 # Built-in planning rules. Evaluated in order. First match wins.
@@ -86,6 +122,7 @@ BUILTIN_RULES: tuple[PlanningRule, ...] = (
         include_diagnostics=False,
         ranking_profile="EXPLAIN",
         estimated_complexity="MODERATE",
+        retrieval_profile="ARCHITECTURE",
     ),
     PlanningRule(
         intent="IMPLEMENT",
@@ -97,6 +134,7 @@ BUILTIN_RULES: tuple[PlanningRule, ...] = (
         include_diagnostics=False,
         ranking_profile="IMPLEMENT",
         estimated_complexity="MODERATE",
+        retrieval_profile="IMPLEMENTATION",
     ),
     PlanningRule(
         intent="REFACTOR",
@@ -108,6 +146,7 @@ BUILTIN_RULES: tuple[PlanningRule, ...] = (
         include_diagnostics=False,
         ranking_profile="REFACTOR",
         estimated_complexity="COMPLEX",
+        retrieval_profile="IMPLEMENTATION",
     ),
     PlanningRule(
         intent="DEBUG",
@@ -119,6 +158,7 @@ BUILTIN_RULES: tuple[PlanningRule, ...] = (
         include_diagnostics=True,
         ranking_profile="DEBUG",
         estimated_complexity="COMPLEX",
+        retrieval_profile="IMPLEMENTATION",
     ),
     PlanningRule(
         intent="TEST",
@@ -130,6 +170,7 @@ BUILTIN_RULES: tuple[PlanningRule, ...] = (
         include_diagnostics=True,
         ranking_profile="TEST",
         estimated_complexity="MODERATE",
+        retrieval_profile="TEST",
     ),
     PlanningRule(
         intent="SEARCH",
@@ -141,6 +182,7 @@ BUILTIN_RULES: tuple[PlanningRule, ...] = (
         include_diagnostics=False,
         ranking_profile="SEARCH",
         estimated_complexity="SIMPLE",
+        retrieval_profile="DEFAULT",
     ),
     PlanningRule(
         intent="DEFAULT",
@@ -152,6 +194,7 @@ BUILTIN_RULES: tuple[PlanningRule, ...] = (
         include_diagnostics=False,
         ranking_profile="DEFAULT",
         estimated_complexity="SIMPLE",
+        retrieval_profile="DEFAULT",
     ),
 )
 
@@ -214,6 +257,7 @@ class RuleEngine:
         """Build a ContextPlan from the matched rule.
 
         Creates an immutable ContextPlan with primary_symbols=().
+        Retrieval hints are populated from the PlanningRule.
 
         Args:
             intent: The detected intent string.
@@ -233,4 +277,11 @@ class RuleEngine:
             include_modules=rule.include_modules,
             include_diagnostics=rule.include_diagnostics,
             estimated_complexity=rule.estimated_complexity,
+            retrieval_profile=rule.retrieval_profile,
+            preferred_symbol_types=(),
+            preferred_module_patterns=(),
+            relationship_preferences=(),
+            excluded_patterns=(),
+            priority_packages=(),
+            secondary_packages=(),
         )
