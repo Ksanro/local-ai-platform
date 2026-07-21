@@ -1,0 +1,398 @@
+# Engineering Memory v1
+
+## Architecture
+
+Engineering Memory is a deterministic session memory subsystem that records every completed engineering session, enabling future sessions to learn from previous work — without using embeddings, vector databases, or semantic search.
+
+### Component Diagram
+
+```
+┌─────────────────────┐
+│ EngineeringController│
+│                     │
+│ - execute()         │
+│ - stores sessions   │
+└────────┬────────────┘
+         │ After Execution → Verification → Evaluation → Transaction
+         │
+         ▼
+┌─────────────────────┐
+│ EngineeringMemory   │
+│                     │
+│ - store(record)     │  ← Write (Controller only)
+│ - find_session()    │  ← Read (Consumers)
+│ - find_by_workflow()│
+│ - find_successful() │
+│ - find_failed()     │
+│ - find_by_module()  │
+│ - recent()          │
+│ - statistics()      │
+└────────┬────────────┘
+         │
+         ▼
+┌─────────────────────┐
+│ MemoryStorage       │
+│                     │
+│ - save()            │  ← JSON persistence
+│ - load()            │
+│ - versioned format  │
+└─────────────────────┘
+```
+
+### Execution Flow
+
+```
+Engineering Controller
+    ↓
+Engineering Transaction
+    ↓
+Execution Report
+    ↓
+Verification Report
+    ↓
+Evaluation Report
+    ↓
+Engineering Memory
+    ↓
+Future Engineering Sessions
+```
+
+### Data Flow
+
+```
+Controller.execute()
+    → _run_control_loop()
+        → Execution → Verification → Evaluation
+        → Decision: COMPLETE/FAIL/RETRY/REQUEST_REVIEW
+        │
+        ├─ ON COMPLETE: memory.store(success_record)
+        │
+        └─ ON FAIL:     memory.store(failed_record)
+```
+
+## Storage Format
+
+Engineering Memory uses deterministic JSON for persistence.
+
+### File Structure
+
+```json
+{
+  "version": "1.0",
+  "stored_at": "2026-07-21T15:00:00+00:00",
+  "sessions": [
+    {
+      "session_id": "sess-001",
+      "workflow_name": "bug-fix",
+      "request_summary": "Fix null pointer in ModuleX",
+      "transaction_id": "txn-001",
+      "execution_report": {
+        "status": "COMPLETED",
+        "duration_ms": 1234
+      },
+      "verification_report": {
+        "status": "PASSED",
+        "score": 0.95
+      },
+      "evaluation_report": {
+        "overall_score": 0.9,
+        "metrics": ["correctness", "performance"]
+      },
+      "controller_decision": "COMPLETE",
+      "completed_at": "2026-07-21T14:55:00+00:00",
+      "metadata": {
+        "modified_modules": ["module_x", "module_y"],
+        "iteration_count": 3
+      }
+    }
+  ]
+}
+```
+
+### Format Properties
+
+| Property | Description |
+|----------|-------------|
+| **Versioned** | `"version": "1.0"` for forward compatibility |
+| **Stable ordering** | Sessions array sorted by `session_id` |
+| **Deterministic JSON** | `sort_keys=False`, consistent indentation |
+| **Forward-compatible** | Unknown fields are preserved on load |
+
+### Version Compatibility
+
+- Same major version = compatible
+- Different major version = incompatible
+- Malformed version = treated as compatible (resilience)
+
+## Public API
+
+### EngineeringSessionRecord
+
+```python
+from packages.engineering_memory.models import EngineeringSessionRecord
+
+record = EngineeringSessionRecord(
+    session_id="sess-001",
+    workflow_name="bug-fix",
+    request_summary="Fix null pointer in ModuleX",
+    transaction_id="txn-001",
+    execution_report={"status": "COMPLETED"},
+    verification_report={"status": "PASSED"},
+    evaluation_report={"overall_score": 0.9},
+    controller_decision="COMPLETE",
+    completed_at="2026-07-21T14:55:00+00:00",
+    metadata={"modified_modules": ["module_x"]},
+)
+```
+
+**Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `session_id` | `str` | Unique session identifier |
+| `workflow_name` | `str` | Name of the workflow executed |
+| `request_summary` | `str` | Human-readable task description |
+| `transaction_id` | `str` | Associated transaction identifier |
+| `execution_report` | `dict` | Serialized execution report |
+| `verification_report` | `dict` | Serialized verification report |
+| `evaluation_report` | `dict` | Serialized evaluation report |
+| `controller_decision` | `str` | COMPLETE, RETRY, REQUEST_REVIEW, or FAIL |
+| `completed_at` | `str` | ISO format timestamp |
+| `metadata` | `dict` | Free-form metadata |
+
+**Properties:**
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `modified_modules` | `tuple[str, ...]` | Extracted module names from metadata |
+| `evaluation_score` | `float \| None` | Overall score from evaluation report |
+| `iteration_count` | `int` | Iteration count from metadata |
+
+**Methods:**
+
+| Method | Description |
+|--------|-------------|
+| `to_dict()` | Serialize to dictionary |
+| `from_dict(data)` | Create from dictionary |
+
+### EngineeringMemory
+
+```python
+from packages.engineering_memory.memory import EngineeringMemory
+
+memory = EngineeringMemory()
+```
+
+**Constructor:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `storage_path` | `str \| None` | `None` | Path to JSON storage file |
+| `in_memory_only` | `bool` | `False` | Skip persistence (for testing) |
+
+**Methods:**
+
+| Method | Signature | Returns | Description |
+|--------|-----------|---------|-------------|
+| `store` | `store(record: EngineeringSessionRecord)` | `None` | Store a completed session |
+| `find_session` | `find_session(session_id: str)` | `EngineeringSessionRecord \| None` | Find by ID |
+| `list_sessions` | `list_sessions()` | `tuple[EngineeringSessionRecord, ...]` | List all sessions |
+| `find_by_workflow` | `find_by_workflow(workflow_name: str)` | `tuple[...]` | Find by workflow |
+| `find_successful` | `find_successful()` | `tuple[...]` | Find COMPLETE sessions |
+| `find_failed` | `find_failed()` | `tuple[...]` | Find non-COMPLETE sessions |
+| `find_by_module` | `find_by_module(module_name: str)` | `tuple[...]` | Find by modified module |
+| `recent` | `recent(limit: int)` | `tuple[...]` | Most recent sessions |
+| `statistics` | `statistics()` | `MemoryStatistics` | Compute statistics |
+| `has_session` | `has_session(session_id: str)` | `bool` | Check existence |
+| `store_if_new` | `store_if_new(record)` | `bool` | Store only if new |
+| `reload` | `reload()` | `int` | Reload from disk |
+| `clear` | `clear()` | `None` | Clear all sessions |
+
+**Properties:**
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `session_count` | `int` | Number of stored sessions |
+| `storage_path` | `str` | Path to storage file |
+
+### MemoryStatistics
+
+```python
+from packages.engineering_memory.models import MemoryStatistics
+
+stats = memory.statistics()
+```
+
+**Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `total_sessions` | `int` | Total sessions |
+| `successful_sessions` | `int` | Sessions with COMPLETE decision |
+| `failed_sessions` | `int` | Sessions with non-COMPLETE decision |
+| `average_evaluation_score` | `float` | Average evaluation score |
+| `average_iterations` | `float` | Average iteration count |
+| `workflow_usage` | `dict[str, int]` | Workflow name → count |
+
+**Properties:**
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `success_rate` | `float` | Ratio of successful sessions |
+
+## Controller Integration
+
+The EngineeringController stores sessions after the full pipeline completes:
+
+### Success Path
+
+```python
+# After Execution → Verification → Evaluation → COMPLETE decision
+record = EngineeringSessionRecord(
+    session_id=session.session_id,
+    workflow_name=workflow_name,
+    request_summary=request.description,
+    transaction_id=transaction_id,
+    execution_report=serialize(execution_report),
+    verification_report=serialize(verification_report),
+    evaluation_report=serialize(evaluation_report),
+    controller_decision="COMPLETE",
+    completed_at=datetime.now(timezone.utc).isoformat(),
+    metadata={
+        "modified_modules": [...],
+        "iteration_count": session.iteration,
+    },
+)
+memory.store(record)
+```
+
+### Failed Path
+
+```python
+# After Execution → Verification → Evaluation → FAIL decision
+record = EngineeringSessionRecord(
+    session_id=session.session_id,
+    workflow_name=workflow_name,
+    request_summary=request.description,
+    transaction_id=transaction_id,
+    execution_report=serialize(execution_report),
+    verification_report=serialize(verification_report),
+    evaluation_report=serialize(evaluation_report),
+    controller_decision="FAIL",
+    completed_at=datetime.now(timezone.utc).isoformat(),
+    metadata={
+        "error": error_message,
+        "iteration_count": session.iteration,
+    },
+)
+memory.store(record)
+```
+
+### Controller Constructor Injection
+
+```python
+class EngineeringControllerV2:
+    def __init__(
+        self,
+        memory: EngineeringMemory | None = None,
+        # ... other parameters
+    ) -> None:
+        self._memory = memory or EngineeringMemory()
+```
+
+## Query Examples
+
+### Find a specific session
+
+```python
+record = memory.find_session("sess-001")
+if record:
+    print(f"Decision: {record.controller_decision}")
+    print(f"Score: {record.evaluation_score}")
+```
+
+### Find all sessions for a workflow
+
+```python
+bug_fix_sessions = memory.find_by_workflow("bug-fix")
+for session in bug_fix_sessions:
+    print(f"{session.session_id}: {session.request_summary}")
+```
+
+### Find successful sessions
+
+```python
+successful = memory.find_successful()
+print(f"Total successful: {len(successful)}")
+```
+
+### Find failed sessions
+
+```python
+failed = memory.find_failed()
+for session in failed:
+    print(f"{session.session_id}: {session.execution_report.get('error')}")
+```
+
+### Find sessions that modified a module
+
+```python
+module_sessions = memory.find_by_module("module_x")
+print(f"Module X was modified in {len(module_sessions)} sessions")
+```
+
+### Get recent sessions
+
+```python
+recent = memory.recent(limit=5)
+for session in recent:
+    print(f"{session.session_id}: {session.completed_at}")
+```
+
+### Get statistics
+
+```python
+stats = memory.statistics()
+print(f"Success rate: {stats.success_rate:.1%}")
+print(f"Avg score: {stats.average_evaluation_score:.3f}")
+print(f"Workflows: {stats.workflow_usage}")
+```
+
+## Constraints
+
+Engineering Memory enforces these constraints:
+
+| Constraint | Enforcement |
+|------------|-------------|
+| No vector database | No imports, no dependencies |
+| No embeddings | No embedding code anywhere |
+| No semantic search | All queries are exact match |
+| No repository analysis | No file system analysis |
+| No provider calls | No external API calls |
+| Deterministic behaviour | All results sorted, no randomness |
+| Immutable records | Frozen dataclass |
+| Controller-only writes | Public API design |
+| Reports never modified | Reports stored as dicts |
+
+## Testing
+
+Engineering Memory includes comprehensive tests:
+
+| Test File | Coverage |
+|-----------|----------|
+| `test_models.py` | Model validation, immutability, serialization |
+| `test_memory.py` | Store/load, ordering, duplicates, queries |
+| `test_persistence.py` | Round-trip, versioning, forward compatibility |
+| `test_failed_sessions.py` | Failed session recording, separation |
+
+Run tests:
+
+```bash
+pytest tests/engineering_memory/ -v
+```
+
+## Version History
+
+| Version | Date | Changes |
+|---------|------|---------|
+| 1.0 | 2026-07-21 | Initial release |

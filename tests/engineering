@@ -1,0 +1,373 @@
+"""Tests for Engineering Memory persistence layer.
+
+Covers:
+- Write/read round-trip
+- Version handling
+- Forward compatibility
+- File existence handling
+- Directory creation
+"""
+
+from __future__ import annotations
+
+import json
+import tempfile
+from pathlib import Path
+
+import pytest
+
+from packages.engineering_memory.models import EngineeringSessionRecord
+from packages.engineering_memory.persistence import (
+    MemoryStorage,
+    CURRENT_VERSION,
+)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _make_record(
+    session_id: str = "sess-001",
+    workflow_name: str = "bug-fix",
+    controller_decision: str = "COMPLETE",
+    completed_at: str = "2026-07-21T14:55:00+00:00",
+) -> EngineeringSessionRecord:
+    """Create a test EngineeringSessionRecord."""
+    return EngineeringSessionRecord(
+        session_id=session_id,
+        workflow_name=workflow_name,
+        request_summary=f"Task for {session_id}",
+        transaction_id=f"txn-{session_id}",
+        execution_report={"status": "COMPLETED"},
+        verification_report={"status": "PASSED"},
+        evaluation_report={"overall_score": 0.9},
+        controller_decision=controller_decision,
+        completed_at=completed_at,
+        metadata={"modified_modules": ["module_x"]},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Basic Save/Load Tests
+# ---------------------------------------------------------------------------
+
+
+class TestSaveLoad:
+    """Tests for save and load operations."""
+
+    def test_save_load_round_trip(self):
+        """Test save and load round-trip preserves data."""
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+            path = Path(f.name)
+
+        try:
+            storage = MemoryStorage(storage_path=path)
+            record = _make_record()
+            storage.save([record])
+
+            loaded = storage.load()
+            assert len(loaded) == 1
+
+            loaded_record = loaded[0]
+            assert loaded_record.session_id == record.session_id
+            assert loaded_record.workflow_name == record.workflow_name
+            assert loaded_record.request_summary == record.request_summary
+            assert loaded_record.transaction_id == record.transaction_id
+            assert loaded_record.controller_decision == record.controller_decision
+            assert loaded_record.execution_report == record.execution_report
+            assert loaded_record.verification_report == record.verification_report
+            assert loaded_record.evaluation_report == record.evaluation_report
+        finally:
+            if path.exists():
+                path.unlink()
+
+    def test_save_load_multiple_records(self):
+        """Test save and load with multiple records."""
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+            path = Path(f.name)
+
+        try:
+            storage = MemoryStorage(storage_path=path)
+            records = [
+                _make_record(session_id=f"sess-00{i}", completed_at=f"2026-07-21T14:{50+i}:00+00:00")
+                for i in range(1, 4)
+            ]
+            storage.save(records)
+
+            loaded = storage.load()
+            assert len(loaded) == 3
+        finally:
+            if path.exists():
+                path.unlink()
+
+    def test_load_nonexistent_file(self):
+        """Test loading from a non-existent file returns empty list."""
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+            path = Path(f.name)
+
+        try:
+            storage = MemoryStorage(storage_path=path)
+            loaded = storage.load()
+            assert loaded == []
+        finally:
+            if path.exists():
+                path.unlink()
+
+    def test_save_load_preserves_metadata(self):
+        """Test that metadata is preserved through save/load."""
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+            path = Path(f.name)
+
+        try:
+            storage = MemoryStorage(storage_path=path)
+            record = _make_record(
+                session_id="sess-001",
+                metadata={
+                    "modified_modules": ["module_x", "module_y"],
+                    "iteration_count": 5,
+                    "custom_field": "custom_value",
+                },
+            )
+            storage.save([record])
+
+            loaded = storage.load()
+            assert loaded[0].metadata["custom_field"] == "custom_value"
+            assert loaded[0].metadata["iteration_count"] == 5
+        finally:
+            if path.exists():
+                path.unlink()
+
+
+# ---------------------------------------------------------------------------
+# Version Handling Tests
+# ---------------------------------------------------------------------------
+
+
+class TestVersionHandling:
+    """Tests for version handling."""
+
+    def test_storage_file_has_version(self):
+        """Test that saved file contains version field."""
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+            path = Path(f.name)
+
+        try:
+            storage = MemoryStorage(storage_path=path)
+            storage.save([_make_record()])
+
+            content = json.loads(path.read_text())
+            assert content["version"] == CURRENT_VERSION
+        finally:
+            if path.exists():
+                path.unlink()
+
+    def test_compatible_version(self):
+        """Test that same major version is compatible."""
+        assert MemoryStorage._is_compatible_version("1.0") is True
+        assert MemoryStorage._is_compatible_version("1.1") is True
+        assert MemoryStorage._is_compatible_version("1.9") is True
+
+    def test_incompatible_version(self):
+        """Test that different major version is incompatible."""
+        assert MemoryStorage._is_compatible_version("0.9") is False
+        assert MemoryStorage._is_compatible_version("2.0") is False
+
+    def test_malformed_version(self):
+        """Test that malformed version is handled gracefully."""
+        assert MemoryStorage._is_compatible_version("invalid") is True
+        assert MemoryStorage._is_compatible_version("") is True
+        assert MemoryStorage._is_compatible_version(None) is True  # type: ignore
+
+
+# ---------------------------------------------------------------------------
+# Forward Compatibility Tests
+# ---------------------------------------------------------------------------
+
+
+class TestForwardCompatibility:
+    """Tests for forward compatibility."""
+
+    def test_extra_fields_preserved(self):
+        """Test that extra fields in storage are preserved."""
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+            path = Path(f.name)
+
+        try:
+            storage = MemoryStorage(storage_path=path)
+
+            # Write a record with extra fields
+            record = _make_record()
+            data = record.to_dict()
+            data["extra_field"] = "extra_value"
+            data["nested"] = {"key": "value"}
+
+            storage_doc = {
+                "version": CURRENT_VERSION,
+                "stored_at": "2026-07-21T15:00:00+00:00",
+                "sessions": [data],
+            }
+            path.write_text(json.dumps(storage_doc, indent=2), encoding="utf-8")
+
+            loaded = storage.load()
+            assert len(loaded) == 1
+            # The extra fields should be preserved in the dict
+            assert loaded[0].metadata.get("extra_field") == "extra_value"
+        finally:
+            if path.exists():
+                path.unlink()
+
+    def test_missing_optional_fields(self):
+        """Test that missing optional fields use defaults."""
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+            path = Path(f.name)
+
+        try:
+            storage = MemoryStorage(storage_path=path)
+
+            # Write a minimal record
+            data = {
+                "session_id": "sess-001",
+                "workflow_name": "bug-fix",
+                "request_summary": "Test",
+                "transaction_id": "txn-001",
+                "controller_decision": "COMPLETE",
+                "completed_at": "2026-07-21T14:55:00+00:00",
+            }
+
+            storage_doc = {
+                "version": CURRENT_VERSION,
+                "stored_at": "2026-07-21T15:00:00+00:00",
+                "sessions": [data],
+            }
+            path.write_text(json.dumps(storage_doc, indent=2), encoding="utf-8")
+
+            loaded = storage.load()
+            assert len(loaded) == 1
+            assert loaded[0].execution_report == {}
+            assert loaded[0].verification_report == {}
+            assert loaded[0].evaluation_report == {}
+            assert loaded[0].metadata == {}
+        finally:
+            if path.exists():
+                path.unlink()
+
+
+# ---------------------------------------------------------------------------
+# Ordering Tests
+# ---------------------------------------------------------------------------
+
+
+class TestOrdering:
+    """Tests for deterministic ordering."""
+
+    def test_sessions_sorted_by_session_id(self):
+        """Test that saved sessions are sorted by session_id."""
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+            path = Path(f.name)
+
+        try:
+            storage = MemoryStorage(storage_path=path)
+
+            # Save in unsorted order
+            records = [
+                _make_record(session_id="sess-003"),
+                _make_record(session_id="sess-001"),
+                _make_record(session_id="sess-002"),
+            ]
+            storage.save(records)
+
+            loaded = storage.load()
+            ids = [r.session_id for r in loaded]
+            assert ids == ["sess-001", "sess-002", "sess-003"]
+        finally:
+            if path.exists():
+                path.unlink()
+
+
+# ---------------------------------------------------------------------------
+# Delete/Clear Tests
+# ---------------------------------------------------------------------------
+
+
+class TestDeleteClear:
+    """Tests for delete and clear operations."""
+
+    def test_delete_existing(self):
+        """Test deleting an existing record."""
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+            path = Path(f.name)
+
+        try:
+            storage = MemoryStorage(storage_path=path)
+            storage.save([
+                _make_record(session_id="sess-001"),
+                _make_record(session_id="sess-002"),
+            ])
+
+            result = storage.delete("sess-001")
+            assert result is True
+
+            loaded = storage.load()
+            assert len(loaded) == 1
+            assert loaded[0].session_id == "sess-002"
+        finally:
+            if path.exists():
+                path.unlink()
+
+    def test_delete_nonexistent(self):
+        """Test deleting a non-existent record returns False."""
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+            path = Path(f.name)
+
+        try:
+            storage = MemoryStorage(storage_path=path)
+            storage.save([_make_record(session_id="sess-001")])
+
+            result = storage.delete("nonexistent")
+            assert result is False
+        finally:
+            if path.exists():
+                path.unlink()
+
+    def test_clear_all(self):
+        """Test clearing all records."""
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+            path = Path(f.name)
+
+        try:
+            storage = MemoryStorage(storage_path=path)
+            storage.save([
+                _make_record(session_id="sess-001"),
+                _make_record(session_id="sess-002"),
+            ])
+
+            storage.clear()
+            loaded = storage.load()
+            assert loaded == []
+        finally:
+            if path.exists():
+                path.unlink()
+
+
+# ---------------------------------------------------------------------------
+# Directory Creation Tests
+# ---------------------------------------------------------------------------
+
+
+class TestDirectoryCreation:
+    """Tests for directory creation."""
+
+    def test_creates_directory(self):
+        """Test that save creates missing directories."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            nested_path = Path(tmpdir) / "a" / "b" / "c" / "memory.json"
+
+            storage = MemoryStorage(storage_path=nested_path)
+            storage.save([_make_record()])
+
+            assert nested_path.exists()
+
+            loaded = storage.load()
+            assert len(loaded) == 1
