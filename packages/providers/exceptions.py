@@ -37,3 +37,23 @@ class ProviderResponseError(ProviderError):
 
     Covers non-2xx HTTP status codes and malformed responses.
     """
+
+
+class UnknownModelError(ProviderError):
+    """Raised when a model is not found in the model registry.
+
+    Attributes:
+        model: The model string that was not found.
+        available_models: List of available model names.
+    """
+
+    def __init__(self, model: str, available_models: list[str]) -> None:
+        """Initialize with the unknown model and available models.
+
+        Args:
+            model: The model string that was not found.
+            available_models: List of available model names.
+        """
+        super().__init__(f"Unknown model '{model}'")
+        self.model = model
+        self.available_models = available_models

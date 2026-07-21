@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from unittest.mock import AsyncMock
 
 import pytest
@@ -16,7 +17,8 @@ from packages.pipeline.exceptions import PipelineExecutionError
 from packages.pipeline.request import PipelineRequest
 from packages.pipeline.response import PipelineResponse
 from packages.pipeline.result import PipelineStageResult
-from packages.pipeline.stages import ProviderStage
+from packages.providers.models import ModelDefinition, ResolvedModel
+from packages.pipeline.stages.stages import ProviderStage
 
 
 class _TrackingStage(PipelineStage):
@@ -101,6 +103,18 @@ class _FailingStage(PipelineStage):
 
     async def after(self, context: PipelineContext, result: PipelineStageResult) -> None:
         pass
+
+
+def _make_resolved_model(
+    provider: AsyncMock, model_name: str = "test"
+) -> ResolvedModel:
+    """Create a ResolvedModel with a mock provider for testing."""
+    definition = ModelDefinition(
+        model=model_name,
+        provider="vllm",
+        base_url="http://localhost:8000/v1",
+    )
+    return ResolvedModel(definition=definition, provider=provider)
 
 
 class TestPipelineEngine:
@@ -259,14 +273,15 @@ class TestProviderStage:
         mock_provider.chat = AsyncMock(
             return_value={"choices": [{"message": {"content": "Hello"}}]}
         )
-        stage = ProviderStage(mock_provider)
+        stage = ProviderStage()
+
+        resolved = _make_resolved_model(mock_provider, "test-model")
 
         context = PipelineContext(
             request_id="test-1",
             request={"messages": [], "model": "test", "stream": False},
         )
-        context.set_metadata("provider_name", "vllm")
-        context.set_metadata("model", "test-model")
+        context.resolved_model = resolved
 
         result = await stage.execute(context)
 
@@ -275,21 +290,18 @@ class TestProviderStage:
         assert result.stage_name == "provider"
 
     @pytest.mark.asyncio
-    async def test_provider_stage_before_unregistered_provider(self) -> None:
-        """Verify before() returns failure for unregistered provider."""
-        mock_provider = AsyncMock()
-        stage = ProviderStage(mock_provider)
+    async def test_provider_stage_no_resolved_model(self) -> None:
+        """Verify ProviderStage returns failure when resolved_model is None."""
+        stage = ProviderStage()
 
         context = PipelineContext()
-        context.set_metadata("provider_name", "nonexistent")
+        context.resolved_model = None
 
-        result = await stage.before(context)
+        result = await stage.execute(context)
 
-        assert result is not None
         assert result.success is False
         assert result.error is not None
-        assert "nonexistent" in result.error
-        assert result.exception is not None
+        assert "No resolved model" in result.error
 
     @pytest.mark.asyncio
     async def test_provider_stage_propagates_provider_error(self) -> None:
@@ -300,14 +312,15 @@ class TestProviderStage:
         mock_provider.chat = AsyncMock(
             side_effect=ProviderConnectionError("unreachable")
         )
-        stage = ProviderStage(mock_provider)
+        stage = ProviderStage()
+
+        resolved = _make_resolved_model(mock_provider, "test-model")
 
         context = PipelineContext(
             request_id="test-2",
             request={"messages": [], "model": "test", "stream": False},
         )
-        context.set_metadata("provider_name", "vllm")
-        context.set_metadata("model", "test-model")
+        context.resolved_model = resolved
 
         result = await stage.execute(context)
 
@@ -327,14 +340,15 @@ class TestProviderStage:
                 "media_type": "text/event-stream",
             }
         )
-        stage = ProviderStage(mock_provider)
+        stage = ProviderStage()
+
+        resolved = _make_resolved_model(mock_provider, "test-model")
 
         context = PipelineContext(
             request_id="test-3",
             request={"messages": [], "model": "test", "stream": True},
         )
-        context.set_metadata("provider_name", "vllm")
-        context.set_metadata("model", "test-model")
+        context.resolved_model = resolved
 
         result = await stage.execute(context)
 
@@ -350,7 +364,27 @@ class TestProviderStage:
             return_value={"choices": [{"message": {"content": "Hi"}}]}
         )
         engine = PipelineEngine()
-        engine.register(ProviderStage(mock_provider))
+
+        # Create a test stage that sets resolved_model before ProviderStage.
+        class _ResolverStage(PipelineStage):
+            @property
+            def name(self) -> str:
+                return "resolver"
+
+            async def before(self, context: PipelineContext) -> PipelineStageResult | None:
+                return None
+
+            async def execute(self, context: PipelineContext) -> PipelineStageResult:
+                context.resolved_model = _make_resolved_model(mock_provider, "test-model")
+                return PipelineStageResult(stage_name=self.name, success=True)
+
+            async def after(
+                self, context: PipelineContext, result: PipelineStageResult
+            ) -> PipelineStageResult | None:
+                return None
+
+        engine.register(_ResolverStage())
+        engine.register(ProviderStage())
 
         request = PipelineRequest(
             provider_name="vllm",
@@ -395,16 +429,6 @@ class TestPipelineHalting:
 
         assert good.execute_called is True
         # The pipeline response should report failure because bad stage failed.
-        # Note: due to the break, good stage's result is recorded but bad stage's
-        # result is also recorded before the break.
-        assert "good" in engine._stages[0].name if False else True
-        # The response should have success=False because the bad stage failed.
-        # Actually, with the current implementation, the good stage succeeds
-        # and the bad stage fails. The break happens after recording the bad
-        # stage result. So the response should have success=False.
-        # Let me verify this is correct.
-        # Actually, the test above already verifies the good stage was not
-        # executed when bad is first. Let me test the case where good is first.
         pass
 
     @pytest.mark.asyncio
@@ -421,14 +445,6 @@ class TestPipelineHalting:
 
         # bad stage fails, good stage should not execute due to break.
         assert good.execute_called is False
-        # The response should have success=False because bad stage failed.
-        # The response is built from context.stage_results which includes
-        # both stages (bad failed, good never executed).
-        # Actually, with the break, only bad stage's result is recorded.
-        # Let me verify the response has success=False.
-        # We need to get the response. The execute method returns it.
-        # But we're not capturing it here. Let me restructure.
-        pass
 
     @pytest.mark.asyncio
     async def test_success_false_with_later_stage_would_succeed(self) -> None:

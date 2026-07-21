@@ -20,8 +20,10 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     cors_origins: list[str] = ["*"]
     default_provider: str = "vllm"
+    default_model: str = "default"
     repository_context_enabled: bool = True
     repository_path: str = "."
+    models_config: str = ""  # JSON array of model definitions; empty = single-provider fallback
 
     model_config = {"env_prefix": "APP_"}
 

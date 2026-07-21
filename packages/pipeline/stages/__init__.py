@@ -20,9 +20,15 @@ Contains concrete stage implementations. The built-in stages are:
 - ``EvaluationStage`` — evaluates execution results after verification,
   producing an ``EvaluationReport``.
 
+**Model routing stages:**
+
+- ``ModelResolutionStage`` — resolves model → provider before context
+  assembly, because ``context_window`` is needed for token-budgeting.
+
 **Execution pipeline order:**
 
     Request
+      → ModelResolutionStage
       → PlanningStage
       → RepositoryContextStage
       → WorkflowStage
@@ -45,6 +51,20 @@ from packages.pipeline.stages.stages import ProviderStage
 from packages.pipeline.stages.verification_stage import VerificationStage
 from packages.pipeline.stages.workflow_stage import WorkflowStage
 
+
+# Lazy import ModelResolutionStage to avoid circular imports at module load.
+# It is registered in lifespan after the router is built.
+def __getattr__(name: str):
+    """Lazy-load ModelResolutionStage to avoid circular imports."""
+    if name == "ModelResolutionStage":
+        from packages.pipeline.stages.model_resolution import (
+            ModelResolutionStage as _ModelResolutionStage,
+        )
+
+        return _ModelResolutionStage
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
 __all__ = [
     # Existing stages
     "PlanningStage",
@@ -55,4 +75,6 @@ __all__ = [
     "ExecutionStage",
     "VerificationStage",
     "EvaluationStage",
+    # Model routing
+    "ModelResolutionStage",
 ]

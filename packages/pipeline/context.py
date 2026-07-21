@@ -57,6 +57,7 @@ class PipelineContext:
         execution_report: ExecutionReport produced by ExecutionStage.
         verification_report: VerificationReport produced by VerificationStage.
         evaluation_report: EvaluationReport produced by EvaluationStage.
+        resolved_model: ResolvedModel set by ModelResolutionStage.
     """
 
     request_id: str = field(default_factory=lambda: str(uuid.uuid4()))
@@ -69,6 +70,7 @@ class PipelineContext:
     execution_report: Any = None
     verification_report: Any = None
     evaluation_report: Any = None
+    resolved_model: Any = None  # ResolvedModel | None — set by ModelResolutionStage
 
     def get_stage_result(self, stage_name: str) -> PipelineStageResult | None:
         """Get a previously recorded stage result.

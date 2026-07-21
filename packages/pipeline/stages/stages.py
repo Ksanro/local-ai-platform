@@ -10,86 +10,54 @@ import logging
 from packages.pipeline.base import PipelineStage
 from packages.pipeline.context import PipelineContext
 from packages.pipeline.result import PipelineStageResult
-from packages.providers.base import Provider
-from packages.providers.exceptions import UnknownProviderError
 from packages.serializers.models import ProviderRequest
 
 logger = logging.getLogger(__name__)
 
 
 class ProviderStage(PipelineStage):
-    """Pipeline stage that calls the configured provider.
+    """Pipeline stage that calls the already-resolved provider.
 
-    Wraps a pre-instantiated provider so that a single provider
-    instance is reused across all requests (created at startup,
-    cached on ``app.state``).
+    Consumes the provider from ``context.resolved_model`` which was set
+    by ``ModelResolutionStage``.  Does NOT know that routing exists —
+    it never calls ``router.resolve()``, ``create_provider()``, or the
+    registry.
 
-    Attributes:
-        _provider: The provider instance to use for all requests.
+    If ``context.resolved_model`` is ``None``, returns a failed result.
     """
-
-    def __init__(self, provider: Provider) -> None:
-        """Initialize with the provider instance.
-
-        Args:
-            provider: The provider instance to use for all requests.
-        """
-        self._provider = provider
 
     @property
     def name(self) -> str:
         """Stage name for logging and ordering."""
         return "provider"
 
-    async def before(self, context: PipelineContext) -> PipelineStageResult | None:
-        """Validate that the provider is registered.
-
-        Checks that the provider name (from context metadata) is
-        registered before attempting to use it.
-
-        Args:
-            context: The pipeline context.
-
-        Returns:
-            A failure result if the provider is not registered, or
-            ``None`` to proceed with ``execute()``.
-        """
-        provider_name = context.get_metadata("provider_name", "vllm")
-        if not self._has_provider(provider_name):
-            registered = ", ".join(sorted(self._get_registry_keys()))
-            return PipelineStageResult(
-                stage_name=self.name,
-                success=False,
-                error=f"Provider '{provider_name}' is not registered. Available: [{registered}]",
-                exception=UnknownProviderError(
-                    f"Provider '{provider_name}' is not registered. Available: [{registered}]"
-                ),
-            )
-        return None
-
     async def execute(self, context: PipelineContext) -> PipelineStageResult:
-        """Call the provider's chat method.
+        """Call the already-resolved provider's chat method.
 
-        Uses the pre-instantiated provider (set via constructor),
-        builds kwargs from context, and calls ``chat()``. Returns
-        the response data on success.
+        Reads the provider from ``context.resolved_model`` and calls
+        ``chat()`` with kwargs from the context.
 
         Args:
             context: The pipeline context with request data.
 
         Returns:
             A ``PipelineStageResult`` with the provider's response.
-
-        Raises:
-            StageError: If the provider call fails.
         """
-        provider_name = context.get_metadata("provider_name", "vllm")
-        model = context.get_metadata("model", "default")
+        resolved = context.resolved_model
+        if resolved is None:
+            return PipelineStageResult(
+                stage_name=self.name,
+                success=False,
+                error="No resolved model found in context. ModelResolutionStage must run first.",
+            )
+
+        provider = resolved.provider
+        model = resolved.definition.model
 
         logger.info(
             "provider_stage request_id=%s provider=%s model=%s",
             context.request_id,
-            provider_name,
+            resolved.definition.provider,
             model,
         )
 
@@ -107,7 +75,7 @@ class ProviderStage(PipelineStage):
             # not carry transport concerns).
             kwargs["stream"] = context.request.get("stream", False)
 
-            result = await self._provider.chat(**kwargs)
+            result = await provider.chat(**kwargs)
             return PipelineStageResult(
                 stage_name=self.name,
                 success=True,
@@ -145,27 +113,3 @@ class ProviderStage(PipelineStage):
                 result.error,
             )
         return None
-
-    def _has_provider(self, name: str) -> bool:
-        """Check if a provider is registered.
-
-        Args:
-            name: The provider name to look up.
-
-        Returns:
-            ``True`` if the provider is registered, ``False`` otherwise.
-        """
-        from packages.providers.registry import has_provider
-
-        return has_provider(name)
-
-    @staticmethod
-    def _get_registry_keys() -> list[str]:
-        """Get registered provider names.
-
-        Returns:
-            A sorted list of registered provider names.
-        """
-        from packages.providers.registry import get_registry
-
-        return sorted(get_registry().keys())

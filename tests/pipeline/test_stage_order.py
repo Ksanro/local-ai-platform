@@ -11,7 +11,18 @@ from packages.pipeline.context import PipelineContext
 from packages.pipeline.engine import PipelineEngine
 from packages.pipeline.request import PipelineRequest
 from packages.pipeline.result import PipelineStageResult
-from packages.pipeline.stages import ProviderStage
+from packages.providers.models import ModelDefinition, ResolvedModel
+from packages.pipeline.stages.stages import ProviderStage
+
+
+def _make_resolved_model(provider: AsyncMock, model_name: str = "test") -> ResolvedModel:
+    """Create a ResolvedModel with a mock provider for testing."""
+    definition = ModelDefinition(
+        model=model_name,
+        provider="vllm",
+        base_url="http://localhost:8000/v1",
+    )
+    return ResolvedModel(definition=definition, provider=provider)
 
 
 class _OrderedStage(PipelineStage):
@@ -211,7 +222,27 @@ class TestStageOrdering:
             return_value={"choices": [{"message": {"content": "ok"}}]}
         )
         engine = PipelineEngine()
-        engine.register(ProviderStage(mock_provider))
+
+        # Create a resolver stage that sets resolved_model before ProviderStage.
+        class _ResolverStage(PipelineStage):
+            @property
+            def name(self) -> str:
+                return "resolver"
+
+            async def before(self, context: PipelineContext) -> PipelineStageResult | None:
+                return None
+
+            async def execute(self, context: PipelineContext) -> PipelineStageResult:
+                context.resolved_model = _make_resolved_model(mock_provider, "custom-model")
+                return PipelineStageResult(stage_name=self.name, success=True)
+
+            async def after(
+                self, context: PipelineContext, result: PipelineStageResult
+            ) -> PipelineStageResult | None:
+                return None
+
+        engine.register(_ResolverStage())
+        engine.register(ProviderStage())
 
         request = PipelineRequest(
             provider_name="vllm",

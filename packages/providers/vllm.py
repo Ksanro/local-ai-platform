@@ -19,12 +19,24 @@ from packages.providers.registry import register
 logger = logging.getLogger(__name__)
 
 
-def _get_vllm_config() -> dict[str, Any]:
+def _get_vllm_config(
+    base_url: str | None = None,
+    api_key: str | None = None,
+    timeout: float | None = None,
+) -> dict[str, Any]:
     """Load vLLM configuration from config file or environment variables.
 
     Reads the ``providers.vllm`` section from the config file and
     resolves each value by checking the corresponding environment
     variable first. Environment variables take precedence.
+
+    When explicit parameters are provided, they override the
+    environment-derived values.
+
+    Args:
+        base_url: Explicit base URL override.
+        api_key: Explicit API key override.
+        timeout: Explicit timeout override.
 
     Returns:
         A dict with keys ``VLLM_BASE_URL``, ``VLLM_API_KEY``,
@@ -34,19 +46,37 @@ def _get_vllm_config() -> dict[str, Any]:
     providers_config = config.get("providers", {})
     vllm_config = providers_config.get("vllm", {})
 
-    return {
-        "VLLM_BASE_URL": _resolve_config_value(
+    # Resolve base_url: explicit > env > default
+    if base_url is not None:
+        resolved_base_url = base_url
+    else:
+        resolved_base_url = _resolve_config_value(
             "VLLM_BASE_URL",
             vllm_config.get("base_url", "http://localhost:8000/v1"),
-        ),
-        "VLLM_API_KEY": _resolve_config_value(
+        )
+
+    # Resolve api_key: explicit > env > default
+    if api_key is not None:
+        resolved_api_key = api_key
+    else:
+        resolved_api_key = _resolve_config_value(
             "VLLM_API_KEY",
             vllm_config.get("api_key", "empty"),
-        ),
-        "REQUEST_TIMEOUT": _resolve_config_value(
+        )
+
+    # Resolve timeout: explicit > env > default
+    if timeout is not None:
+        resolved_timeout = timeout
+    else:
+        resolved_timeout = _resolve_config_value(
             "REQUEST_TIMEOUT",
             vllm_config.get("request_timeout", 60.0),
-        ),
+        )
+
+    return {
+        "VLLM_BASE_URL": resolved_base_url,
+        "VLLM_API_KEY": resolved_api_key,
+        "REQUEST_TIMEOUT": resolved_timeout,
         "DEFAULT_MODEL": _resolve_config_value(
             "DEFAULT_MODEL",
             vllm_config.get("default_model", "default-model"),
@@ -75,14 +105,29 @@ def _resolve_config_value(key: str, default: Any) -> Any:
 class VLLMProvider(Provider):
     """vLLM provider that proxies OpenAI-compatible requests."""
 
-    def __init__(self) -> None:
-        """Initialize the vLLM provider with configuration.
+    def __init__(
+        self,
+        base_url: str | None = None,
+        api_key: str | None = None,
+        timeout: float | None = None,
+    ) -> None:
+        """Initialize the vLLM provider with optional explicit config.
 
-        Loads config and creates the httpx async client. The client
-        is lazily instantiated on first use.
+        When explicit values are provided they override environment-derived
+        config. When all values are ``None``, config is loaded from the
+        environment as before.
+
+        Args:
+            base_url: Explicit base URL for the vLLM backend.
+            api_key: Explicit API key for authentication.
+            timeout: Explicit request timeout in seconds.
         """
         self._client: httpx.AsyncClient | None = None
-        self._config = _get_vllm_config()
+        self._config = _get_vllm_config(
+            base_url=base_url,
+            api_key=api_key,
+            timeout=timeout,
+        )
 
     def _get_client(self) -> httpx.AsyncClient:
         """Get or create the httpx client. Uses a singleton pattern.

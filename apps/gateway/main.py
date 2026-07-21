@@ -6,6 +6,7 @@ instance for development servers and production WSGI servers.
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from contextlib import asynccontextmanager
@@ -13,20 +14,29 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from fastapi import FastAPI
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from apps.gateway.api.chat import router as chat_router
 from apps.gateway.api.health import router as health_router
+from apps.gateway.api.models import router as models_router
 from apps.gateway.api.version import router as version_router
 from apps.gateway.core.config import get_settings
 from apps.gateway.core.logging import setup_logging
 from apps.gateway.middleware import RequestMiddleware, TimingMiddleware
 from packages.pipeline.engine import PipelineEngine
-from packages.pipeline.stages import PlanningStage, ProviderStage
+from packages.pipeline.stages import (
+    ModelResolutionStage,
+    PlanningStage,
+    ProviderStage,
+)
 from packages.pipeline.stages.repository_context import RepositoryContextStage
 from packages.providers import _load_providers
-from packages.providers.factory import create_provider
+from packages.providers.exceptions import UnknownModelError
 from packages.providers.registry import has_provider
+from packages.providers.registry_models import ModelRegistry
+from packages.providers.router import FallbackModelRouter, ModelRouter
 from packages.repository import StructIndex, build_index
 
 logger = logging.getLogger(__name__)
@@ -42,10 +52,9 @@ if _env_path.is_file():
 async def lifespan(app: FastAPI):
     """Application lifespan context manager.
 
-    Runs once at startup: loads settings, configures logging, creates
-    a single provider instance, builds the RepositoryIndex, and builds
-    the pipeline engine. On shutdown, closes the provider's httpx client
-    to release the connection pool.
+    Runs once at startup: loads settings, configures logging, builds
+    the ModelRouter, builds the RepositoryIndex, and builds the pipeline
+    engine. On shutdown, closes the router's provider instances.
 
     Args:
         app: The FastAPI application instance.
@@ -106,34 +115,62 @@ async def lifespan(app: FastAPI):
             )
             index = None
 
-    # Create a single provider instance, build the pipeline, and wire
-    # both onto app.state so every request reuses the same instance.
-    default = settings.default_provider
-    if has_provider(default):
-        provider = create_provider(default)
-        app.state.provider = provider
+    # Build the ModelRouter from models_config.
+    model_router: ModelRouter | FallbackModelRouter | None = None
+    models_config = settings.models_config.strip()
 
-        # Cast index to the expected type for RepositoryContextStage.
-        typed_index: StructIndex | None = (
-            index if isinstance(index, StructIndex) else None
+    if models_config:
+        # Parse config — fail loudly if invalid.
+        registry = ModelRegistry.from_json(models_config)
+        model_router = ModelRouter(registry)
+        app.state.model_router = model_router
+
+        backends = len(model_router._providers)
+        model_names = registry.available_models()
+        logger.info(
+            "model_router models=%s backends=%d",
+            json.dumps(model_names),
+            backends,
         )
+    else:
+        # Fallback: single-provider mode.
+        default = settings.default_provider
+        if has_provider(default):
+            model_router = FallbackModelRouter(default)
+            app.state.model_router = model_router
+            logger.info(
+                "model_router fallback provider=%s",
+                default,
+            )
 
+    # Cast index to the expected type for RepositoryContextStage.
+    typed_index: StructIndex | None = (
+        index if isinstance(index, StructIndex) else None
+    )
+
+    if model_router is not None:
         engine = PipelineEngine()
-        # Planning stage runs before repository context to produce
-        # context_plan metadata that RepositoryContextStage consumes.
+        # ModelResolutionStage runs first — before PlanningStage.
+        engine.register(ModelResolutionStage(model_router))
+        # Planning stage runs before repository context.
         engine.register(PlanningStage())
         # Repository context stage runs before provider execution.
-        # Pass the real index; the stage handles None gracefully.
         engine.register(RepositoryContextStage(index=typed_index))
-        engine.register(ProviderStage(provider))
+        # ProviderStage is routing-agnostic — reads from context.resolved_model.
+        engine.register(ProviderStage())
         app.state.pipeline = engine
 
     yield
 
-    # Clean up the provider's httpx client on shutdown.
-    provider = getattr(app.state, "provider", None)  # type: ignore[assignment]
-    if provider is not None:
-        await provider.close()  # type: ignore[attr-defined]
+    # Clean up the router's provider instances on shutdown.
+    router = getattr(app.state, "model_router", None)
+    if router is not None:
+        await router.close_all()
+
+
+def _unknown_model_handler(_: RequestValidationError) -> JSONResponse:
+    """Default handler — won't be called for UnknownModelError but required by signature."""
+    return JSONResponse(status_code=404, content={"detail": "Not found"})
 
 
 def create_app() -> FastAPI:
@@ -166,9 +203,24 @@ def create_app() -> FastAPI:
     app.add_middleware(RequestMiddleware)
     app.add_middleware(TimingMiddleware)
 
+    # Register custom exception handler for UnknownModelError → HTTP 404.
+    app.add_exception_handler(UnknownModelError, lambda req, exc: JSONResponse(
+        status_code=404,
+        content={
+            "error": {
+                "message": str(exc),
+                "type": "invalid_request_error",
+                "param": "model",
+                "code": "model_not_found",
+                "available_models": exc.available_models,
+            }
+        },
+    ))
+
     app.include_router(health_router)
     app.include_router(version_router)
     app.include_router(chat_router)
+    app.include_router(models_router)
 
     return app
 
