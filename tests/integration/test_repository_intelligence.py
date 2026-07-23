@@ -713,17 +713,19 @@ class TestDeterministicExecution:
             assert pr.kwargs == first.kwargs
 
     @pytest.mark.asyncio
-    async def test_empty_repository_produces_empty_context(self) -> None:
-        """Verify empty repository produces empty context package."""
+    async def test_empty_repository_produces_no_context(self) -> None:
+        """Verify empty repository produces no context package.
+
+        With Fix 3 (MINIMUM_CANDIDATE_SCORE), an empty repository returns
+        no candidates, which means context_package stays None.
+        """
         index = _make_index([])
         stage = RepositoryContextStage(index=index)
 
         context = _make_context(context_enabled=True)
         await stage.execute(context)
 
-        assert context.context_package is not None
-        assert context.context_package.supporting_symbols == []
-        assert context.context_package.related_modules == []
+        assert context.context_package is None
 
     @pytest.mark.asyncio
     async def test_pipeline_deterministic_with_mock_provider(self) -> None:

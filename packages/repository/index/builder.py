@@ -35,12 +35,15 @@ class RepositoryIndexBuilder:
         _registry: The relationship extractor registry.  Defaults to a
             :class:`RelationshipRegistry` with :class:`CallExtractor`
             registered when not specified.
+        _exclude_tests: When ``True``, test files are excluded from
+            the index.
     """
 
     def __init__(
         self,
         extractor: SymbolExtractor | None = None,
         registry: RelationshipRegistry | None = None,
+        exclude_tests: bool = False,
     ) -> None:
         """Initialise the builder.
 
@@ -49,8 +52,12 @@ class RepositoryIndexBuilder:
                 ``PythonAstExtractor`` when ``None``.
             registry: A ``RelationshipRegistry``.  Defaults to a fresh
                 registry with ``CallExtractor`` registered when ``None``.
+            exclude_tests: When ``True``, test files are excluded from
+                the index.
         """
         self._extractor = extractor or PythonAstExtractor()
+        self._exclude_tests = exclude_tests
+        self._excluded_test_count: int = 0
         if registry is None:
             # Lazy import to avoid circular imports at module load time.
             from packages.repository.relationships.call_extractor import (
@@ -79,7 +86,10 @@ class RepositoryIndexBuilder:
             FileNotFoundError: If ``path`` does not exist.
             NotADirectoryError: If ``path`` is not a directory.
         """
-        graph = self._extractor.extract(path)
+        graph = self._extractor.extract(path, exclude_tests=self._exclude_tests)
+
+        # Propagate the excluded file count from the extractor.
+        self._excluded_test_count = self._extractor.excluded_test_count
 
         modules: dict[str, Module] = {}
         symbols: list[Symbol] = []
@@ -116,6 +126,11 @@ class RepositoryIndexBuilder:
             _relationships=relationships,
             _statistics=statistics,
         )
+
+    @property
+    def excluded_test_count(self) -> int:
+        """Number of test files skipped during indexing."""
+        return self._excluded_test_count
 
     @staticmethod
     def _compute_statistics(

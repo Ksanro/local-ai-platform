@@ -56,7 +56,15 @@ class TestQueryNormalisation:
     def test_lowercase(self) -> None:
         """Verify query is lowercased."""
         tokens = normalise_query_text("AUTHENTICATION")
+        # Single-char tokens from camelCase decomposition are filtered.
         assert tokens == ["authentication"]
+
+    def test_single_char_tokens_filtered(self) -> None:
+        """Single-char tokens from decomposition are filtered out."""
+        # "c b a b c" produces single-char tokens which are all filtered,
+        # so the degradation guard kicks in and returns the original tokens.
+        tokens = normalise_query_text("c b a b c")
+        assert tokens == ["c", "b", "a"]
 
     def test_split_on_whitespace(self) -> None:
         """Verify query is split on whitespace."""
@@ -74,7 +82,12 @@ class TestQueryNormalisation:
         assert tokens == ["auth", "middleware"]
 
     def test_preserve_token_order(self) -> None:
-        """Verify token order is preserved after deduplication."""
+        """Verify token order is preserved after deduplication.
+
+        With Ranking v2, single-char tokens are filtered and all are stop
+        words, so the degradation guard fires — it returns the original
+        whitespace-split tokens deduplicated in order.
+        """
         tokens = normalise_query_text("c b a b c")
         assert tokens == ["c", "b", "a"]
 

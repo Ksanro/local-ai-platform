@@ -133,7 +133,6 @@ from packages.context.scoring import (
     score_candidate,
     score_relationship,
 )
-from packages.planning.plan import ContextPlan
 
 if TYPE_CHECKING:
     from packages.context.models import ContextCandidate as _ContextCandidate
@@ -279,6 +278,12 @@ class RankingEngine:
         for s, _qname, _stype, _lineno, reasons, candidate in scored:
             candidate.score = s
             candidate.reasons = reasons
+
+        # Filter out candidates below MINIMUM_CANDIDATE_SCORE.
+        min_score = RankingConfig.MINIMUM_CANDIDATE_SCORE
+        scored = [
+            entry for entry in scored if entry[0] >= min_score
+        ]
 
         ranked: list[_ContextCandidate] = [c for _, _, _, _, _, c in scored]
 

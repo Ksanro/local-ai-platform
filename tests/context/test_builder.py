@@ -458,20 +458,28 @@ class TestEmptyQuery:
     """Tests for empty query boundary."""
 
     def test_empty_text(self, multi_module_index: RepositoryIndex) -> None:
-        """Verify builder handles empty query text."""
+        """Verify builder handles empty query text.
+
+        With Ranking v2 MINIMUM_CANDIDATE_SCORE, empty queries produce
+        zero scores which are all filtered — returning empty context.
+        """
         builder = ContextBuilder(multi_module_index)
         result = builder.build(ContextQuery(text=""))
-        # Empty text should still return symbols (no filtering yet).
-        assert len(result.candidates) > 0
+        # Empty query → no token matches → all candidates score 0 → filtered.
+        assert len(result.candidates) == 0
 
     def test_empty_text_with_limits(
         self, multi_module_index: RepositoryIndex
     ) -> None:
-        """Verify empty query text respects limits."""
+        """Verify empty query text with limits returns empty.
+
+        With Ranking v2 MINIMUM_CANDIDATE_SCORE, empty queries produce
+        zero scores which are all filtered — no candidates means no modules.
+        """
         builder = ContextBuilder(multi_module_index)
         result = builder.build(ContextQuery(text="", max_symbols=2, max_modules=1))
-        assert len(result.candidates) == 2
-        assert len(result.selected_modules) == 1
+        assert len(result.candidates) == 0
+        assert len(result.selected_modules) == 0
 
 
 # ------------------------------------------------------------------

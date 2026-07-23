@@ -32,11 +32,14 @@ class SymbolExtractor(ABC):
         ...
 
     @abstractmethod
-    def extract(self, path: Path) -> SymbolGraph:
+    def extract(self, path: Path, exclude_tests: bool = False) -> SymbolGraph:
         """Extract symbols from a single file or directory.
 
         Args:
             path: Path to a Python source file or a directory of files.
+            exclude_tests: When ``True``, skip test files
+                (``test_*.py``, ``*_test.py``, ``conftest.py``).
+                Defaults to ``False`` for backward compatibility.
 
         Returns:
             A ``SymbolGraph`` containing all discovered symbols and

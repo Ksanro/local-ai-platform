@@ -37,7 +37,8 @@ from packages.providers.exceptions import UnknownModelError
 from packages.providers.registry import has_provider
 from packages.providers.registry_models import ModelRegistry
 from packages.providers.router import FallbackModelRouter, ModelRouter
-from packages.repository import StructIndex, build_index
+from packages.repository import StructIndex
+from packages.repository.index.builder import RepositoryIndexBuilder
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +78,10 @@ async def lifespan(app: FastAPI):
     if repo_path.is_dir():
         start_time = time.perf_counter()
         try:
-            index = build_index(repo_path)
+            builder = RepositoryIndexBuilder(
+                exclude_tests=settings.repository_exclude_tests,
+            )
+            index = builder.build(repo_path)
             elapsed_ms = (time.perf_counter() - start_time) * 1000
 
             # Extract metrics from the built index.
@@ -94,12 +98,14 @@ async def lifespan(app: FastAPI):
 
                     logger.info(
                         "repository_index path=%s files=%d modules=%d "
-                        "symbols=%d relationships=%d duration_ms=%.1f",
+                        "symbols=%d relationships=%d excluded_tests=%d "
+                        "duration_ms=%.1f",
                         repo_path,
                         indexed_files,
                         indexed_modules,
                         indexed_symbols,
                         indexed_relationships,
+                        builder.excluded_test_count,
                         indexing_duration_ms,
                     )
                 else:

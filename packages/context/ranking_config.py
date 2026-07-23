@@ -189,6 +189,11 @@ class RankingConfig:
     # Configuration limits
     # ------------------------------------------------------------------
 
+    MINIMUM_CANDIDATE_SCORE: int = 1
+    """Minimum candidate score to be included in the ranked list.
+    Candidates scoring below this threshold are dropped entirely.
+    If no candidate survives, an empty ranked list is returned."""
+
     MAX_CANDIDATES: int = 20
     """Default maximum number of candidates to return."""
 

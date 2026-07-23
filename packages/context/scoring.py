@@ -152,18 +152,74 @@ class RankingReason(Enum):
 # Query normalisation
 # ------------------------------------------------------------------
 
+# English stop words and question words that match too broadly.
+STOP_WORDS: frozenset[str] = frozenset({
+    "a", "an", "and", "are", "as", "at", "be", "but", "by", "can",
+    "do", "does", "doing", "done", "for", "from", "has", "have",
+    "how", "i", "if", "in", "into", "is", "it", "its", "of", "on",
+    "or", "that", "the", "then", "there", "these", "this", "to",
+    "us", "was", "what", "when", "where", "which", "who", "why",
+    "will", "with", "you", "your",
+})
+
+# Generic code-discussion words that match too many symbols across
+# the codebase.  Kept separate from English stop words so they can
+# be reviewed and tuned independently.
+CODE_DISCUSSION_WORDS: frozenset[str] = frozenset({
+    "code", "codebase", "file", "function", "method", "class",
+    "module", "return", "returns", "store", "stores", "value",
+    "object", "field", "fields", "run", "runs", "first", "thing",
+    "stage",
+})
+
+# Regex: split on non-alphanumeric, non-underscore characters.
+# Preserves case so _CAMEL_SEGMENT can do its job.
+_TOKEN_SPLIT = re.compile(r"[^a-zA-Z0-9_]+")
+
+# Regex: extract camel-case segments from a raw identifier.
+# Matches sequences like: "FallbackModelRouter" -> "Fallback", "Model", "Router"
+# Order matters: longer patterns first so "Fallback" is one segment, not "F" + "allback".
+_CAMEL_SEGMENT = re.compile(r"[A-Z][a-z0-9]*|[A-Z]+|[a-z0-9]+")
+
+
+def _expand_identifier(raw: str) -> list[str]:
+    """Expand one raw token into its searchable forms.
+
+    ``FallbackModelRouter`` yields the whole name plus its camel-case
+    segments.  ``available_models`` yields the whole name plus its
+    underscore-separated parts.
+
+    Args:
+        raw: A raw token from the query (preserving original case).
+
+    Returns:
+        List of lowercase search forms.
+    """
+    forms: list[str] = []
+    # Full token lowercased
+    forms.append(raw.lower())
+    # Underscore-separated parts
+    for part in raw.split("_"):
+        if part:
+            forms.append(part.lower())
+    # CamelCase segments
+    for segment in _CAMEL_SEGMENT.findall(raw):
+        forms.append(segment.lower())
+    return forms
+
 
 def normalise_query_text(text: str) -> list[str]:
     """Normalise query text into a list of unique tokens.
 
     Steps:
-    - Lowercase.
-    - Split on whitespace.
-    - Remove empty tokens.
-    - Remove duplicate tokens while preserving order.
 
-    Does **not** stem, lemmatise, remove stop words, or perform fuzzy
-    matching.
+    - Split on non-alphanumeric, non-underscore characters, preserving case.
+    - For each raw token, produce the full lowercased token, its
+      underscore-separated parts, and its camel-case segments.
+    - Remove English stop words and domain-specific code-discussion words.
+    - Dedupe while preserving order.
+    - If every token is a stop word, return the original lowercased
+      whitespace-split tokens as a degradation guard.
 
     Args:
         text: Raw query text.
@@ -171,21 +227,43 @@ def normalise_query_text(text: str) -> list[str]:
     Returns:
         Ordered list of unique normalised tokens.
     """
-    text = text.lower()
-    tokens = text.split()
+    all_forms: list[str] = []
+    for raw in _TOKEN_SPLIT.split(text):  # NOT text.lower()
+        if raw:
+            all_forms.extend(_expand_identifier(raw))
+
+    stop_set = STOP_WORDS | CODE_DISCUSSION_WORDS
     seen: set[str] = set()
     unique: list[str] = []
-    for token in tokens:
-        if not token:
-            continue
-        if token not in seen:
-            seen.add(token)
-            unique.append(token)
+    for form in all_forms:
+        if form not in stop_set and form not in seen:
+            seen.add(form)
+            unique.append(form)
+
+    # Filter out single-character tokens (artifacts of camelCase decomposition
+    # like the "a" from "Authentication").
+    unique = [t for t in unique if len(t) > 1]
+
+    if not unique:
+        # Only fall back to original text when there were actual tokens
+        # that all happened to be stop words. If the text had no
+        # alphanumeric tokens (e.g. only punctuation), return [].
+        if not all_forms:
+            return []
+        # Deduplicate while preserving order.
+        seen: set[str] = set()
+        deduped: list[str] = []
+        for t in text.lower().split():
+            if t and t not in seen:
+                seen.add(t)
+                deduped.append(t)
+        return deduped
+
     return unique
 
 
 # ------------------------------------------------------------------
-# Symbol name helpers
+# Symbol name Helpers
 # ------------------------------------------------------------------
 
 # Pattern that splits a dotted/qualified name into its constituent name

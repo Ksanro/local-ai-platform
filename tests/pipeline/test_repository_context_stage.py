@@ -427,8 +427,12 @@ class TestDeterministicExecution:
             assert package.metadata == first.metadata
 
     @pytest.mark.asyncio
-    async def test_empty_repository_produces_empty_package(self) -> None:
-        """Verify empty repository produces empty ContextPackage."""
+    async def test_empty_repository_produces_no_package(self) -> None:
+        """Verify empty repository produces no ContextPackage.
+
+        With Fix 3 (MINIMUM_CANDIDATE_SCORE), an empty repository returns
+        no candidates, which means context_package stays None.
+        """
         index = _make_index([])
         stage = RepositoryContextStage(index=index)
 
@@ -436,9 +440,7 @@ class TestDeterministicExecution:
         result = await stage.execute(context)
 
         assert result.success is True
-        assert context.context_package is not None
-        assert context.context_package.supporting_symbols == []
-        assert context.context_package.related_modules == []
+        assert context.context_package is None
 
 
 # ------------------------------------------------------------------
@@ -553,7 +555,12 @@ class TestQueryExtraction:
 
     @pytest.mark.asyncio
     async def test_no_user_messages(self) -> None:
-        """Verify only assistant messages still produces primary symbol."""
+        """Verify only assistant messages produces no context.
+
+        With an empty query, no candidates score above MINIMUM_CANDIDATE_SCORE,
+        so context_package stays None and the request proceeds to the provider
+        with the user's original messages unmodified.
+        """
         symbols = [_make_symbol("App", "main.App", SymbolType.CLASS, "main.py")]
         index = _make_index(symbols)
         stage = RepositoryContextStage(index=index)
@@ -564,9 +571,7 @@ class TestQueryExtraction:
         result = await stage.execute(context)
 
         assert result.success is True
-        assert context.context_package is not None
-        # Primary symbol is set from ranking, not from query.
-        assert context.context_package.primary_symbol == "main.App"
+        assert context.context_package is None
 
 
 # ------------------------------------------------------------------

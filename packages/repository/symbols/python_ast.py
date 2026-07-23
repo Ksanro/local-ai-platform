@@ -30,17 +30,23 @@ class PythonAstExtractor(SymbolExtractor):
 
     Attributes:
         language: Always ``Language.PYTHON``.
+        excluded_test_count: Number of test files skipped during
+            directory extraction (when ``exclude_tests=True``).
     """
 
     @property
     def language(self) -> Language:
         return Language.PYTHON
 
-    def extract(self, path: Path) -> SymbolGraph:
+    def __init__(self) -> None:
+        self.excluded_test_count: int = 0
+
+    def extract(self, path: Path, exclude_tests: bool = False) -> SymbolGraph:
         """Extract symbols from a single file or directory.
 
         Args:
             path: Path to a Python source file or a directory.
+            exclude_tests: When ``True``, skip test files.
 
         Returns:
             A ``SymbolGraph`` containing all discovered symbols.
@@ -55,7 +61,7 @@ class PythonAstExtractor(SymbolExtractor):
             return self._extract_file(path)
 
         if path.is_dir():
-            return self._extract_directory(path)
+            return self._extract_directory(path, exclude_tests=exclude_tests)
 
         raise FileNotFoundError(f"No such file or directory: {path}")
 
@@ -104,12 +110,18 @@ class PythonAstExtractor(SymbolExtractor):
 
         return SymbolGraph(modules={module_path: module})
 
-    def _extract_directory(self, root: Path) -> SymbolGraph:
+    def _extract_directory(
+        self,
+        root: Path,
+        exclude_tests: bool = False,
+    ) -> SymbolGraph:
         """Extract symbols from all Python files under ``root``.
 
         Args:
             root: Path to the directory to scan.
-
+            exclude_tests: When ``True``, skip test files
+                (``test_*.py``, ``*_test.py``, ``conftest.py``)
+                from the index.
         Returns:
             A merged ``SymbolGraph`` containing all modules.
         """
@@ -122,10 +134,36 @@ class PythonAstExtractor(SymbolExtractor):
             if any(part.startswith(".") for part in py_file.parts):
                 continue
 
+            # Skip test files when configured.
+            if exclude_tests and self._is_test_file(py_file):
+                self.excluded_test_count += 1
+                continue
+
             graph = self._extract_file(py_file)
             all_modules.update(graph.modules)
 
         return SymbolGraph(modules=all_modules)
+
+    @staticmethod
+    def _is_test_file(path: Path) -> bool:
+        """Return ``True`` if the path matches a test file pattern.
+
+        Patterns: ``test_*.py``, ``*_test.py``, ``conftest.py``.
+
+        Args:
+            path: A ``Path`` object.
+
+        Returns:
+            ``True`` if the file appears to be a test file.
+        """
+        name = path.name
+        if name == "conftest.py":
+            return True
+        if name.startswith("test_") and name.endswith(".py"):
+            return True
+        if name.endswith("_test.py"):
+            return True
+        return False
 
     # ------------------------------------------------------------------
     # AST traversal helpers

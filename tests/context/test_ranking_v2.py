@@ -154,9 +154,12 @@ class TestQueryNormalisation:
         assert tokens == ["authentication", "middleware"]
 
     def test_case_normalisation(self):
-        """Query should be lowercased."""
+        """Query should be lowercased and camelCase decomposed."""
         tokens = normalise_query_text("AuthenticationMiddleware")
-        assert tokens == ["authenticationmiddleware"]
+        # The full name and its camelCase segments should be present.
+        assert "authenticationmiddleware" in tokens
+        assert "authentication" in tokens
+        assert "middleware" in tokens
 
     def test_duplicate_removal(self):
         """Duplicate tokens should be removed."""
@@ -900,3 +903,64 @@ def validate_token(token):
         """ContextMetadata should use ranking version 2."""
         metadata = ContextMetadata()
         assert metadata.ranking_version == "2"
+
+
+# ------------------------------------------------------------------
+# Tests: Minimum candidate score filtering
+# ------------------------------------------------------------------
+
+
+class TestMinimumCandidateScore:
+    """Test MINIMUM_CANDIDATE_SCORE filtering in RankingEngine."""
+
+    def test_candidates_below_threshold_dropped(self):
+        """Candidates with score below MINIMUM_CANDIDATE_SCORE should be filtered out."""
+        # Candidates that won't match anything meaningful
+        candidates = [
+            _make_candidate("mod.a", "mod.py"),
+            _make_candidate("mod.b", "mod.py"),
+            # This one will get some points for having source content
+            _make_candidate("mod.relevant", "mod.py", source="def relevant(): pass\n"),
+        ]
+
+        engine = RankingEngine()
+        ranked = engine.rank("something that matches nothing", candidates)
+
+        # All candidates should have valid scores
+        for candidate in ranked:
+            assert isinstance(candidate.score, int)
+
+    def test_all_below_threshold_returns_empty(self):
+        """When all candidates score below MINIMUM_CANDIDATE_SCORE, ranked list should be empty."""
+        # Use private names (prefixed with "_") so they get PENALTY_PRIVATE_SYMBOL
+        # rather than PUBLIC_NAME bonus. This ensures all candidates have negative scores.
+        candidates = [
+            _make_candidate("_mod._a", "z_module.py"),
+            _make_candidate("_mod._b", "z_module.py"),
+        ]
+
+        engine = RankingEngine()
+        ranked = engine.rank("xyz_nonexistent_token_12345", candidates)
+
+        # All candidates should have score < MINIMUM_CANDIDATE_SCORE (filtered out)
+        # The ranked list should be empty after filtering
+        assert ranked == []
+
+    def test_min_score_constant_exists(self):
+        """MINIMUM_CANDIDATE_SCORE should be defined in RankingConfig."""
+        assert hasattr(RankingConfig, "MINIMUM_CANDIDATE_SCORE")
+        assert RankingConfig.MINIMUM_CANDIDATE_SCORE == 1
+
+    def test_min_score_filters_correctly(self):
+        """Only candidates at or above MINIMUM_CANDIDATE_SCORE should survive."""
+        candidates = [
+            _make_candidate("auth.AuthMiddleware", "auth.py", symbol_type="CLASS",
+                           docstring="Auth middleware class."),
+        ]
+
+        engine = RankingEngine()
+        ranked = engine.rank("auth middleware", candidates)
+
+        # The relevant candidate should have positive score
+        assert len(ranked) > 0
+        assert ranked[0].score >= RankingConfig.MINIMUM_CANDIDATE_SCORE

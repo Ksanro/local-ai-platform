@@ -178,18 +178,42 @@ class RepositoryContextStage(PipelineStage):
             builder = ContextBuilder(self._index)
             context_result = builder.build(query)
 
+            # Check if ranking returned no relevant symbols.
+            candidates = getattr(context_result, "candidates", [])
+            if not candidates:
+                elapsed_ms = (time.perf_counter() - start_time) * 1000
+
+                logger.info(
+                    "repository_context request_id=%s context_enabled=%s "
+                    "context_status=empty reason=no_relevant_symbols "
+                    "duration_ms=%.1f",
+                    request_id,
+                    context_enabled,
+                    elapsed_ms,
+                )
+
+                # Leave context_package as None -- proceed with unmodified messages.
+                context.context_package = None
+
+                return PipelineStageResult(
+                    stage_name=self.name,
+                    success=True,
+                    data=None,
+                )
+
             # Compose the final package.
             composer = ContextComposer()
             package = composer.compose(context_result)
-
-            # Attach to context.
-            context.context_package = package
 
             # Serialize the context package into a ProviderRequest.
             # The serializer translates platform models into the
             # provider-specific request format that the Provider
             # layer consumes.
             self._serialize(context, package)
+
+            # Attach the context package to the pipeline context so that
+            # downstream stages (and tests) can inspect it directly.
+            context.context_package = package
 
             elapsed_ms = (time.perf_counter() - start_time) * 1000
 
@@ -199,7 +223,7 @@ class RepositoryContextStage(PipelineStage):
 
             logger.info(
                 "repository_context request_id=%s context_enabled=%s "
-                "symbols_selected=%d modules_selected=%d "
+                "context_status=ok symbols_selected=%d modules_selected=%d "
                 "estimated_tokens=%d duration_ms=%.1f",
                 request_id,
                 context_enabled,
