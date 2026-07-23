@@ -57,3 +57,8 @@ Thumbs.db
 # uv
 uv.lock
 all_files_list.txt
+
+# Diagrams
+execution-flow-engineering.mmd
+.claude/agents/test-agent.md
+execution-flow.mmd
