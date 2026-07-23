@@ -23,6 +23,7 @@ from packages.providers.exceptions import (
     ProviderAuthenticationError,
     ProviderConnectionError,
     ProviderResponseError,
+    UnknownModelError,
     UnknownProviderError,
 )
 
@@ -72,6 +73,8 @@ def _status_for_exception(exc: Exception | None) -> int:
         return 502
     if isinstance(exc, UnknownProviderError):
         return 501
+    if isinstance(exc, UnknownModelError):
+        return 404
     if isinstance(exc, PipelineError):
         return 501
     if isinstance(exc, ProviderAuthenticationError):
@@ -145,6 +148,10 @@ async def chat_completions(
         elapsed = time.perf_counter() - start_time
 
         if not response.success:
+            if isinstance(response.exception, UnknownModelError):
+                # Re-raise so the app-level handler emits the OpenAI-shaped body.
+                raise response.exception
+
             status_code = _status_for_exception(response.exception)
             raise HTTPException(status_code=status_code, detail=response.error)
 

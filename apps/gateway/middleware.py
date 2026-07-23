@@ -40,7 +40,8 @@ class RequestMiddleware(BaseHTTPMiddleware):
         request_id = request.headers.get("X-Request-ID")
         if request_id is None:
             request_id = str(uuid.uuid4())
-            request.scope["request_id"] = request_id
+
+        request.scope["request_id"] = request_id
         response = await call_next(request)
         response.headers["X-Request-ID"] = request_id
         return response
