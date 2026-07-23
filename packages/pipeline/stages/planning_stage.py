@@ -110,8 +110,6 @@ class PlanningStage(PipelineStage):
         Returns:
             A PipelineStageResult with the ContextPlan on success.
         """
-        request_id = context.request_id
-
         try:
             # Extract user messages from the request.
             messages = self._extract_messages(context)
@@ -123,13 +121,6 @@ class PlanningStage(PipelineStage):
 
             # Store in metadata for downstream stages.
             context.set_metadata("context_plan", plan)
-
-            logger.info(
-                "planning request_id=%s intent=%s profile=%s",
-                request_id,
-                plan.intent,
-                plan.ranking_profile,
-            )
 
             return PipelineStageResult(
                 stage_name=self.name,

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import time
+import uuid
 from typing import Any, cast
 
 from fastapi import APIRouter, HTTPException, Request
@@ -77,7 +78,12 @@ def _status_for_exception(exc: Exception | None) -> int:
         return 502
     if isinstance(exc, ProviderConnectionError):
         return 503
-    if isinstance(exc, ProviderResponseError):
+    if isinstance(exc, ProviderResponseError) and exc.status_code is not None:
+        status = exc.status_code
+        # 4xx errors are client-side — pass through unchanged.
+        # 5xx errors are upstream failures — report as bad gateway.
+        if 400 <= status < 500:
+            return status
         return 502
     return 502
 
@@ -103,7 +109,7 @@ async def chat_completions(
     Raises:
         HTTPException: If the pipeline fails or no provider is configured.
     """
-    request_id = request.headers.get("X-Request-ID", "unknown")
+    request_id = request.scope.get("request_id") or str(uuid.uuid4())
     model: str = body.model
     start_time: float = time.perf_counter()
 

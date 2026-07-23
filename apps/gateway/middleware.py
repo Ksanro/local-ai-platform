@@ -34,7 +34,13 @@ class RequestMiddleware(BaseHTTPMiddleware):
         Returns:
             The response with ``X-Request-ID`` header set.
         """
-        request_id = str(uuid.uuid4())
+        # Use the client-supplied X-Request-ID when present;
+        # otherwise generate one and store it in the ASGI scope so the
+        # handler can read it for logging.
+        request_id = request.headers.get("X-Request-ID")
+        if request_id is None:
+            request_id = str(uuid.uuid4())
+            request.scope["request_id"] = request_id
         response = await call_next(request)
         response.headers["X-Request-ID"] = request_id
         return response

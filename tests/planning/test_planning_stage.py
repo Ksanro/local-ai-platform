@@ -390,3 +390,37 @@ class TestPlanningStageIntegration:
             plan = result.data
             assert plan.intent == expected_intent
             assert plan.estimated_complexity == expected_complexity
+
+
+class TestPlanningStageNoDuplicateLog:
+    """Test that PlanningStage does not emit duplicate log lines."""
+
+    def test_single_log_line_per_request(self, caplog):
+        """A single request produces exactly one log record containing
+        'intent=' — no duplicates from execute() + after()."""
+        import logging
+
+        caplog.set_level(logging.INFO, logger="packages.pipeline.stages.planning_stage")
+
+        stage = PlanningStage()
+        context = PipelineContext(
+            request={
+                "messages": [
+                    {"role": "user", "content": "Explain this"},
+                ]
+            }
+        )
+
+        # Run the full lifecycle: before → execute → after
+        asyncio.run(stage.before(context))
+        result = asyncio.run(stage.execute(context))
+        asyncio.run(stage.after(context, result))
+
+        # Count log records containing "intent=" — should be exactly 1
+        intent_lines = [
+            record for record in caplog.records if "intent=" in record.getMessage()
+        ]
+        assert len(intent_lines) == 1, (
+            f"Expected exactly 1 log line with 'intent=', got {len(intent_lines)}: "
+            + [r.getMessage() for r in intent_lines]
+        )

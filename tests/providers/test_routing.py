@@ -295,10 +295,26 @@ class TestFallbackModelRouter:
         assert resolved.provider is not None
 
     def test_fallback_available_models(self) -> None:
-        """FallbackModelRouter returns [] for available models."""
+        """FallbackModelRouter returns the default model for available models."""
+        from apps.gateway.core.config import Settings
+
+        settings = Settings()
         router = FallbackModelRouter("vllm")
         models = router.available_models()
-        assert models == []
+        assert models == [settings.default_model]
+
+    def test_fallback_available_models_returns_default_model(self) -> None:
+        """FallbackModelRouter should return the default model so that
+        GET /v1/models advertises the model fallback mode will serve."""
+        from apps.gateway.core.config import Settings
+
+        # Read the actual default_model from Settings
+        settings = Settings()
+        router = FallbackModelRouter("vllm")
+        models = router.available_models()
+        assert models == [settings.default_model], (
+            f"Expected [{settings.default_model!r}], got {models!r}"
+        )
 
 
 class TestUnknownModelError:

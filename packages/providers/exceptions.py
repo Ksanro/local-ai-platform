@@ -36,7 +36,29 @@ class ProviderResponseError(ProviderError):
     """Raised when a provider returns an invalid response.
 
     Covers non-2xx HTTP status codes and malformed responses.
+
+    Attributes:
+        status_code: The HTTP status code returned by the upstream provider,
+            if available (e.g. 404, 500).
+        body: The raw response body text from the upstream provider.
     """
+
+    def __init__(
+        self,
+        message: str,
+        status_code: int | None = None,
+        body: str | None = None,
+    ) -> None:
+        """Initialize with status code and body information.
+
+        Args:
+            message: Human-readable error description.
+            status_code: The HTTP status code from the upstream provider.
+            body: The raw response body from the upstream provider.
+        """
+        super().__init__(message)
+        self.status_code = status_code
+        self.body = body
 
 
 class UnknownModelError(ProviderError):

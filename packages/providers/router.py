@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from apps.gateway.core.config import get_settings
 from packages.providers.factory import create_provider
 from packages.providers.models import ModelDefinition, ResolvedModel
 from packages.providers.registry_models import ModelRegistry
@@ -153,8 +154,14 @@ class FallbackModelRouter:
         return ResolvedModel(definition=self._model_definitions[model], provider=provider)
 
     def available_models(self) -> list[str]:
-        """Return empty list — fallback mode doesn't restrict model names."""
-        return []
+        """Return the default model so that ``GET /v1/models`` advertises
+        the model fallback mode will serve.
+
+        Returns:
+            A list containing the ``default_model`` from application settings.
+        """
+        settings = get_settings()
+        return [settings.default_model]
 
     async def close_all(self) -> None:
         """Close the single provider if it exists."""

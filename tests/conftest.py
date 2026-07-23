@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     from collections.abc import Generator
 
 # The shared DGX vLLM server used for integration and streaming tests.
-_VLLM_BASE_URL = "http://100.106.236.88:8000/v1"
+_VLLM_BASE_URL = "http://100.106.236.88:8001/v1"
 
 # Set it early — vLLM provider reads it during module initialisation
 # (via ``_resolve_config_value`` in ``packages.providers.vllm``).

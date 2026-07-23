@@ -2,20 +2,25 @@
 
 from __future__ import annotations
 
+import asyncio
+import uuid
 from collections.abc import AsyncGenerator
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from apps.gateway.api.chat import router as chat_router
+from apps.gateway.middleware import RequestMiddleware
 from packages.pipeline.engine import PipelineEngine
 from packages.pipeline.exceptions import PipelineError
 from packages.pipeline.response import PipelineResponse
 from packages.pipeline.result import PipelineStageResult
 from packages.providers.exceptions import (
     ProviderConnectionError,
+    ProviderResponseError,
     UnknownProviderError,
 )
 
@@ -250,3 +255,265 @@ def test_chat_completions_provider_connection_error_returns_503() -> None:
         client = TestClient(app)
         response = client.post("/v1/chat/completions", json=payload)
     assert response.status_code == 503
+
+
+# ---------------------------------------------------------------------------
+# Bug 1 — upstream HTTP status is discarded
+# ---------------------------------------------------------------------------
+
+
+def _make_engine_for_exception(exc: Exception) -> AsyncMock:
+    """Return a mock pipeline engine that returns a failed response with
+    the given exception set on the provider stage result.
+
+    Args:
+        exc: The exception to attach to the stage result.
+
+    Returns:
+        An AsyncMock configured as a PipelineEngine with a failing response.
+    """
+    mock_engine = AsyncMock()
+    resp = PipelineResponse(success=False, error=str(exc))
+    resp.stage_results = {
+        "provider": PipelineStageResult(
+            stage_name="provider",
+            success=False,
+            error=str(exc),
+            exception=exc,
+        )
+    }
+    mock_engine.execute = AsyncMock(return_value=resp)
+    return mock_engine
+
+
+def test_chat_completions_404_passthrough() -> None:
+    """Verify upstream 404 passes through as HTTP 404."""
+    payload = {
+        "messages": [{"role": "user", "content": "Hello"}],
+        "model": "test-model",
+    }
+    with patch(
+        "apps.gateway.api.chat.get_settings",
+        return_value=type(
+            "FakeSettings",
+            (),
+            {"default_provider": "vllm", "repository_context_enabled": True},
+        )(),
+    ):
+        mock_engine = _make_engine_for_exception(
+            ProviderResponseError("model not found", status_code=404)
+        )
+        app = _make_app()
+        app.state.pipeline = mock_engine
+        client = TestClient(app)
+        response = client.post("/v1/chat/completions", json=payload)
+    assert response.status_code == 404
+
+
+def test_chat_completions_400_passthrough() -> None:
+    """Verify upstream 400 passes through as HTTP 400."""
+    payload = {
+        "messages": [{"role": "user", "content": "Hello"}],
+        "model": "test-model",
+    }
+    with patch(
+        "apps.gateway.api.chat.get_settings",
+        return_value=type(
+            "FakeSettings",
+            (),
+            {"default_provider": "vllm", "repository_context_enabled": True},
+        )(),
+    ):
+        mock_engine = _make_engine_for_exception(
+            ProviderResponseError("bad request", status_code=400)
+        )
+        app = _make_app()
+        app.state.pipeline = mock_engine
+        client = TestClient(app)
+        response = client.post("/v1/chat/completions", json=payload)
+    assert response.status_code == 400
+
+
+def test_chat_completions_422_passthrough() -> None:
+    """Verify upstream 422 passes through as HTTP 422."""
+    payload = {
+        "messages": [{"role": "user", "content": "Hello"}],
+        "model": "test-model",
+    }
+    with patch(
+        "apps.gateway.api.chat.get_settings",
+        return_value=type(
+            "FakeSettings",
+            (),
+            {"default_provider": "vllm", "repository_context_enabled": True},
+        )(),
+    ):
+        mock_engine = _make_engine_for_exception(
+            ProviderResponseError("validation error", status_code=422)
+        )
+        app = _make_app()
+        app.state.pipeline = mock_engine
+        client = TestClient(app)
+        response = client.post("/v1/chat/completions", json=payload)
+    assert response.status_code == 422
+
+
+def test_chat_completions_500_becomes_502() -> None:
+    """Verify upstream 500 maps to HTTP 502."""
+    payload = {
+        "messages": [{"role": "user", "content": "Hello"}],
+        "model": "test-model",
+    }
+    with patch(
+        "apps.gateway.api.chat.get_settings",
+        return_value=type(
+            "FakeSettings",
+            (),
+            {"default_provider": "vllm", "repository_context_enabled": True},
+        )(),
+    ):
+        mock_engine = _make_engine_for_exception(
+            ProviderResponseError("internal error", status_code=500)
+        )
+        app = _make_app()
+        app.state.pipeline = mock_engine
+        client = TestClient(app)
+        response = client.post("/v1/chat/completions", json=payload)
+    assert response.status_code == 502
+
+
+def test_chat_completions_503_becomes_502() -> None:
+    """Verify upstream 503 maps to HTTP 502 (bad gateway)."""
+    payload = {
+        "messages": [{"role": "user", "content": "Hello"}],
+        "model": "test-model",
+    }
+    with patch(
+        "apps.gateway.api.chat.get_settings",
+        return_value=type(
+            "FakeSettings",
+            (),
+            {"default_provider": "vllm", "repository_context_enabled": True},
+        )(),
+    ):
+        mock_engine = _make_engine_for_exception(
+            ProviderResponseError("service unavailable", status_code=503)
+        )
+        app = _make_app()
+        app.state.pipeline = mock_engine
+        client = TestClient(app)
+        response = client.post("/v1/chat/completions", json=payload)
+    assert response.status_code == 502
+
+
+# ---------------------------------------------------------------------------
+# Bug 2 — request_id is "unknown" when no header is supplied
+# ---------------------------------------------------------------------------
+
+
+def test_request_id_generated_when_no_header() -> None:
+    """Verify a valid UUID request_id is generated when no X-Request-ID
+    header is supplied by the client."""
+    payload = {
+        "messages": [{"role": "user", "content": "Hello"}],
+        "model": "test-model",
+    }
+    with patch(
+        "apps.gateway.api.chat.get_settings",
+        return_value=type(
+            "FakeSettings",
+            (),
+            {"default_provider": "vllm", "repository_context_enabled": True},
+        )(),
+    ):
+        mock_engine = _make_engine_for_exception(
+            ProviderConnectionError("connection failed")
+        )
+        app = _make_app()
+        app.state.pipeline = mock_engine
+        app.add_middleware(RequestMiddleware)
+        client = TestClient(app)
+        response = client.post("/v1/chat/completions", json=payload)
+    # The X-Request-ID response header should be a valid UUID
+    req_id = response.headers.get("X-Request-ID")
+    assert req_id is not None
+    assert req_id != "unknown"
+    uuid.UUID(req_id)  # Raises if not a valid UUID
+
+
+def test_request_id_passed_when_header_supplied() -> None:
+    """Verify the X-Request-ID header value is used when supplied by the
+    client."""
+    payload = {
+        "messages": [{"role": "user", "content": "Hello"}],
+        "model": "test-model",
+    }
+    with patch(
+        "apps.gateway.api.chat.get_settings",
+        return_value=type(
+            "FakeSettings",
+            (),
+            {"default_provider": "vllm", "repository_context_enabled": True},
+        )(),
+    ):
+        mock_engine = _make_engine_for_exception(
+            ProviderConnectionError("connection failed")
+        )
+        app = _make_app()
+        app.state.pipeline = mock_engine
+        app.add_middleware(RequestMiddleware)
+        client = TestClient(app)
+        response = client.post(
+            "/v1/chat/completions",
+            json=payload,
+            headers={"X-Request-ID": "my-uuid-1234"},
+        )
+    # The response X-Request-ID should match the client-supplied value
+    assert response.headers.get("X-Request-ID") == "my-uuid-1234"
+
+
+def test_concurrent_requests_get_different_request_ids() -> None:
+    """Verify two concurrent requests without the header receive different
+    IDs."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    def _make_request(client: TestClient) -> str | None:
+        """Make a request and return the X-Request-ID from the response."""
+        payload = {
+            "messages": [{"role": "user", "content": "Hello"}],
+            "model": "test-model",
+        }
+        response = client.post("/v1/chat/completions", json=payload)
+        return response.headers.get("X-Request-ID")
+
+    with patch(
+        "apps.gateway.api.chat.get_settings",
+        return_value=type(
+            "FakeSettings",
+            (),
+            {"default_provider": "vllm", "repository_context_enabled": True},
+        )(),
+    ):
+        mock_engine = _make_engine_for_exception(
+            ProviderConnectionError("connection failed")
+        )
+
+        def _client() -> TestClient:
+            app = _make_app()
+            app.state.pipeline = mock_engine
+            app.add_middleware(RequestMiddleware)
+            return TestClient(app)
+
+        c1 = _client()
+        c2 = _client()
+
+        # Run requests concurrently via thread pool
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            f1 = pool.submit(_make_request, c1)
+            f2 = pool.submit(_make_request, c2)
+            id1, id2 = f1.result(), f2.result()
+
+        assert id1 is not None and id2 is not None
+        assert id1 != id2, "Concurrent requests must get different request IDs"
+        uuid.UUID(id1)
+        uuid.UUID(id2)

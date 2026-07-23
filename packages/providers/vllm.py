@@ -190,7 +190,9 @@ class VLLMProvider(Provider):
             return model_ids
         except httpx.HTTPStatusError as exc:
             raise ProviderResponseError(
-                f"Failed to list models: {exc.response.status_code} {exc.response.text}"
+                f"Failed to list models: {exc.response.status_code} {exc.response.text}",
+                status_code=exc.response.status_code,
+                body=exc.response.text,
             ) from exc
         except httpx.TimeoutException as exc:
             raise ProviderConnectionError("Timeout while listing models") from exc
@@ -221,7 +223,9 @@ class VLLMProvider(Provider):
                     f"vLLM authentication failed: {exc.response.status_code} {exc.response.text}"
                 ) from exc
             raise ProviderResponseError(
-                f"vLLM request failed: {status_code} {exc.response.text}"
+                f"vLLM request failed: {status_code} {exc.response.text}",
+                status_code=status_code,
+                body=exc.response.text,
             ) from exc
         except httpx.TimeoutException as exc:
             raise ProviderConnectionError("vLLM request timed out") from exc
