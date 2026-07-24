@@ -126,3 +126,6 @@ VLLM_BASE_URL=http://localhost:8000/v1 pytest tests/integration/
 ## License
 
 Apache 2.0 - See [LICENSE](LICENSE) file for details.
+
+## Bench context run results
+Recording 12/14 vs 3/14 at commit 61cb266

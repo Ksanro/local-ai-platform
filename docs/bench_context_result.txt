@@ -1,0 +1,335 @@
+(local-ai-platform) PS C:\Users\ovidi\local-ai-platform> $env:PYTHONPATH="."; .\uv run python scripts/bench_context.py --verbose
+model      : qwen36
+index      : built
+questions  : 6
+
+  running q1 ... on=3/3  off=0/3  retrieved=31
+  running q2 ... on=2/2  off=0/2  retrieved=25
+  running q3 ... on=2/3  off=1/3  retrieved=20
+  running q4 ... on=1/2  off=1/2  retrieved=29
+  running q5 ... on=2/2  off=0/2  retrieved=31
+  running q6 ... on=2/2  off=1/2  retrieved=21
+
+======================================================================================
+q     score on  score off   ptok on  ptok off   sec on  sec off   syms  est tok
+--------------------------------------------------------------------------------------
+q1        3/3       0/3      4229        31     30.1      6.8     31     4206
+q2        2/2       0/2      5996        31     23.5      6.7     25     6176
+q3        2/3       1/3      6832        36     27.3      6.8     20     6823
+q4        1/2       1/2      9242        34     17.3      6.7     29     9517
+q5        2/2       0/2      4459        26      8.5      6.9     31     4219
+q6        2/2       1/2      6112        28     24.3      6.5     21     6332
+--------------------------------------------------------------------------------------
+TOT      12/14       3/14     36870       186    131.1     40.4
+======================================================================================
+
+context delta : +9 points (12/14 with context, 3/14 without)
+token cost    : +36684 prompt tokens
+latency cost  : +90.6 s total
+
+======================================================================================
+q1: In this codebase, what does ModelRouter.resolve() return, and what are that object's fields?
+expect: resolvedmodel, definition, provider
+
+PRIMARY SYMBOL : router.FallbackModelRouter.resolve
+RETRIEVED (31): router.FallbackModelRouter.resolve, router.ModelRouter.resolve, router.FallbackModelRouter, router.FallbackModelRouter.available_models, router.FallbackModelRouter.close_all, router.ModelRouter, router.ModelRouter.available_models, router.ModelRouter.close_all, router.FallbackModelRouter.__init__, router.FallbackModelRouter._ensure_provider, router.ModelRouter.__init__, router.ModelRouter._create_providers, container.DependencyContainer.resolve, intent_rules.IntentRuleEngine.resolve, model_resolution.ModelResolutionStage, model_resolution.ModelResolutionStage.after, model_resolution.ModelResolutionStage.execute, model_resolution.ModelResolutionStage.name, models.WorkflowMetrics, models.WorkflowNode, router.FallbackModelRouter, router.FallbackModelRouter.__init__, router.FallbackModelRouter._ensure_provider, router.FallbackModelRouter.available_models, router.FallbackModelRouter.close_all
+MODULES  (5): container, intent_rules, model_resolution, models, router
+
+--- WITH CONTEXT (hits: ['resolvedmodel', 'definition', 'provider']) ---
+Here's a thinking process:
+
+1.  **Understand User Question**: The user is asking about the `ModelRouter.resolve()` method in the provided codebase. Specifically, they want to know:
+   - What does `ModelRouter.resolve()` return?
+   - What are the fields of that returned object?
+
+2.  **Locate Relevant Code**: I need to find the `ModelRouter.resolve()` method in the provided context.
+   Looking at the provided text:
+   ```python
+   class ModelRouter:
+       # ...
+       def resolve(self, model: str) -> ResolvedModel:
+           """Resolve a model string to configuration and provider.
+   
+           Args:
+               model: The model name to resolve.
+   
+           Returns:
+               A ResolvedModel with definition and provider.
+   
+           Raises:
+               UnknownModelError: If the model is not found.
+           """
+           definition = self.registry.get(model)
+           # Find the provider for this definition's backend
+           config_key = (
+               definition.provider,
+               definition.base_url,
+               definition.api_key,
+               definition.timeout,
+           )
+           config_str = f"{config_key[0]}|{config_key[1]}|{str(conf
+
+--- WITHOUT CONTEXT (hits: none) ---
+Here's a thinking process:
+
+1.  **Understand User Query:** The user is asking about a specific function/method `ModelRouter.resolve()` in a codebase. They want to know:
+   - What does it return?
+   - What are the fields of that returned object?
+
+2.  **Identify Key Missing Information:** The user hasn't provided the actual codebase, repository name, or context. `ModelRouter.resolve()` is not a standard library function in common programming languages/frameworks (like Python, Java, JavaScript, etc.). It's likely from a specific project, framework, or internal codebase.
+
+3.  **Determine Required Action:** I need to ask the user for more context. Specifically:
+   - The name of the repository/project
+   - The programming language/framework
+   - A link to the code or a snippet showing the `ModelRouter` class and its `resolve` method
+   - Any documentation or context they have
+
+4.  **Formulate Response:** I should politely explain that without the specific codebase or context, I can't accurately answer the question. I'll ask for the necessary details and offer to help once provided. I'll also mention that `ModelRouter.resolve()` isn't a standard function, so context is crucial.
+
+   Struct
+
+======================================================================================
+q2: In this codebase, which pipeline stage runs first, and what does it store on the pipeline context?
+expect: modelresolution, resolved_model
+
+PRIMARY SYMBOL : context.PipelineContext
+RETRIEVED (25): context.PipelineContext, context.PipelineContext.elapsed, context.PipelineContext.get_metadata, context.PipelineContext.get_stage_result, context.PipelineContext.set_metadata, context.PipelineContext.set_stage_result, response.PipelineResponse.from_context, bench_context.Question, bench_context.Run, bench_context.Run.n_retrieved, bench_context.Run.score, bench_context.main, budget.ContextBudget, budget.ContextBudget.estimate, composer.ContextComposer, composer.ContextComposer.compose, configuration.PipelineConfig, context_builder.ContextBuilderTask, context_builder.ContextBuilderTask.capability, context_builder.ContextBuilderTask.name, context.PipelineContext.elapsed, context.PipelineContext.get_metadata, context.PipelineContext.get_stage_result, context.PipelineContext.set_metadata, context.PipelineContext.set_stage_result
+MODULES  (7): bench_context, budget, composer, configuration, context, context_builder, response
+
+--- WITH CONTEXT (hits: ['modelresolution', 'resolved_model']) ---
+Here's a thinking process:
+
+1.  **Analyze User Question:**
+   - **Question:** In this codebase, which pipeline stage runs first, and what does it store on the pipeline context?
+   - **Key Entities:** Pipeline stage, Pipeline context, First stage, What it stores.
+
+2.  **Scan Provided Context for Keywords:**
+   - Keywords: "pipeline stage", "first", "runs first", "context", "stores", "attributes", "resolved_model", "ModelResolutionStage", "request", "metadata".
+   - Look at the docstring/source for `context.PipelineContext`:
+     ```
+     Live pipeline
+     -------------
+     
+     The registered stages, in execution order, are:
+     
+         Request
+           → resolved_model        (ModelResolutionStage)
+           → context_plan          (PlanningStage)
+           → ContextPackage        (RepositoryContextStage)
+           → ProviderResponse      (ProviderStage)
+     ```
+   - This indicates the execution order. The first stage after "Request" is `ModelResolutionStage`, which resolves `resolved_model`. Wait, "Request" is listed first, but the arrow points to `resolved_model (ModelResolutionStage)`. Actually, the format seems to be:
+     Request
+       → resolved_model (ModelResol
+
+--- WITHOUT CONTEXT (hits: none) ---
+Here's a thinking process:
+
+1.  **Analyze User Input:**
+   - **Question:** "In this codebase, which pipeline stage runs first, and what does it store on the pipeline context?"
+   - **Key Elements:** 
+     - "this codebase" - implies there's a specific codebase being referenced, but none is provided in the prompt.
+     - "pipeline stage runs first" - asks about the order of execution in a pipeline.
+     - "what does it store on the pipeline context?" - asks about the initial data/state stored by the first stage.
+
+2.  **Identify Missing Information:**
+   - The user hasn't provided any code, repository link, or context about "this codebase".
+   - Without the actual code or a reference to a specific project/framework, I cannot answer the question accurately.
+
+3.  **Determine Response Strategy:**
+   - Acknowledge the missing information.
+   - Ask for the codebase reference (code snippet, repository URL, framework name, etc.).
+   - Explain what I need to answer the question (e.g., pipeline configuration, stage definitions, context initialization code).
+   - Provide a general example of how pipelines typically work (if helpful), but emphasize that the specific answer depends on the provid
+
+======================================================================================
+q3: In this codebase's ModelDefinition, what is the difference between the 'model' field and the 'backend_model' field?
+expect: backend_model, upstream, routing
+
+PRIMARY SYMBOL : registry_models.ModelRegistry.definitions
+RETRIEVED (20): registry_models.ModelRegistry.definitions, model_resolution.ModelResolutionStage, model_resolution.ModelResolutionStage.after, model_resolution.ModelResolutionStage.execute, model_resolution.ModelResolutionStage.name, models.WorkflowMetrics, models.WorkflowNode, models.WorkflowPlan, models.WorkflowStep, models_v2.ControllerConfig, models_v2.ControllerDecision, models_v2.ControllerReport, models_v2.EngineeringRequestV2, models_v2.EngineeringResultV2, models_v2.EngineeringSessionV2, models_v2.EngineeringSessionV2.append_history, models_v2.EngineeringSessionV2.controller_decisions, models_v2.EngineeringSessionV2.create, models_v2.EngineeringSessionV2.evaluation_reports, models_v2.EngineeringSessionV2.execution_reports
+MODULES  (4): model_resolution, models, models_v2, registry_models
+
+--- WITH CONTEXT (hits: ['backend_model', 'routing']) ---
+The user is asking about the difference between the `model` field and the `backend_model` field in the `ModelDefinition` class.
+I should look at the provided source code for `registry_models.py` to understand how these fields are used.
+From the provided source code, I can see that `ModelDefinition` is imported from `packages.providers.models`.
+The source code for `registry_models.py` shows that `ModelDefinition` is instantiated with `model` and `backend_model` as arguments:
+```python
+                definitions[model] = ModelDefinition(
+                    model=model,
+                    backend_model=backend_model,
+                    ...
+                )
+```
+The `model` field is the name from the JSON config (`entry["model"]`).
+The `backend_model` field is optional (`entry.get("backend_model")`) and defaults to `None` if not provided.
+The docstring for `ModelDefinition` is not fully provided in the prompt, but I can infer their usage or look for more context in the prompt.
+Wait, the prompt provides `registry_models.ModelRegistry.definitions` and its source.
+It doesn't provide the full source of `packages.providers.models.ModelDefinition`.
+However, I can deduce the difference:
+-
+
+--- WITHOUT CONTEXT (hits: ['backend_model']) ---
+Here's a thinking process:
+
+1.  **Understand User Query:** The user is asking about the difference between two fields in a codebase's `ModelDefinition`: `model` and `backend_model`.
+
+2.  **Identify Key Concepts:** 
+   - `ModelDefinition` is likely a configuration/schema class in a codebase (possibly related to AI/ML model serving, like vLLM, Hugging Face, LangChain, or a custom framework).
+   - `model` field typically refers to the model identifier/name (e.g., "meta-llama/Llama-3-8b", "gpt-4", "bert-base-uncased").
+   - `backend_model` field likely refers to the actual backend/engine implementation or specific variant used to run the model (e.g., "vllm", "transformers", "tensorrt", "openai", "custom_backend").
+
+3.  **Contextual Knowledge Retrieval (Internal/General):**
+   - In many AI model serving frameworks (like LiteLLM, vLLM, Ollama, or custom internal tools), there's often a distinction between:
+     - The *logical/model identifier* (`model`): What the user/client references.
+     - The *backend/engine implementation* (`backend_model` or similar): Which actual inference engine or provider handles it.
+   - Example: `model: "llama-3-8b"` vs `backend_model: "vllm"` or `backend_mo
+
+======================================================================================
+q4: In this codebase, what HTTP status code does the gateway return when a client requests a model that is not configured?
+expect: 404, model_not_found
+
+PRIMARY SYMBOL : models_v2.EngineeringSessionV2.with_status
+RETRIEVED (29): models_v2.EngineeringSessionV2.with_status, models_v2.SessionStatusV2, runtime_models.ExecutionStatus, manager.SessionManager.update_status, model_resolution.ModelResolutionStage, model_resolution.ModelResolutionStage.after, model_resolution.ModelResolutionStage.execute, model_resolution.ModelResolutionStage.name, models.WorkflowMetrics, models.WorkflowNode, models.WorkflowPlan, models.WorkflowStep, models_v2.ControllerConfig, models_v2.ControllerDecision, models_v2.ControllerReport, models_v2.EngineeringRequestV2, models_v2.EngineeringResultV2, models_v2.EngineeringSessionV2, models_v2.EngineeringSessionV2.append_history, models_v2.EngineeringSessionV2.controller_decisions, models_v2.ControllerConfig, models_v2.ControllerDecision, models_v2.ControllerReport, models_v2.EngineeringRequestV2, models_v2.EngineeringResultV2
+MODULES  (5): manager, model_resolution, models, models_v2, runtime_models
+
+--- WITH CONTEXT (hits: ['404']) ---
+The user is asking about the HTTP status code returned by the gateway when a client requests a model that is not configured.
+I need to look into the codebase for HTTP gateway code, specifically handling model requests or configuration errors.
+Let's check the provided symbols and context.
+The provided context is mostly about `models_v2.EngineeringSessionV2` and related classes.
+However, the prompt mentions "gateway", "HTTP status code", "model not configured".
+Let's search the codebase if possible, or infer from the provided text. Wait, I don't have direct search capabilities, but I can analyze the provided context.
+Actually, the provided context is limited to `models_v2` module and some others. It doesn't contain gateway code.
+Wait, the prompt says "In this codebase...". I should check if there's any information in the context about HTTP status codes or gateway errors.
+The context provided is just the docstrings and signatures of various classes in `models_v2`, `runtime_models`, `manager`, `model_resolution`, `models`.
+None of these mention HTTP status codes or gateway configuration errors.
+Wait, maybe I missed something. Let's look closely at the provided text.
+It's just `models_v
+
+--- WITHOUT CONTEXT (hits: ['404']) ---
+Here's a thinking process:
+
+1.  **Analyze User Question:**
+   - **Question:** "In this codebase, what HTTP status code does the gateway return when a client requests a model that is not configured?"
+   - **Key Elements:** 
+     - "this codebase" (implies I need to look at a specific codebase, but none was provided in the prompt)
+     - "gateway" (likely an API gateway or routing component)
+     - "HTTP status code"
+     - "model that is not configured" (specific error condition)
+
+2.  **Identify Missing Information:**
+   - The user refers to "this codebase" but hasn't provided any code, repository link, or context.
+   - I need to ask for the codebase or clarify that I can't answer without it.
+
+3.  **Formulate Response Strategy:**
+   - Acknowledge the question
+   - Point out that no codebase was provided
+   - Ask the user to share the relevant code, repository, or context
+   - Offer to help analyze it once provided
+   - (Optional) Mention common HTTP status codes for this scenario (e.g., 404 Not Found, 400 Bad Request, 422 Unprocessable Entity, or 501 Not Implemented) to show domain knowledge, but clarify it depends on the specific implementation.
+
+4.  **Draft Response (Mental Refine
+
+======================================================================================
+q5: In this codebase, what does FallbackModelRouter.available_models() return?
+expect: default_model, settings
+
+PRIMARY SYMBOL : router.FallbackModelRouter.available_models
+RETRIEVED (31): router.FallbackModelRouter.available_models, router.ModelRouter.available_models, registry_models.ModelRegistry.available_models, router.FallbackModelRouter, router.FallbackModelRouter.close_all, router.FallbackModelRouter.resolve, router.FallbackModelRouter.__init__, router.FallbackModelRouter._ensure_provider, models.WorkflowMetrics, models.WorkflowNode, models.WorkflowPlan, models.WorkflowStep, router.ModelRouter, router.ModelRouter.close_all, router.ModelRouter.resolve, vllm.VLLMProvider.models, router.ModelRouter.__init__, router.ModelRouter._create_providers, models_v2.ControllerConfig, models_v2.ControllerDecision, router.FallbackModelRouter, router.FallbackModelRouter.__init__, router.FallbackModelRouter._ensure_provider, router.FallbackModelRouter.close_all, router.FallbackModelRouter.resolve
+MODULES  (5): models, models_v2, registry_models, router, vllm
+
+--- WITH CONTEXT (hits: ['default_model', 'settings']) ---
+Here's a thinking process:
+
+1.  **Analyze User Question:** The user is asking what `FallbackModelRouter.available_models()` returns in the provided codebase.
+2.  **Locate Relevant Code:** I need to find the `FallbackModelRouter` class and its `available_models` method in the provided context.
+3.  **Scan Context:** Looking at the primary symbol and supporting symbols, I see:
+   ```python
+   class FallbackModelRouter:
+       """Single-provider fallback router for empty models_config.
+       ...
+       """
+       # ... other methods ...
+       def available_models(self) -> list[str]:
+           """Return the default model so that ``GET /v1/models`` advertises
+           the model fallback mode will serve.
+   
+           Returns:
+               A list containing the ``default_model`` from application settings.
+           """
+           settings = get_settings()
+           return [settings.default_model]
+   ```
+4.  **Extract Answer:** The method returns a list containing a single string: the `default_model` value retrieved from the application settings (`get_settings().default_model`).
+5.  **Formulate Response:** State clearly what it returns based on the docstring and implementation. M
+
+--- WITHOUT CONTEXT (hits: none) ---
+Here's a thinking process:
+
+1.  **Understand User Query**: The user is asking about a specific method `FallbackModelRouter.available_models()` in a codebase. They want to know what it returns.
+
+2.  **Identify Key Entities**: 
+   - `FallbackModelRouter` (a class)
+   - `available_models()` (a method)
+   - The context is "this codebase", but I don't have direct access to a specific codebase unless provided. I need to infer or ask for context, but typically in these scenarios, I should explain what it *likely* does based on common patterns, or ask for the codebase/context. However, since this is a simulated environment, I should consider that this might be from a known library or framework, or I should explain how to find it, or state that without the actual codebase I can't give a precise answer but can provide a general explanation.
+
+3.  **Analyze the Method Name**:
+   - `FallbackModelRouter`: Suggests a routing mechanism that falls back to alternative models if the primary one fails or isn't available.
+   - `available_models()`: Typically returns a list, set, or dictionary of model identifiers/names that are currently available/loaded/configured for routing.
+
+4.  **Consider Common P
+
+======================================================================================
+q6: In this codebase, how does the context budget estimator convert content into a token estimate?
+expect: chars_per_token, estimate
+
+PRIMARY SYMBOL : budget.ContextBudget.estimate
+RETRIEVED (21): budget.ContextBudget.estimate, budget.ContextBudget, context.PipelineContext, context.PipelineContext.elapsed, context.PipelineContext.get_metadata, context.PipelineContext.get_stage_result, context.PipelineContext.set_metadata, context.PipelineContext.set_stage_result, engine.WorkflowEngine.estimate, bench_context.Question, bench_context.Run, bench_context.Run.n_retrieved, bench_context.Run.score, bench_context.main, composer.ContextComposer, composer.ContextComposer.compose, context_builder.ContextBuilderTask, context_builder.ContextBuilderTask.capability, context_builder.ContextBuilderTask.name, context_merger.ContextPackageMerger, budget.ContextBudget
+MODULES  (7): bench_context, budget, composer, context, context_builder, context_merger, engine
+
+--- WITH CONTEXT (hits: ['chars_per_token', 'estimate']) ---
+Here's a thinking process:
+
+1.  **Analyze User Question:** The user asks: "In this codebase, how does the context budget estimator convert content into a token estimate?"
+
+2.  **Identify Key Concepts:** 
+   - Context budget estimator
+   - Conversion from content to token estimate
+   - Codebase context provided
+
+3.  **Locate Relevant Information in Context:**
+   - Primary symbol: `budget.ContextBudget.estimate`
+   - Docstring mentions: "Estimates whether assembled context fits within a token budget using actual content analysis rather than fixed per-unit estimates."
+   - Estimation Model section: 
+     - Constant: `CHARS_PER_TOKEN: float = 4.0`
+     - Formula: `estimated_tokens = total_content_chars / 4.0`
+     - `total_content_chars` includes: source code, signatures, docstrings, and module paths from all candidates.
+   - Source code shows:
+     ```python
+     total_chars = 0
+     for candidate in candidates:
+         # Source body (primary symbols have full source).
+         if candidate.source:
+             total_chars += len(candidate.source)
+         # Source preview (supporting symbols).
+         if candidate.source_preview:
+             total_chars += len(candidate.source_pre
+
+--- WITHOUT CONTEXT (hits: ['estimate']) ---
+Here's a thinking process:
+
+1.  **Understand User Query:** The user is asking about a specific codebase (which they haven't provided, but I need to infer or ask for) and specifically about how a "context budget estimator" converts content into a token estimate.
+
+2.  **Identify Key Missing Information:** The user mentions "this codebase" but hasn't shared any code, repository link, or context. I need to ask for the codebase or clarify what they're referring to.
+
+3.  **Formulate Response Strategy:**
+   - Acknowledge the question
+   - Point out that I don't have access to the specific codebase
+   - Ask for the relevant code, repository link, or file path
+   - Explain what I would typically look for in such a system (e.g., tokenization logic, character-to-token ratios, specific tokenizer implementations like tiktoken, regex-based estimators, etc.)
+   - Offer to analyze the code once provided
+
+4.  **Draft Response (Mental Refinement):**
+   I don't have access to the specific codebase you're referring to. Could you please share the relevant file, function, or repository link? In the meantime, I can tell you that context budget estimators typically convert content to token estimates using
