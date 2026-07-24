@@ -4,20 +4,20 @@ Holds mutable state shared across all pipeline stages during a single
 request's lifecycle. Each stage can read and write context fields to
 pass data between stages.
 
-Integration Milestone v1
-------------------------
+Live pipeline
+-------------
 
-PipelineContext now carries the complete engineering execution flow:
+The registered stages, in execution order, are:
 
     Request
+      → resolved_model        (ModelResolutionStage)
+      → context_plan          (PlanningStage)
       → ContextPackage        (RepositoryContextStage)
-      → WorkflowPlan          (WorkflowStage)
-      → ExecutionReport       (ExecutionStage)
-      → VerificationReport    (VerificationStage)
-      → EvaluationReport      (EvaluationStage)
       → ProviderResponse      (ProviderStage)
 
-All reports survive every stage without serialization loss.
+Fields for workflow, execution, verification and evaluation reports
+exist on this class but no corresponding stage is registered in
+``apps.gateway.main``. They are unused by the live request path.
 """
 
 from __future__ import annotations
@@ -53,10 +53,10 @@ class PipelineContext:
         start_time: perf_counter timestamp when the pipeline started.
         context_package: Assembled repository context from the
             RepositoryContextStage. Read-only after population.
-        workflow_plan: WorkflowPlan produced by WorkflowStage.
-        execution_report: ExecutionReport produced by ExecutionStage.
-        verification_report: VerificationReport produced by VerificationStage.
-        evaluation_report: EvaluationReport produced by EvaluationStage.
+        workflow_plan: WorkflowPlan. UNWIRED - no WorkflowStage is registered.
+        execution_report: ExecutionReport. UNWIRED - no ExecutionStage.
+        verification_report: VerificationReport. UNWIRED.
+        evaluation_report: EvaluationReport. UNWIRED.
         resolved_model: ResolvedModel set by ModelResolutionStage.
     """
 
