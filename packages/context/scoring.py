@@ -462,12 +462,38 @@ def score_candidate_v2(
     # PHASE 1: Name-matching rules (mutually exclusive, highest wins)
     # ================================================================
 
-    # EXACT_SYMBOL_NAME: +100
+    # EXACT_SYMBOL_NAME: +100 (with length-based discount for compound names).
     # Any name segment exactly matches a query token (case-insensitive).
+    # When the matched segment is a non-prefix substring of another segment,
+    # the candidate is a compound name whose sub-segment matched — discount
+    # the score to prevent it from outranking simpler names.
     exact_symbol = False
+    seg_length_penalty = 0
     for token in query_tokens:
-        if any(seg.lower() == token for seg in name_segments):
-            exact_symbol = True
+        for seg in name_segments:
+            if seg.lower() == token:
+                exact_symbol = True
+                # Check if this matched segment is a non-prefix substring
+                # of any other segment (indicating a compound name match).
+                seg_lower = seg.lower()
+                for other in name_segments:
+                    if other is seg:
+                        continue
+                    other_lower = other.lower()
+                    idx = other_lower.find(seg_lower)
+                    if idx > 0:  # found as non-prefix substring
+                        # Penalty proportional to how much longer the
+                        # containing segment is compared to the token.
+                        seg_len = len(seg)
+                        other_len = len(other)
+                        ratio = seg_len / other_len
+                        seg_length_penalty = max(
+                            seg_length_penalty,
+                            int(50 * (1.0 - ratio)),
+                        )
+                        break  # found worst compound match for this segment
+                break
+        if exact_symbol:
             break
 
     # EXACT_QUALIFIED_NAME: +90
@@ -485,8 +511,11 @@ def score_candidate_v2(
     partial = False
     if not exact_symbol and not exact_qualified:
         for token in query_tokens:
-            if any(token in seg.lower() for seg in name_segments):
-                partial = True
+            for seg in name_segments:
+                if token in seg.lower():
+                    partial = True
+                    break
+            if partial:
                 break
 
     # MODULE_MATCH: +30
@@ -501,7 +530,7 @@ def score_candidate_v2(
 
     # Apply the best name-matching rule.
     if exact_symbol:
-        score += RankingConfig.WEIGHT_EXACT_MATCH
+        score += RankingConfig.WEIGHT_EXACT_MATCH - seg_length_penalty
         reasons.append(RankingReason.EXACT_SYMBOL_NAME)
     elif exact_qualified:
         score += RankingConfig.WEIGHT_QUALIFIED_NAME

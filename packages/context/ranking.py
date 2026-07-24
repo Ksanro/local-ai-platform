@@ -285,11 +285,37 @@ class RankingEngine:
             entry for entry in scored if entry[0] >= min_score
         ]
 
-        ranked: list[_ContextCandidate] = [c for _, _, _, _, _, c in scored]
+        # Deduplicate by qualified_name, keeping the higher score
+        # and merging reasons.  This removes symbols reached via
+        # both direct scoring and relationship expansion.
+        best: dict[str, tuple[int, list[RankingReason], _ContextCandidate]] = {}
+        for entry in scored:
+            s = entry[0]
+            qname = entry[1]
+            reasons = entry[4]
+            candidate = entry[5]
+            if qname not in best or s > best[qname][0]:
+                best[qname] = (s, list(reasons), candidate)
+            else:
+                best[qname][1].extend(reasons)
+
+        ranked: list[_ContextCandidate] = []
+        for qname in [e[1] for e in scored]:
+            if qname in best:
+                rank_entry = best[qname]
+                ranked_candidate = rank_entry[2]
+                ranked_candidate.score = rank_entry[0]
+                ranked_candidate.reasons = rank_entry[1]
+                ranked.append(ranked_candidate)
+                del best[qname]
 
         # Relationship expansion: add direct callers/callees.
         if self._expansion_enabled and self._symbol_graph_view is not None:
             ranked = self._expand_with_relationships(ranked, max_tokens)
+
+        # Re-deduplicate after expansion (expansion may introduce new
+        # duplicates by qualified_name) and return the final ranked list.
+        ranked = self._dedup_candidates(ranked)
 
         return ranked
 
@@ -401,3 +427,35 @@ class RankingEngine:
             Estimated token count (~100 per candidate).
         """
         return 100
+
+    @staticmethod
+    def _dedup_candidates(candidates: list[_ContextCandidate]) -> list[_ContextCandidate]:
+        """Deduplicate candidates by qualified_name, keeping the higher score.
+
+        When the same symbol is reached from multiple paths (e.g. direct
+        scoring and relationship expansion), keeps the higher score and
+        merges reasons.
+
+        Args:
+            candidates: The candidate list potentially containing duplicates.
+
+        Returns:
+            A deduplicated candidate list.
+        """
+        best: dict[str, tuple[int, list[RankingReason], _ContextCandidate]] = {}
+        for candidate in candidates:
+            qname = candidate.qualified_name
+            score = candidate.score
+            reasons = candidate.reasons
+            if qname not in best or score > best[qname][0]:
+                best[qname] = (score, list(reasons), candidate)
+            else:
+                best[qname][1].extend(reasons)
+
+        ranked: list[_ContextCandidate] = []
+        for qname, (s, reasons, candidate) in best.items():
+            candidate.score = s
+            candidate.reasons = reasons
+            ranked.append(candidate)
+
+        return ranked

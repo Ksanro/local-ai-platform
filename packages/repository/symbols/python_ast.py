@@ -11,6 +11,7 @@ No third-party parsing libraries are permitted.
 from __future__ import annotations
 
 import ast
+from fnmatch import fnmatch
 from pathlib import Path
 
 from packages.repository.symbols.extractor import SymbolExtractor
@@ -32,6 +33,8 @@ class PythonAstExtractor(SymbolExtractor):
         language: Always ``Language.PYTHON``.
         excluded_test_count: Number of test files skipped during
             directory extraction (when ``exclude_tests=True``).
+        excluded_glob_count: Number of files skipped due to
+            ``exclude_globs`` patterns during directory extraction.
     """
 
     @property
@@ -40,13 +43,21 @@ class PythonAstExtractor(SymbolExtractor):
 
     def __init__(self) -> None:
         self.excluded_test_count: int = 0
+        self.excluded_glob_count: int = 0
 
-    def extract(self, path: Path, exclude_tests: bool = False) -> SymbolGraph:
+    def extract(
+        self,
+        path: Path,
+        exclude_tests: bool = False,
+        exclude_globs: list[str] | None = None,
+    ) -> SymbolGraph:
         """Extract symbols from a single file or directory.
 
         Args:
             path: Path to a Python source file or a directory.
             exclude_tests: When ``True``, skip test files.
+            exclude_globs: List of glob patterns for files to exclude
+                (matched against paths relative to the index root).
 
         Returns:
             A ``SymbolGraph`` containing all discovered symbols.
@@ -61,7 +72,11 @@ class PythonAstExtractor(SymbolExtractor):
             return self._extract_file(path)
 
         if path.is_dir():
-            return self._extract_directory(path, exclude_tests=exclude_tests)
+            return self._extract_directory(
+                path,
+                exclude_tests=exclude_tests,
+                exclude_globs=exclude_globs or [],
+            )
 
         raise FileNotFoundError(f"No such file or directory: {path}")
 
@@ -114,6 +129,7 @@ class PythonAstExtractor(SymbolExtractor):
         self,
         root: Path,
         exclude_tests: bool = False,
+        exclude_globs: list[str] | None = None,
     ) -> SymbolGraph:
         """Extract symbols from all Python files under ``root``.
 
@@ -122,10 +138,13 @@ class PythonAstExtractor(SymbolExtractor):
             exclude_tests: When ``True``, skip test files
                 (``test_*.py``, ``*_test.py``, ``conftest.py``)
                 from the index.
+            exclude_globs: List of glob patterns for files to exclude
+                (matched against paths relative to the index root).
         Returns:
             A merged ``SymbolGraph`` containing all modules.
         """
         all_modules: dict[str, Module] = {}
+        exclude_globs = exclude_globs or []
 
         for py_file in sorted(root.rglob("*.py")):
             # Skip __pycache__ and hidden directories.
@@ -134,13 +153,26 @@ class PythonAstExtractor(SymbolExtractor):
             if any(part.startswith(".") for part in py_file.parts):
                 continue
 
+            # Compute path relative to the index root.
+            try:
+                rel = py_file.relative_to(root)
+            except ValueError:
+                rel = py_file
+
             # Skip test files when configured.
             if exclude_tests and self._is_test_file(py_file):
                 self.excluded_test_count += 1
                 continue
 
-            graph = self._extract_file(py_file)
-            all_modules.update(graph.modules)
+            # Skip files matching exclude_globs patterns.
+            for pattern in exclude_globs:
+                if fnmatch(str(rel), pattern):
+                    self.excluded_glob_count += 1
+                    break
+            else:
+                graph = self._extract_file(py_file)
+                all_modules.update(graph.modules)
+                continue
 
         return SymbolGraph(modules=all_modules)
 

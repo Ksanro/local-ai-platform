@@ -1,56 +1,53 @@
-%% ============================================================
-%% Local AI Platform — Engineering Controller v2
-%%
-%% STATUS: NOT WIRED. This subsystem is NOT reachable from a
-%% request. Verified by grep: packages/controller, session,
-%% workflows, execution, verification, evaluation and memory have
-%% zero references from apps/ or from any pipeline stage.
-%%
-%% The live request path is documented in execution-flow.mmd.
-%% This diagram describes intended behaviour once integrated.
-%% ============================================================
 
 flowchart TD
-    Note[/"NOT WIRED — no entry point from the gateway"/]:::unwired
+    %% FIXED: Changed ID from reserved keyword 'Note' to 'UnwiredNote'
+    UnwiredNote[/"NOT WIRED — no entry point from the gateway"/]:::unwired
 
-    EngStart([EngineeringRequestV2]) --> EngCtrl[EngineeringControllerV2.execute]
-    EngCtrl --> EngSession[Create EngineeringSessionV2<br/>session_id, request_id<br/>max_iterations, config]
+    EngStart(["EngineeringRequestV2"]) --> EngCtrl["EngineeringControllerV2.execute"]
+    EngCtrl --> EngSession["Create EngineeringSessionV2<br/>session_id, request_id<br/>max_iterations, config"]
 
-    EngSession --> Loop{iteration < max?}
-    Loop -->|yes| Step1[Step 1: Select Workflow<br/>workflow_selector.select<br/>fallback: request.workflow_name]
-    Step1 --> Step2[Step 2: Execute Workflow<br/>WorkflowEngine.generate_plan<br/>WorkflowPlan DAG<br/>ExecutionEngine.execute<br/>ExecutionReport]
-    Step2 --> Step3[Step 3: Self-Verify<br/>VerificationRuleRegistry]
-    Step3 --> Step4[Step 4: Evaluate<br/>WorkflowEvaluator.evaluate<br/>EvaluationReport]
-    Step4 --> Step5[Step 5: Record History<br/>SessionHistoryEntry<br/>all reports + decision]
-    Step5 --> Step6[Step 6: Controller Decision<br/>ControllerDecisionMaker.make_decision<br/>execution + verification + evaluation]
-    Step6 --> Decision{Decision?}
+    %% FIXED: Changed ID from reserved keyword 'Loop' to 'IterLoop' and used &lt;
+    EngSession --> IterLoop{"iteration &lt; max?"}
+    
+    IterLoop -->|yes| Step1["Step 1: Select Workflow<br/>workflow_selector.select<br/>fallback: request.workflow_name"]
+    Step1 --> Step2["Step 2: Execute Workflow<br/>WorkflowEngine.generate_plan<br/>WorkflowPlan DAG<br/>ExecutionEngine.execute<br/>ExecutionReport"]
+    Step2 --> Step3["Step 3: Self-Verify<br/>VerificationRuleRegistry"]
+    Step3 --> Step4["Step 4: Evaluate<br/>WorkflowEvaluator.evaluate<br/>EvaluationReport"]
+    Step4 --> Step5["Step 5: Record History<br/>SessionHistoryEntry<br/>all reports + decision"]
+    Step5 --> Step6["Step 6: Controller Decision<br/>ControllerDecisionMaker.make_decision<br/>execution + verification + evaluation"]
+    Step6 --> Decision{"Decision?"}
 
-    Decision -->|COMPLETE| Complete[Build Complete Result<br/>store in EngineeringMemory<br/>EngineeringResultV2]
-    Decision -->|FAIL| Fail[Build Fail Result<br/>EngineeringResultV2]
-    Decision -->|REQUEST_REVIEW| Review[Build Review Result<br/>EngineeringResultV2]
-    Decision -->|RETRY| RetryCheck{retry_count < max?}
-    RetryCheck -->|yes| RetryInc[retry_count++ loop back]
-    RetryCheck -->|no| MaxRetries[Max retries exhausted FAIL]
-    RetryInc --> Loop
+    Decision -->|COMPLETE| Complete["Build Complete Result<br/>store in EngineeringMemory<br/>EngineeringResultV2"]
+    Decision -->|FAIL| Fail["Build Fail Result<br/>EngineeringResultV2"]
+    Decision -->|REQUEST_REVIEW| Review["Build Review Result<br/>EngineeringResultV2"]
+    
+    %% FIXED: Escaped < to &lt;
+    Decision -->|RETRY| RetryCheck{"retry_count &lt; max?"}
+    RetryCheck -->|yes| RetryInc["retry_count++ loop back"]
+    RetryCheck -->|no| MaxRetries["Max retries exhausted FAIL"]
+    RetryInc --> IterLoop
 
-    Loop -->|no| MaxIter[Max iterations reached FAIL]
+    IterLoop -->|no| MaxIter["Max iterations reached FAIL"]
 
-    Step3 --> VRules[NoDuplicateChanges<br/>NoUnexpectedFiles<br/>PatchApplied<br/>PatchStatisticsConsistency<br/>WorkspaceConsistency]
-    VRules --> ScoreCalc[Score = max of 0 and<br/>1.0 minus sum of severity weights]
-    ScoreCalc --> StatusCalc{status?}
-    StatusCalc -->|CRITICAL/HIGH| VFailed[FAILED]
-    StatusCalc -->|MEDIUM| VWarn[WARNING]
-    StatusCalc -->|otherwise| VPass[PASSED]
+    Step3 --> VRules["NoDuplicateChanges<br/>NoUnexpectedFiles<br/>PatchApplied<br/>PatchStatisticsConsistency<br/>WorkspaceConsistency"]
+    VRules --> ScoreCalc["Score = max of 0 and<br/>1.0 minus sum of severity weights"]
+    ScoreCalc --> StatusCalc{"status?"}
+    
+    %% FIXED: Wrapped edge label containing a slash in quotes
+    StatusCalc -->|"CRITICAL/HIGH"| VFailed["FAILED"]
+    StatusCalc -->|MEDIUM| VWarn["WARNING"]
+    StatusCalc -->|otherwise| VPass["PASSED"]
 
-    Step4 --> EvalCats[Category Scores<br/>Context Quality 25%<br/>Execution Quality 25%<br/>Engineering Quality 20%<br/>Performance 15%<br/>Determinism 15%]
+    Step4 --> EvalCats["Category Scores<br/>Context Quality 25%<br/>Execution Quality 25%<br/>Engineering Quality 20%<br/>Performance 15%<br/>Determinism 15%"]
 
     classDef entry fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
     classDef engine fill:#fff3e0,stroke:#e65100,stroke-width:2px
     classDef decision fill:#fce4ec,stroke:#c62828,stroke-width:2px
     classDef memory fill:#f3e5f5,stroke:#6a1b9a,stroke-width:2px
-    classDef unwired fill:#eeeeee,stroke:#616161,stroke-width:2px,stroke-dasharray: 5 5
+    classDef unwired fill:#eeeeee,stroke:#616161,stroke-width:2px,stroke-dasharray:5,5
 
+    %% FIXED: Updated class bindings with the safe IDs
     class EngStart entry
-    class EngCtrl,EngSession,Loop,Step1,Step2,Step3,Step4,Step5,Step6 engine
+    class EngCtrl,EngSession,IterLoop,Step1,Step2,Step3,Step4,Step5,Step6 engine
     class Decision,RetryCheck,MaxRetries,MaxIter,Fail,Review decision
     class Complete memory

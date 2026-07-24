@@ -80,6 +80,7 @@ async def lifespan(app: FastAPI):
         try:
             builder = RepositoryIndexBuilder(
                 exclude_tests=settings.repository_exclude_tests,
+                exclude_globs=settings.repository_exclude_globs,
             )
             index = builder.build(repo_path)
             elapsed_ms = (time.perf_counter() - start_time) * 1000
@@ -99,13 +100,14 @@ async def lifespan(app: FastAPI):
                     logger.info(
                         "repository_index path=%s files=%d modules=%d "
                         "symbols=%d relationships=%d excluded_tests=%d "
-                        "duration_ms=%.1f",
+                        "excluded_globs=%d duration_ms=%.1f",
                         repo_path,
                         indexed_files,
                         indexed_modules,
                         indexed_symbols,
                         indexed_relationships,
                         builder.excluded_test_count,
+                        builder.excluded_glob_count,
                         indexing_duration_ms,
                     )
                 else:

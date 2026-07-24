@@ -37,6 +37,8 @@ class RepositoryIndexBuilder:
             registered when not specified.
         _exclude_tests: When ``True``, test files are excluded from
             the index.
+        _exclude_globs: List of glob patterns for files to exclude.
+            Matches are applied to paths relative to the index root.
     """
 
     def __init__(
@@ -44,6 +46,7 @@ class RepositoryIndexBuilder:
         extractor: SymbolExtractor | None = None,
         registry: RelationshipRegistry | None = None,
         exclude_tests: bool = False,
+        exclude_globs: str = "",
     ) -> None:
         """Initialise the builder.
 
@@ -54,10 +57,16 @@ class RepositoryIndexBuilder:
                 registry with ``CallExtractor`` registered when ``None``.
             exclude_tests: When ``True``, test files are excluded from
                 the index.
+            exclude_globs: Comma-separated glob patterns for files to
+                exclude (matched against paths relative to the index root).
         """
         self._extractor = extractor or PythonAstExtractor()
         self._exclude_tests = exclude_tests
+        self._exclude_globs = [
+            g.strip() for g in exclude_globs.split(",") if g.strip()
+        ] if exclude_globs else []
         self._excluded_test_count: int = 0
+        self._excluded_glob_count: int = 0
         if registry is None:
             # Lazy import to avoid circular imports at module load time.
             from packages.repository.relationships.call_extractor import (
@@ -86,10 +95,15 @@ class RepositoryIndexBuilder:
             FileNotFoundError: If ``path`` does not exist.
             NotADirectoryError: If ``path`` is not a directory.
         """
-        graph = self._extractor.extract(path, exclude_tests=self._exclude_tests)
+        graph = self._extractor.extract(
+            path,
+            exclude_tests=self._exclude_tests,
+            exclude_globs=self._exclude_globs,
+        )
 
-        # Propagate the excluded file count from the extractor.
+        # Propagate the excluded file counts from the extractor.
         self._excluded_test_count = self._extractor.excluded_test_count
+        self._excluded_glob_count = self._extractor.excluded_glob_count
 
         modules: dict[str, Module] = {}
         symbols: list[Symbol] = []
@@ -131,6 +145,11 @@ class RepositoryIndexBuilder:
     def excluded_test_count(self) -> int:
         """Number of test files skipped during indexing."""
         return self._excluded_test_count
+
+    @property
+    def excluded_glob_count(self) -> int:
+        """Number of files skipped due to ``exclude_globs`` patterns during indexing."""
+        return self._excluded_glob_count
 
     @staticmethod
     def _compute_statistics(

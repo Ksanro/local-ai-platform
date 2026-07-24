@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     repository_context_enabled: bool = True
     repository_path: str = "."
     repository_exclude_tests: bool = True
+    repository_exclude_globs: str = "scripts/**"  # comma-separated glob list; empty disables
     models_config: str = ""  # JSON array of model definitions; empty = single-provider fallback
 
     model_config = {"env_prefix": "APP_"}

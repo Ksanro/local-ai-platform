@@ -90,7 +90,11 @@ __all__ = [
 ]
 
 
-def build_index(path: Path, exclude_tests: bool = False) -> StructIndex:
+def build_index(
+    path: Path,
+    exclude_tests: bool = False,
+    exclude_globs: str = "",
+) -> StructIndex:
     """Build a structural :class:`StructIndex` from the given path.
 
     Delegates symbol extraction to the existing :class:`PythonAstExtractor`
@@ -101,6 +105,8 @@ def build_index(path: Path, exclude_tests: bool = False) -> StructIndex:
         path: Path to a Python source file or directory.
         exclude_tests: When ``True``, test files are excluded from
             the index.
+        exclude_globs: Comma-separated glob patterns for files to
+            exclude (matched against paths relative to the index root).
 
     Returns:
         A :class:`StructIndex` with complete structural analysis.
@@ -109,4 +115,7 @@ def build_index(path: Path, exclude_tests: bool = False) -> StructIndex:
         FileNotFoundError: If ``path`` does not exist.
         NotADirectoryError: If ``path`` is not a directory.
     """
-    return RepositoryIndexBuilder(exclude_tests=exclude_tests).build(path)
+    return RepositoryIndexBuilder(
+        exclude_tests=exclude_tests,
+        exclude_globs=exclude_globs,
+    ).build(path)
