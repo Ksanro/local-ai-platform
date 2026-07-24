@@ -18,14 +18,41 @@ repository access.
 from __future__ import annotations
 
 import hashlib
-import json
 from collections import OrderedDict
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from packages.context.models import ContextCandidate
 
 _SENTINEL_KEY = "__new__"
 
 
-def conversation_key(messages: list[dict]) -> str:
-    """Stable key for a conversation, keyed on user messages only.
+def _hash_user_turns(users: list[dict[str, str]]) -> str:
+    """Hash a list of user messages by position and content.
+
+    The index is folded into the hash so that two identical consecutive
+    questions produce different keys — otherwise repeating a question would
+    collide with its own earlier turn in the cache.
+
+    Args:
+        users: User-role messages, in order.
+
+    Returns:
+        A hex SHA-256 digest, or the ``__new__`` sentinel for an empty list.
+    """
+    if not users:
+        return _SENTINEL_KEY
+
+    h = hashlib.sha256()
+    for i, m in enumerate(users):
+        h.update(f"{i}\x00".encode())
+        h.update(m.get("content", "").encode("utf-8"))
+        h.update(b"\x00")
+    return h.hexdigest()
+
+
+def conversation_key(messages: list[dict[str, str]]) -> str:
+    """Stable lookup key for a conversation, keyed on user messages only.
 
     Hashes the sequence of **user** turns excluding the current (last)
     one, so the value stored on turn N is found by the lookup on turn N+1.
@@ -41,64 +68,25 @@ def conversation_key(messages: list[dict]) -> str:
         user turns exist.
     """
     users = [m for m in messages if m.get("role") == "user"]
-    prefix = users[:-1]  # everything the model has already been given
-
-    if not prefix:
-        return _SENTINEL_KEY
-
-    h = hashlib.sha256()
-    for m in prefix:
-        h.update(b"\x00")
-        h.update(m.get("content", "").encode("utf-8"))
-    return h.hexdigest()
+    return _hash_user_turns(users[:-1])
 
 
-def _store_key(messages: list[dict]) -> str:
-    """Key for storing the *full* symbol set for this turn.
+def store_key(messages: list[dict[str, str]]) -> str:
+    """Key under which to store this turn's full symbol set.
 
-    Hashes **all** user messages so that turn N stores under a key
-    that turn N+1's ``conversation_key`` lookup will compute.
+    Hashes **all** user messages including the current one.  The result
+    equals what the next turn's :func:`conversation_key` computes (its
+    prefix will include this turn's user message), so turn N's store is
+    found by turn N+1's lookup.
 
     Args:
         messages: The full message list from the request.
 
     Returns:
-        A lowercase hex SHA-256 digest.
+        A lowercase hex SHA-256 digest, or ``__new__`` when no user turns.
     """
     users = [m for m in messages if m.get("role") == "user"]
-    if not users:
-        return _SENTINEL_KEY
-
-    h = hashlib.sha256()
-    for m in users:
-        h.update(b"\x00")
-        h.update(m.get("content", "").encode("utf-8"))
-    return h.hexdigest()
-
-
-def _compute_store_key(messages: list[dict]) -> str:
-    """Key under which to store the full symbol set for *this* turn.
-
-    Hashes **all** user messages (including the current one) so that
-    turn N stores under a key that turn N+1's ``conversation_key``
-    lookup will compute.  This is the bridge between turn N's store
-    and turn N+1's lookup.
-
-    Args:
-        messages: The full message list from the request.
-
-    Returns:
-        A lowercase hex SHA-256 digest.
-    """
-    users = [m for m in messages if m.get("role") == "user"]
-    if not users:
-        return _SENTINEL_KEY
-
-    h = hashlib.sha256()
-    for m in users:
-        h.update(b"\x00")
-        h.update(m.get("content", "").encode("utf-8"))
-    return h.hexdigest()
+    return _hash_user_turns(users)
 
 
 class SentSymbolTracker:
@@ -168,9 +156,9 @@ class SentSymbolTracker:
 
 
 def filter_candidates(
-    candidates: list,
+    candidates: list["ContextCandidate"],
     already_sent: set[str],
-) -> list:
+) -> list["ContextCandidate"]:
     """Return candidates minus already-sent supporting symbols.
 
     The primary symbol (first in the list) is always preserved even if it
@@ -192,7 +180,7 @@ def filter_candidates(
 
     # Always keep the primary (first candidate).
     primary = candidates[0]
-    filtered: list = [primary]
+    filtered: list["ContextCandidate"] = [primary]
     seen: set[str] = {primary.qualified_name}
 
     for c in candidates[1:]:
@@ -207,7 +195,7 @@ def filter_candidates(
 
 
 def collect_all_symbols(
-    candidates: list,
+    candidates: list["ContextCandidate"],
 ) -> set[str]:
     """Return the set of all qualified names in *candidates*.
 

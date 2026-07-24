@@ -16,6 +16,7 @@ from packages.context.delta import (
     collect_all_symbols,
     conversation_key,
     filter_candidates,
+    store_key,
 )
 from packages.context.models import ContextCandidate
 
@@ -69,14 +70,18 @@ class TestConversationKey:
         assert k1 == k2
 
     def test_differs_different_user_query(self) -> None:
-        """Different user queries produce different keys."""
+        """Different prefixes produce different keys.
+
+        The differing content must be in the prefix, i.e. not the last user
+        turn, since ``conversation_key`` excludes the current turn.
+        """
         msgs_a = [
-            {"role": "user", "content": "first"},
             {"role": "user", "content": "query a"},
+            {"role": "user", "content": "now"},
         ]
         msgs_b = [
-            {"role": "user", "content": "first"},
             {"role": "user", "content": "query b"},
+            {"role": "user", "content": "now"},
         ]
         assert conversation_key(msgs_a) != conversation_key(msgs_b)
 
@@ -94,49 +99,45 @@ class TestConversationKey:
         ]
         assert conversation_key(msgs_a) == conversation_key(msgs_b)
 
-    def test_user_role_matters(self) -> None:
-        """Swapping user/assistant roles changes the key."""
-        msgs = [
-            {"role": "user", "content": "a"},
-            {"role": "assistant", "content": "b"},
-        ]
-        msgs_swapped = [
-            {"role": "assistant", "content": "a"},
-            {"role": "user", "content": "b"},
-        ]
-        assert conversation_key(msgs) != conversation_key(msgs_swapped)
+    def test_identical_consecutive_questions_differ(self) -> None:
+        """Repeating the same question does not collide with its own turn.
 
-    def test_multi_turn_key_match(self) -> None:
-        """Turn 1 store key matches Turn 2 lookup key (the fix)."""
-        # Turn 1: first user message only → sentinel
-        turn1_key = conversation_key([{"role": "user", "content": "what is App"}])
-        assert turn1_key == "__new__"
+        Position is folded into the hash, so a prefix of ``[same]`` differs
+        from a prefix of ``[same, same]`` even though the content repeats.
+        """
+        one = [
+            {"role": "user", "content": "same"},
+            {"role": "user", "content": "trailing"},
+        ]
+        two = [
+            {"role": "user", "content": "same"},
+            {"role": "user", "content": "same"},
+            {"role": "user", "content": "trailing"},
+        ]
+        assert conversation_key(one) != conversation_key(two)
 
-        # Turn 2: same user message is the prefix → should match turn 1's
-        # store sentinel (both are "__new__").
-        turn2_key = conversation_key([
+    def test_store_key_matches_next_lookup(self) -> None:
+        """Turn N's store key equals turn N+1's lookup key (the mechanism)."""
+        turn_n = [
+            {"role": "user", "content": "what is App"},
+        ]
+        turn_n1 = [
             {"role": "user", "content": "what is App"},
             {"role": "assistant", "content": "App is a class"},
-            {"role": "user", "content": "what is App"},
-        ])
-        # First user is the prefix; no prior user → sentinel
-        assert turn2_key == "__new__"
-
-        # Turn 3: "what is App" is now in the prefix → real hash
-        turn3_key = conversation_key([
-            {"role": "user", "content": "what is App"},
-            {"role": "assistant", "content": "App is a class"},
-            {"role": "user", "content": "what is App"},
-            {"role": "assistant", "content": "another answer"},
             {"role": "user", "content": "how does it work?"},
-        ])
-        assert turn3_key != "__new__"
-        # And it should match what turn 2 would compute as its store key:
-        assert turn3_key == conversation_key([
-            {"role": "user", "content": "what is App"},
-            {"role": "assistant", "content": "App is a class"},
-            {"role": "user", "content": "what is App"},
-        ])
+        ]
+        # What turn N stores under must be what turn N+1 looks up under.
+        assert store_key(turn_n) == conversation_key(turn_n1)
+
+    def test_store_key_differs_per_turn(self) -> None:
+        """Each turn stores under a distinct key, even with repeated content."""
+        t1 = [{"role": "user", "content": "same"}]
+        t2 = [
+            {"role": "user", "content": "same"},
+            {"role": "assistant", "content": "x"},
+            {"role": "user", "content": "same"},
+        ]
+        assert store_key(t1) != store_key(t2)
 
 
 # ------------------------------------------------------------------
@@ -749,10 +750,11 @@ class TestStageIntegration:
         handler.setLevel(logging.INFO)
         logger = logging.getLogger(logger_name)
         old_handlers = logger.handlers[:]
+        old_level = logger.level
         logger.addHandler(handler)
+        logger.setLevel(logging.INFO)
         try:
             yield handler.records
         finally:
             logger.handlers = old_handlers
-
-
+            logger.setLevel(old_level)
