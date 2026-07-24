@@ -163,7 +163,13 @@ async def lifespan(app: FastAPI):
         # Planning stage runs before repository context.
         engine.register(PlanningStage())
         # Repository context stage runs before provider execution.
-        engine.register(RepositoryContextStage(index=typed_index))
+        engine.register(
+            RepositoryContextStage(
+                index=typed_index,
+                context_delta_injection=settings.context_delta_injection,
+                context_delta_cache_size=settings.context_delta_cache_size,
+            )
+        )
         # ProviderStage is routing-agnostic — reads from context.resolved_model.
         engine.register(ProviderStage())
         app.state.pipeline = engine

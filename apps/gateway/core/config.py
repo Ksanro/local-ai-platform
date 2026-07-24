@@ -26,6 +26,8 @@ class Settings(BaseSettings):
     repository_exclude_tests: bool = True
     repository_exclude_globs: str = "scripts/**"  # comma-separated glob list; empty disables
     models_config: str = ""  # JSON array of model definitions; empty = single-provider fallback
+    context_delta_injection: bool = True  # inject only symbols not already sent
+    context_delta_cache_size: int = 256  # max conversation keys in LRU cache
 
     model_config = {"env_prefix": "APP_"}
 

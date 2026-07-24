@@ -36,6 +36,34 @@ must not
 Serializes only into ``ProviderRequest`` -- never raw JSON or HTTP payloads.
 
 It orchestrates existing Context components only.
+
+Delta context injection
+-----------------------
+
+When ``context_delta_injection`` is enabled (the default), the stage tracks
+which symbols have already been sent in a multi-turn conversation.  On each
+turn it:
+
+1. Computes a SHA-256 key from **user messages only** (the prefix, excluding
+   the new user turn).  Assistant replies are invisible to the key.
+2. Looks up already-sent symbols from an LRU cache.
+3. Filters out already-sent supporting symbols while always keeping the
+   primary symbol.
+4. Stores the union of already-sent + new symbols under the **same key** so
+   the next turn can find it.
+
+This eliminates redundant re-injection of the same symbols across turns.
+When disabled the stage behaves exactly as before.
+
+Public API
+----------
+
+.. code-block:: python
+
+    from packages.pipeline.stages.repository_context import RepositoryContextStage
+
+    stage = RepositoryContextStage(index=index)
+    result = await stage.execute(context)
 """
 
 from __future__ import annotations
@@ -46,6 +74,12 @@ import time
 from packages.context.builder import ContextBuilder
 from packages.context.composer import ContextComposer
 from packages.context.context_package import ContextPackage
+from packages.context.delta import (
+    SentSymbolTracker,
+    collect_all_symbols,
+    conversation_key,
+    filter_candidates,
+)
 from packages.context.models import ContextQuery
 from packages.pipeline.base import PipelineStage
 from packages.pipeline.context import PipelineContext
@@ -64,21 +98,38 @@ class RepositoryContextStage(PipelineStage):
     Orchestrates the full context-building pipeline and attaches
     the resulting ContextPackage to the PipelineContext.
 
+    Delta injection (enabled by default): tracks symbols already sent in
+    a multi-turn conversation and suppresses redundant re-injection, while
+    always keeping the primary symbol.
+
     Attributes:
         _index: Read-only repository index for symbol enumeration.
             May be ``None`` if repository scanning is not configured;
             the stage handles this gracefully.
+        _delta_enabled: Whether delta context injection is active.
+        _tracker: LRU cache mapping conversation keys to sent symbols.
     """
 
-    def __init__(self, index: RepositoryIndex | None = None) -> None:
+    def __init__(
+        self,
+        index: RepositoryIndex | None = None,
+        context_delta_injection: bool = True,
+        context_delta_cache_size: int = 256,
+    ) -> None:
         """Initialize with an optional repository index.
 
         Args:
             index: A ``RepositoryIndex`` providing access to
                 repository symbols, or ``None`` to disable context
                 assembly.
+            context_delta_injection: When ``True`` (default), only symbols
+                not already sent in this conversation are injected.
+            context_delta_cache_size: Maximum number of conversation keys
+                in the LRU cache.
         """
         self._index = index
+        self._delta_enabled = context_delta_injection
+        self._tracker = SentSymbolTracker(maxsize=context_delta_cache_size)
 
     @property
     def name(self) -> str:
@@ -119,6 +170,9 @@ class RepositoryContextStage(PipelineStage):
         2. Rank candidates against the user query.
         3. Estimate token budget.
         4. Compose the final ContextPackage.
+
+        When delta injection is enabled, step 3 is followed by filtering
+        out symbols already sent in the current conversation.
 
         Stores the ContextPackage in ``context.context_package``.
 
@@ -201,6 +255,62 @@ class RepositoryContextStage(PipelineStage):
                     data=None,
                 )
 
+            # ------------------------------------------------------------------
+            # Delta context injection
+            # ------------------------------------------------------------------
+            symbols_new = len(candidates)
+            symbols_suppressed = 0
+
+            if self._delta_enabled and candidates:
+                # Retrieve the list of messages for key computation.
+                messages = self._get_messages(context)
+
+                # Conversation key = user-message prefix (excludes assistant turns).
+                conv_key = conversation_key(messages)
+
+                # Look up already-sent symbols (empty set on cache miss).
+                already_sent = self._tracker.get(conv_key)
+
+                # Filter out already-sent supporting symbols.
+                filtered = filter_candidates(candidates, already_sent)
+                symbols_new = len(filtered)
+                symbols_suppressed = len(candidates) - symbols_new
+
+                # Store the union under the same key so the next turn can find it.
+                new_symbols = collect_all_symbols(filtered)
+                self._tracker.store(conv_key, already_sent | new_symbols)
+
+                # Replace candidates in-place so the composer sees the filter.
+                # ContextResult is frozen, so mutate the list directly.
+                if filtered is not candidates:
+                    candidates = filtered
+                    context_result.candidates.clear()
+                    context_result.candidates.extend(filtered)
+
+                # If only the primary remains (already sent), treat as
+                # "no new symbols" — do not re-inject.
+                if symbols_new == 1 and symbols_suppressed > 0:
+                    elapsed_ms = (time.perf_counter() - start_time) * 1000
+                    logger.info(
+                        "repository_context request_id=%s context_enabled=%s "
+                        "context_status=no_new_symbols symbols_new=%d "
+                        "symbols_suppressed=%d conversation_key=%s "
+                        "duration_ms=%.1f",
+                        request_id,
+                        context_enabled,
+                        symbols_new,
+                        symbols_suppressed,
+                        conv_key[:8],
+                        elapsed_ms,
+                    )
+                    context.context_package = None
+
+                    return PipelineStageResult(
+                        stage_name=self.name,
+                        success=True,
+                        data=None,
+                    )
+
             # Compose the final package.
             composer = ContextComposer()
             package = composer.compose(context_result)
@@ -217,21 +327,49 @@ class RepositoryContextStage(PipelineStage):
 
             elapsed_ms = (time.perf_counter() - start_time) * 1000
 
-            symbols_selected = len(package.supporting_symbols)
             modules_selected = len(package.related_modules)
             estimated_tokens = package.estimated_tokens
 
-            logger.info(
-                "repository_context request_id=%s context_enabled=%s "
-                "context_status=ok symbols_selected=%d modules_selected=%d "
-                "estimated_tokens=%d duration_ms=%.1f",
-                request_id,
-                context_enabled,
-                symbols_selected,
-                modules_selected,
-                estimated_tokens,
-                elapsed_ms,
-            )
+            # Determine a concise status label.
+            if symbols_new == 0 and symbols_suppressed > 0:
+                context_status = "no_new_symbols"
+            elif self._delta_enabled:
+                context_status = "ok"
+            else:
+                context_status = "ok"
+
+            # Build the log line with delta info when enabled.
+            if self._delta_enabled:
+                conv_key_short = conv_key[:8] if candidates else ""
+                logger.info(
+                    "repository_context request_id=%s context_enabled=%s "
+                    "context_status=%s symbols_selected=%d symbols_new=%d "
+                    "symbols_suppressed=%d conversation_key=%s "
+                    "modules_selected=%d estimated_tokens=%d duration_ms=%.1f",
+                    request_id,
+                    context_enabled,
+                    context_status,
+                    len(package.supporting_symbols),
+                    symbols_new,
+                    symbols_suppressed,
+                    conv_key_short,
+                    modules_selected,
+                    estimated_tokens,
+                    elapsed_ms,
+                )
+            else:
+                logger.info(
+                    "repository_context request_id=%s context_enabled=%s "
+                    "context_status=%s symbols_selected=%d "
+                    "modules_selected=%d estimated_tokens=%d duration_ms=%.1f",
+                    request_id,
+                    context_enabled,
+                    context_status,
+                    len(package.supporting_symbols),
+                    modules_selected,
+                    estimated_tokens,
+                    elapsed_ms,
+                )
 
             return PipelineStageResult(
                 stage_name=self.name,
@@ -324,6 +462,23 @@ class RepositoryContextStage(PipelineStage):
         return " ".join(user_contents).strip() if user_contents else ""
 
     @staticmethod
+    def _get_messages(context: PipelineContext) -> list[dict]:
+        """Return the messages list from the request, or [].
+
+        Args:
+            context: The pipeline context.
+
+        Returns:
+            The raw ``messages`` list from ``context.request``.
+        """
+        request = context.request
+        if isinstance(request, dict):
+            messages = request.get("messages", [])
+            if isinstance(messages, list):
+                return messages
+        return []
+
+    @staticmethod
     def _serialize(
         context: PipelineContext,
         context_package: ContextPackage,
@@ -364,3 +519,4 @@ class RepositoryContextStage(PipelineStage):
                 exc,
             )
             # Leave provider_request unset -- graceful degradation.
+
