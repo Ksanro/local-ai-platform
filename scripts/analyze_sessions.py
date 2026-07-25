@@ -82,8 +82,8 @@ def _percentile(values: list[float], pct: float) -> float:
     return round(d0 + d1, 1)
 
 
-def _mean(values: list[float]) -> float:
-    """Compute the mean of a list of floats.
+def _mean(values: list[float] | list[int]) -> float:
+    """Compute the mean of a list of numeric values.
 
     Args:
         values: The values to compute the mean for.
@@ -249,10 +249,11 @@ def analyze(records: list[dict[str, Any]]) -> None:
             continue
         for turn in turns:
             ctx = turn.get("context", {})
-            selected = ctx.get("symbols_selected", 0)
+            new = ctx.get("symbols_new", 0)
             suppressed = ctx.get("symbols_suppressed", 0)
-            if selected > 0:
-                suppression_ratios.append(suppressed / selected)
+            denominator = new + suppressed
+            if denominator > 0:
+                suppression_ratios.append(suppressed / denominator)
 
     print("-" * 40)
     print("DELTA INJECTION EFFECTIVENESS")
@@ -293,8 +294,8 @@ def analyze(records: list[dict[str, Any]]) -> None:
     )
     for i, r in enumerate(sorted_by_latency[:5], start=1):
         req_id = r.get("request_id", "unknown")[:12]
-        latency = r.get("timing", {}).get("total_ms", 0)
-        tokens = r.get("usage", {}).get("prompt_tokens", 0)
+        latency = r.get("timing", {}).get("total_ms", 0) or 0
+        tokens = r.get("usage", {}).get("prompt_tokens") or 0
         preview = r.get("last_user_message", "")[:80]
         print(f"  {i:>1}. id={req_id}  latency={latency:.0f}ms  prompt_tokens={tokens}")
         print(f"     msg: {preview}")

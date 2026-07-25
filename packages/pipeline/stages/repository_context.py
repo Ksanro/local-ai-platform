@@ -184,7 +184,10 @@ class RepositoryContextStage(PipelineStage):
             return PipelineStageResult(
                 stage_name=self.name,
                 success=True,
-                data={"enabled": False},
+                data={
+                    "enabled": False, "symbols_selected": 0,
+                    "symbols_new": 0, "symbols_suppressed": 0
+                },
             )
         return None
 
@@ -279,7 +282,7 @@ class RepositoryContextStage(PipelineStage):
                 return PipelineStageResult(
                     stage_name=self.name,
                     success=True,
-                    data=None,
+                    data={"symbols_selected": 0, "symbols_new": 0, "symbols_suppressed": 0},
                 )
 
             # ------------------------------------------------------------------
@@ -332,10 +335,16 @@ class RepositoryContextStage(PipelineStage):
                     )
                     context.context_package = None
 
+                    # Total candidates before delta suppression (primary + remaining).
+                    symbols_selected = symbols_new + symbols_suppressed
                     return PipelineStageResult(
                         stage_name=self.name,
                         success=True,
-                        data=None,
+                        data={
+                            "symbols_selected": symbols_selected,
+                            "symbols_new": symbols_new,
+                            "symbols_suppressed": symbols_suppressed,
+                        },
                     )
 
             # Compose the final package.
@@ -398,10 +407,19 @@ class RepositoryContextStage(PipelineStage):
                     elapsed_ms,
                 )
 
+            # Assemble counts for metadata.
+            symbols_selected = len(package.supporting_symbols) + (
+                1 if package.primary_symbol else 0
+            )
             return PipelineStageResult(
                 stage_name=self.name,
                 success=True,
-                data=package,
+                data={
+                    "package": package,
+                    "symbols_selected": symbols_selected,
+                    "symbols_new": symbols_new,
+                    "symbols_suppressed": symbols_suppressed,
+                },
             )
 
         except Exception as exc:

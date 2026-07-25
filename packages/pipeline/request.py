@@ -49,5 +49,7 @@ class PipelineRequest:
             "model": self.model,
             "stream": self.stream,
         }
+        if self.stream:
+            result["stream_options"] = {"include_usage": True}
         result.update(self.kwargs)
         return result

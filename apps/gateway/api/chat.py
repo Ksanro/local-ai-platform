@@ -130,26 +130,55 @@ def _surface_session_metadata(
     repo_result = stage_results.get("repository_context")
     if repo_result is not None and repo_result.success:
         pkg = repo_result.data
-        if pkg is not None:
-            scope["session_context_status"] = "assembled"
-            if hasattr(pkg, "supporting_symbols"):
-                scope["session_symbols_selected"] = len(pkg.supporting_symbols)
-            if hasattr(pkg, "new_symbols"):
-                scope["session_symbols_new"] = len(pkg.new_symbols)
-            if hasattr(pkg, "suppressed_symbols"):
-                scope["session_symbols_suppressed"] = len(pkg.suppressed_symbols)
-            if hasattr(pkg, "estimated_tokens"):
-                scope["session_estimated_tokens"] = pkg.estimated_tokens
-            if hasattr(pkg, "primary_symbol"):
-                scope["session_primary_symbol"] = pkg.primary_symbol
+
+        # All paths now return a metadata dict from the repository_context stage.
+        # For the assembled path the dict contains "package" + counts.
+        # For no_new_symbols/empty paths the dict contains only counts.
+        # For disabled path the dict contains "enabled": False + zero counts.
+        if isinstance(pkg, dict):
+            if "enabled" in pkg and pkg.get("enabled") is False:
+                # Disabled path.
+                scope["session_context_status"] = "disabled"
+                scope["session_symbols_selected"] = 0
+                scope["session_symbols_new"] = 0
+                scope["session_symbols_suppressed"] = 0
+                scope["session_estimated_tokens"] = 0
+                scope["session_primary_symbol"] = ""
+            elif "package" in pkg:
+                # Assembled path with counts.
+                scope["session_context_status"] = "assembled"
+                package = pkg["package"]
+                scope["session_symbols_selected"] = pkg.get("symbols_selected", 0)
+                scope["session_symbols_new"] = pkg.get("symbols_new", 0)
+                scope["session_symbols_suppressed"] = pkg.get("symbols_suppressed", 0)
+                est = getattr(package, "estimated_tokens", 0) if package else 0
+                scope["session_estimated_tokens"] = est
+                prim = getattr(package, "primary_symbol", "") if package else ""
+                scope["session_primary_symbol"] = prim
+            else:
+                # Empty or no_new_symbols path.
+                symbols_new = pkg.get("symbols_new", 0)
+                symbols_suppressed = pkg.get("symbols_suppressed", 0)
+                scope["session_context_status"] = "no_new_symbols" if (
+                    symbols_new == 0 and symbols_suppressed > 0
+                ) else "empty"
+                scope["session_symbols_selected"] = pkg.get("symbols_selected", 0)
+                scope["session_symbols_new"] = symbols_new
+                scope["session_symbols_suppressed"] = symbols_suppressed
+                scope["session_estimated_tokens"] = 0
+                scope["session_primary_symbol"] = ""
         else:
-            scope["session_context_status"] = "no_new_symbols"
+            scope["session_context_status"] = "disabled"
             scope["session_symbols_selected"] = 0
             scope["session_symbols_new"] = 0
             scope["session_symbols_suppressed"] = 0
             scope["session_estimated_tokens"] = 0
     elif repo_result is not None:
         scope["session_context_status"] = "degraded"
+        scope["session_symbols_selected"] = 0
+        scope["session_symbols_new"] = 0
+        scope["session_symbols_suppressed"] = 0
+        scope["session_estimated_tokens"] = 0
     else:
         scope["session_context_status"] = "disabled"
         scope["session_symbols_selected"] = 0
@@ -160,7 +189,10 @@ def _surface_session_metadata(
     # --- Backend model from provider stage ---
     provider_result = stage_results.get("provider")
     if provider_result is not None and provider_result.data is not None:
-        backend_model = provider_result.data.get("backend_model") if isinstance(provider_result.data, dict) else None
+        data = provider_result.data
+        backend_model = (
+            data.get("backend_model") if isinstance(data, dict) else None
+        )
         if backend_model:
             scope["session_backend_model"] = backend_model
 

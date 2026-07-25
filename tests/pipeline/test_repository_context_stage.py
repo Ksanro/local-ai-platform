@@ -148,8 +148,10 @@ class TestContextAttached:
         context = _make_context()
         result = await stage.execute(context)
 
-        assert result.data is context.context_package
-        assert isinstance(result.data, ContextPackage)
+        # The stage result now stores the package in a metadata dict.
+        assert isinstance(result.data, dict)
+        assert result.data.get("package") is context.context_package
+        assert isinstance(result.data.get("package"), ContextPackage)
 
 
 # ------------------------------------------------------------------
@@ -172,7 +174,11 @@ class TestDisabledFeature:
 
         assert result is not None
         assert result.success is True
-        assert result.data == {"enabled": False}
+        assert isinstance(result.data, dict)
+        assert result.data.get("enabled") is False
+        assert result.data.get("symbols_selected") == 0
+        assert result.data.get("symbols_new") == 0
+        assert result.data.get("symbols_suppressed") == 0
         assert context.context_package is None
 
     @pytest.mark.asyncio
