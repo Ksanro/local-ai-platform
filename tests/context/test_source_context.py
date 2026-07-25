@@ -580,7 +580,7 @@ class TestSerializerSourceAware:
         # Should have repository context.
         repo_context = None
         for msg in result.messages:
-            if msg["role"] == "user":
+            if msg["role"] == "system":
                 repo_context = msg["content"]
                 break
 
@@ -612,7 +612,7 @@ class TestSerializerSourceAware:
 
         repo_context = None
         for msg in result.messages:
-            if msg["role"] == "user":
+            if msg["role"] == "system":
                 repo_context = msg["content"]
                 break
 
@@ -644,7 +644,7 @@ class TestSerializerSourceAware:
 
         repo_context = None
         for msg in result.messages:
-            if msg["role"] == "user":
+            if msg["role"] == "system":
                 repo_context = msg["content"]
                 break
 
@@ -668,7 +668,7 @@ class TestSerializerSourceAware:
 
         repo_context = None
         for msg in result.messages:
-            if msg["role"] == "user":
+            if msg["role"] == "system":
                 repo_context = msg["content"]
                 break
 
@@ -943,5 +943,3 @@ class TestModuleDescription:
         assert desc.purpose == "Data models and schemas"
         assert desc.relationship_summary == "Contains the primary symbol"
         assert desc.symbol_count == 5
-
-

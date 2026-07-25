@@ -482,7 +482,7 @@ class TestSerializationOrder:
         # Find the repository context message (user role with context).
         repo_context = None
         for msg in provider_request.messages:
-            if msg["role"] == "user" and "Primary symbol:" in msg["content"]:
+            if msg["role"] == "system" and "Primary symbol:" in msg["content"]:
                 repo_context = msg["content"]
                 break
 
@@ -541,7 +541,7 @@ class TestSerializationOrder:
 
         repo_context = None
         for msg in provider_request.messages:
-            if msg["role"] == "user" and "Relationship summary:" in msg["content"]:
+            if msg["role"] == "system" and "Relationship summary:" in msg["content"]:
                 repo_context = msg["content"]
                 break
 

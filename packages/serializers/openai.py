@@ -164,26 +164,39 @@ class OpenAISerializer(ProviderSerializer):
         # Extract conversation messages (user + assistant only).
         conversation_messages = self._extract_conversation_messages(messages)
 
-        # Assemble: client systems + repo context system + conversation messages.
+        # Assemble a SINGLE system message. vLLM's Qwen chat template
+        # produces an empty generation when given two system messages, so
+        # the client's system prompt and the repository context must be
+        # combined into one, client instructions first.
         all_messages: list[dict[str, Any]] = []
 
-        # 1. Client system messages come first (preserve order).
-        all_messages.extend(client_systems)
-
-        # 2. Repository context system message (fold platform message into it).
+        # Build the repository-context text (may fold in the platform message).
         repo_context = self._build_repository_context(context_package)
+        repo_context_text = ""
         if repo_context is not None:
-            # Ensure repo context is treated as a system message.
-            repo_context["role"] = "system"
-            # Fold platform message into repo context if needed.
             platform_msg = self._build_system_message(context_package)
             if platform_msg and platform_msg["content"]:
-                repo_context["content"] = (
+                repo_context_text = (
                     platform_msg["content"] + "\n\n" + repo_context["content"]
                 )
-            all_messages.append(repo_context)
+            else:
+                repo_context_text = repo_context["content"]
 
-        # 3. Conversation messages (user + assistant) last.
+        # Concatenate all client system messages (preserve order), then the
+        # repo context, into one system message.
+        client_system_text = "\n\n".join(
+            m["content"]
+            for m in client_systems
+            if isinstance(m.get("content"), str) and m["content"]
+        )
+
+        parts = [t for t in (client_system_text, repo_context_text) if t]
+        if parts:
+            all_messages.append(
+                {"role": "system", "content": "\n\n".join(parts)}
+            )
+
+        # Conversation messages (user + assistant) last.
         all_messages.extend(conversation_messages)
 
         return ProviderRequest(

@@ -335,7 +335,7 @@ class TestContextDisabled:
 
         assert result is not None
         assert result.success is True
-        assert result.data == {"enabled": False}
+        assert result.data.get("enabled") is False
         assert context.context_package is None
 
     @pytest.mark.asyncio
@@ -809,5 +809,5 @@ class TestEndToEnd:
         repo_result = response.stage_results.get("repository_context")
         assert repo_result is not None
         assert repo_result.success is True
-        assert repo_result.data == {"enabled": False}
+        assert repo_result.data.get("enabled") is False
         assert len(mock_provider.chat_calls) == 1

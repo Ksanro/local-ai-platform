@@ -381,6 +381,38 @@ class TestOpenAIEdgeCases:
         assert "3 symbols" in repo_msg["content"]
 
 
+class TestSingleSystemMessageInvariant:
+    """vLLM/Qwen rejects multiple system messages — the serializer must emit at most one."""
+
+    def test_at_most_one_system_message_with_context(self) -> None:
+        """Client system + repo context must collapse to a single system message."""
+        serializer = OpenAISerializer()
+        context_package = ContextPackage(
+            primary_symbol="auth.AuthenticationMiddleware",
+            related_modules=["auth.py"],
+        )
+        messages = [
+            {"role": "system", "content": "client A"},
+            {"role": "system", "content": "client B"},
+            {"role": "user", "content": "hi"},
+        ]
+        result = serializer.serialize(context_package, messages)
+        system_count = sum(1 for m in result.messages if m["role"] == "system")
+        assert system_count <= 1, f"expected <=1 system message, got {system_count}"
+
+    def test_at_most_one_system_message_without_context(self) -> None:
+        """Even with multiple client system messages and no context, emit one."""
+        serializer = OpenAISerializer()
+        messages = [
+            {"role": "system", "content": "client A"},
+            {"role": "system", "content": "client B"},
+            {"role": "user", "content": "hi"},
+        ]
+        result = serializer.serialize(None, messages)
+        system_count = sum(1 for m in result.messages if m["role"] == "system")
+        assert system_count <= 1
+
+
 class TestClientSystemMessagePreservation:
     """Tests for client system message preservation (Fix 1)."""
 
@@ -420,15 +452,18 @@ class TestClientSystemMessagePreservation:
 
         result = serializer.serialize(None, messages)
 
-        # When context_package=None, no repo context is added.
-        # Output: [client_system1, client_system2, user_message] = 3 messages
-        assert len(result.messages) == 3
+        # System messages are merged into ONE (vLLM/Qwen rejects multiple),
+        # preserving order and content within it.
+        assert len(result.messages) == 2
         assert result.messages[0]["role"] == "system"
-        assert result.messages[0]["content"] == client_systems[0]["content"]
-        assert result.messages[1]["role"] == "system"
-        assert result.messages[1]["content"] == client_systems[1]["content"]
-        assert result.messages[2]["role"] == "user"
-        assert result.messages[2]["content"] == "Hello"
+        assert "Tool definitions here" in result.messages[0]["content"]
+        assert "Additional rules" in result.messages[0]["content"]
+        # Order preserved within the merged message.
+        assert result.messages[0]["content"].index("Tool definitions here") < (
+            result.messages[0]["content"].index("Additional rules")
+        )
+        assert result.messages[1]["role"] == "user"
+        assert result.messages[1]["content"] == "Hello"
 
     def test_no_client_system_message_benchmark_path(
         self, serializer: OpenAISerializer
@@ -479,14 +514,17 @@ class TestClientSystemMessagePreservation:
 
         result = serializer.serialize(context_package, messages)
 
-        # Order: client systems, repo context (system), user message
-        assert len(result.messages) == 3
+        # Client system + repo context are merged into ONE system message,
+        # client instructions first, then repo context.
+        assert len(result.messages) == 2
         assert result.messages[0]["role"] == "system"
-        assert result.messages[0]["content"] == client_system["content"]
-        assert result.messages[1]["role"] == "system"
-        assert "Primary symbol:" in result.messages[1]["content"]
-        assert result.messages[2]["role"] == "user"
-        assert result.messages[2]["content"] == "How does auth work?"
+        content = result.messages[0]["content"]
+        assert "Tool protocol: use XML." in content
+        assert "Primary symbol:" in content
+        # Client instructions must come before repo context.
+        assert content.index("Tool protocol") < content.index("Primary symbol:")
+        assert result.messages[1]["role"] == "user"
+        assert result.messages[1]["content"] == "How does auth work?"
 
     def test_platform_message_folded_into_repo_context(
         self, serializer: OpenAISerializer
