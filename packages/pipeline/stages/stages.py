@@ -77,6 +77,10 @@ class ProviderStage(PipelineStage):
             # not carry transport concerns).
             kwargs["stream"] = context.request.get("stream", False)
 
+            # Forward stream_options when streaming is enabled.
+            if kwargs["stream"]:
+                kwargs["stream_options"] = {"include_usage": True}
+
             # Override model with backend_model for the upstream call.
             kwargs["model"] = backend_model
 

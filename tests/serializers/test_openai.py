@@ -74,15 +74,16 @@ class TestOpenAISerializer:
 
         result = serializer.serialize(context_package, messages)
 
-        # Should have: system message + repo context + user message
-        assert len(result.messages) == 3
+        # Should have: repo context system message + user message
+        # (platform message is folded into repo context)
+        assert len(result.messages) == 2
         assert result.messages[0]["role"] == "system"
+        assert "You are a helpful coding assistant" in result.messages[0]["content"]
+        assert "Primary symbol:" in result.messages[0]["content"]
+        assert "auth.AuthenticationMiddleware" in result.messages[0]["content"]
+        assert "Related modules:" in result.messages[0]["content"]
         assert result.messages[1]["role"] == "user"
-        assert "Primary symbol:" in result.messages[1]["content"]
-        assert "auth.AuthenticationMiddleware" in result.messages[1]["content"]
-        assert "Related modules:" in result.messages[1]["content"]
-        assert result.messages[2]["role"] == "user"
-        assert result.messages[2]["content"] == "How does auth work?"
+        assert result.messages[1]["content"] == "How does auth work?"
 
     def test_serialize_empty_context_package(
         self, serializer: OpenAISerializer
@@ -93,11 +94,11 @@ class TestOpenAISerializer:
 
         result = serializer.serialize(context_package, messages)
 
-        # Should have: system message + user message (no repo context)
-        assert len(result.messages) == 2
-        assert result.messages[0]["role"] == "system"
-        assert result.messages[1]["role"] == "user"
-        assert result.messages[1]["content"] == "Hello"
+        # No repo context when context_package has no symbols
+        # Should have: user message only
+        assert len(result.messages) == 1
+        assert result.messages[0]["role"] == "user"
+        assert result.messages[0]["content"] == "Hello"
 
     def test_serialize_none_context_package(
         self, serializer: OpenAISerializer
@@ -220,7 +221,8 @@ class TestOpenAIWithSymbols:
 
         result = serializer.serialize(context_package, messages)
 
-        repo_msg = result.messages[1]
+        repo_msg = result.messages[0]
+        assert repo_msg["role"] == "system"
         assert "Primary symbol:" in repo_msg["content"]
         assert "auth.login" in repo_msg["content"]
         assert "auth.authenticate" in repo_msg["content"]
@@ -238,7 +240,7 @@ class TestOpenAIWithSymbols:
 
         result = serializer.serialize(context_package, messages)
 
-        repo_msg = result.messages[1]
+        repo_msg = result.messages[0]
         assert "Related modules:" in repo_msg["content"]
         assert "auth.py" in repo_msg["content"]
         assert "main.py" in repo_msg["content"]
@@ -258,7 +260,7 @@ class TestOpenAIWithSymbols:
 
         result = serializer.serialize(context_package, messages)
 
-        repo_msg = result.messages[1]
+        repo_msg = result.messages[0]
         assert "Related callers:" in repo_msg["content"]
         assert "main.create_app" in repo_msg["content"]
         assert "router.register" in repo_msg["content"]
@@ -277,7 +279,7 @@ class TestOpenAIWithSymbols:
 
         result = serializer.serialize(context_package, messages)
 
-        repo_msg = result.messages[1]
+        repo_msg = result.messages[0]
         assert "Related callees:" in repo_msg["content"]
         assert "auth.Token.create" in repo_msg["content"]
         assert "auth.JWT.verify" in repo_msg["content"]
@@ -299,22 +301,9 @@ class TestOpenAIEdgeCases:
 
         result = serializer.serialize(context_package, messages)
 
-        # Should have: system + user (no repo context)
-        # The user message at index 1 should be the original user message
-        assert result.messages[-1]["content"] == "Hello"
-
-    def test_only_system_message_no_context(
-        self, serializer: OpenAISerializer
-    ) -> None:
-        """Verify only system message when context is empty."""
-        context_package = ContextPackage()
-        messages = [{"role": "user", "content": "Hello"}]
-
-        result = serializer.serialize(context_package, messages)
-
-        # System message should be present (because context_package is not None)
-        assert result.messages[0]["role"] == "system"
-        assert result.messages[1]["role"] == "user"
+        # No repo context when context_package is empty
+        # The user message at index 0 should be the original user message
+        assert result.messages[0]["content"] == "Hello"
 
     def test_none_context_no_system_message(
         self, serializer: OpenAISerializer
@@ -384,10 +373,137 @@ class TestOpenAIEdgeCases:
 
         result = serializer.serialize(context_package, messages)
 
-        repo_msg = result.messages[1]
+        repo_msg = result.messages[0]
         assert "Relationship summary:" in repo_msg["content"]
         assert "1 callers" in repo_msg["content"]
         assert "1 callees" in repo_msg["content"]
         assert "2 modules" in repo_msg["content"]
         assert "3 symbols" in repo_msg["content"]
 
+
+class TestClientSystemMessagePreservation:
+    """Tests for client system message preservation (Fix 1)."""
+
+    @pytest.fixture
+    def serializer(self) -> OpenAISerializer:
+        return OpenAISerializer()
+
+    def test_client_system_message_preserved(
+        self, serializer: OpenAISerializer
+    ) -> None:
+        """Verify a client system message survives serialization verbatim."""
+        client_system = {
+            "role": "system",
+            "content": "You are a helpful assistant. Use tools as needed.",
+        }
+        messages = [client_system, {"role": "user", "content": "Hello"}]
+
+        result = serializer.serialize(None, messages)
+
+        # When context_package=None, no repo context is added.
+        # Output: [client_system, user_message] = 2 messages
+        assert len(result.messages) == 2
+        assert result.messages[0]["role"] == "system"
+        assert result.messages[0]["content"] == client_system["content"]
+        assert result.messages[1]["role"] == "user"
+        assert result.messages[1]["content"] == "Hello"
+
+    def test_multiple_client_system_messages(
+        self, serializer: OpenAISerializer
+    ) -> None:
+        """Verify multiple client system messages are preserved in order."""
+        client_systems = [
+            {"role": "system", "content": "Tool definitions here"},
+            {"role": "system", "content": "Additional rules"},
+        ]
+        messages = client_systems + [{"role": "user", "content": "Hello"}]
+
+        result = serializer.serialize(None, messages)
+
+        # When context_package=None, no repo context is added.
+        # Output: [client_system1, client_system2, user_message] = 3 messages
+        assert len(result.messages) == 3
+        assert result.messages[0]["role"] == "system"
+        assert result.messages[0]["content"] == client_systems[0]["content"]
+        assert result.messages[1]["role"] == "system"
+        assert result.messages[1]["content"] == client_systems[1]["content"]
+        assert result.messages[2]["role"] == "user"
+        assert result.messages[2]["content"] == "Hello"
+
+    def test_no_client_system_message_benchmark_path(
+        self, serializer: OpenAISerializer
+    ) -> None:
+        """Verify benchmark path (no client system) still works."""
+        messages = [{"role": "user", "content": "Hello"}]
+
+        result = serializer.serialize(None, messages)
+
+        # Should only have the user message
+        assert len(result.messages) == 1
+        assert result.messages[0]["role"] == "user"
+        assert result.messages[0]["content"] == "Hello"
+
+    def test_tool_format_preserved(
+        self, serializer: OpenAISerializer
+    ) -> None:
+        """Verify XML-like tool instructions pass through byte-for-byte."""
+        xml_tool_format = "<read_file><path>src/main.py</path></read_file>"
+        client_system = {
+            "role": "system",
+            "content": f"Use these tools:\n{xml_tool_format}\nAlways respond in XML.",
+        }
+        messages = [client_system, {"role": "user", "content": "Read the file"}]
+
+        result = serializer.serialize(None, messages)
+
+        # When context_package=None, no repo context is added.
+        # Output: [client_system, user_message] = 2 messages
+        assert len(result.messages) == 2
+        assert result.messages[0]["role"] == "system"
+        assert result.messages[0]["content"] == client_system["content"]
+        assert "<read_file>" in result.messages[0]["content"]
+        assert "</read_file>" in result.messages[0]["content"]
+        assert result.messages[1]["role"] == "user"
+        assert result.messages[1]["content"] == "Read the file"
+
+    def test_client_system_with_repo_context(
+        self, serializer: OpenAISerializer
+    ) -> None:
+        """Verify client systems come before repo context system message."""
+        context_package = ContextPackage(
+            primary_symbol="auth.AuthenticationMiddleware",
+            related_modules=["auth.py"],
+        )
+        client_system = {"role": "system", "content": "Tool protocol: use XML."}
+        messages = [client_system, {"role": "user", "content": "How does auth work?"}]
+
+        result = serializer.serialize(context_package, messages)
+
+        # Order: client systems, repo context (system), user message
+        assert len(result.messages) == 3
+        assert result.messages[0]["role"] == "system"
+        assert result.messages[0]["content"] == client_system["content"]
+        assert result.messages[1]["role"] == "system"
+        assert "Primary symbol:" in result.messages[1]["content"]
+        assert result.messages[2]["role"] == "user"
+        assert result.messages[2]["content"] == "How does auth work?"
+
+    def test_platform_message_folded_into_repo_context(
+        self, serializer: OpenAISerializer
+    ) -> None:
+        """Verify platform message is folded into repo context system message."""
+        context_package = ContextPackage(
+            primary_symbol="auth.AuthenticationMiddleware",
+            related_modules=["auth.py"],
+        )
+        messages = [{"role": "user", "content": "How does auth work?"}]
+
+        result = serializer.serialize(context_package, messages)
+
+        # Repo context should include platform message
+        assert len(result.messages) == 2
+        assert result.messages[0]["role"] == "system"
+        assert "You are a helpful coding assistant" in result.messages[0]["content"]
+        assert "Primary symbol:" in result.messages[0]["content"]
+        assert result.messages[1]["role"] == "user"
+        assert result.messages[1]["content"] == "How does auth work?"

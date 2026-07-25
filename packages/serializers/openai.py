@@ -17,13 +17,15 @@ ContextPackage + User Messages
 Message Ordering
 ----------------
 
-1. System message (platform system message).
-2. Primary Symbol section (from ContextPackage).
-3. Supporting Symbols section.
-4. Related Callers section.
-5. Related Callees section.
-6. Related Modules section.
-7. Original user messages (copied unchanged).
+1. Client system message(s) (preserved verbatim from input).
+2. Repository context system message (if ContextPackage has data).
+3. Primary Symbol section (from ContextPackage).
+4. Supporting Symbols section.
+5. Related Callers section.
+6. Related Callees section.
+7. Related Modules section.
+8. Original user messages (copied unchanged).
+9. Assistant messages (copied unchanged).
 
 Context Quality v2
 ------------------
@@ -53,9 +55,10 @@ MODULE DESCRIPTIONS:
 Serialization Rules
 -------------------
 
-- Exactly one platform system message.
-- Repository context included only when ContextPackage contains symbols.
-- User messages copied unchanged — preserve order, roles, content.
+- Client system messages are preserved in order, placed first.
+- Repository context becomes a system message (if ContextPackage has data).
+- Platform role message is folded into repository context.
+- User and assistant messages are copied unchanged.
 - The serializer never modifies user input.
 - Deterministic: identical input always produces identical output.
 
@@ -127,13 +130,15 @@ class OpenAISerializer(ProviderSerializer):
 
         Builds the message list following the ordering rules:
 
-        1. System message (platform system message).
-        2. Primary Symbol section (if ContextPackage has a primary symbol).
-        3. Supporting Symbols section (if ContextPackage has supporting symbols).
-        4. Related Callers section (if ContextPackage has callers).
-        5. Related Callees section (if ContextPackage has callees).
-        6. Related Modules section (if ContextPackage has modules).
-        7. Original user messages (copied unchanged).
+        1. Client system message(s) (preserved verbatim from input).
+        2. Repository context system message (if ContextPackage has data).
+        3. Primary Symbol section (if ContextPackage has a primary symbol).
+        4. Supporting Symbols section (if ContextPackage has supporting symbols).
+        5. Related Callers section (if ContextPackage has callers).
+        6. Related Callees section (if ContextPackage has callees).
+        7. Related Modules section (if ContextPackage has modules).
+        8. Original user messages (copied unchanged).
+        9. Assistant messages (copied unchanged).
 
         Args:
             context_package: The platform context package, or ``None``.
@@ -153,24 +158,33 @@ class OpenAISerializer(ProviderSerializer):
         # Validate message structure.
         self._validate_messages(messages)
 
-        # Build the message list.
-        system_message = self._build_system_message(context_package)
-        user_messages = self._extract_user_messages(messages)
+        # Extract client system messages (preserve verbatim).
+        client_systems = self._extract_client_system_messages(messages)
 
-        # Assemble: system + repository context + user messages.
+        # Extract conversation messages (user + assistant only).
+        conversation_messages = self._extract_conversation_messages(messages)
+
+        # Assemble: client systems + repo context system + conversation messages.
         all_messages: list[dict[str, Any]] = []
 
-        if system_message is not None:
-            all_messages.append(system_message)
+        # 1. Client system messages come first (preserve order).
+        all_messages.extend(client_systems)
 
-        # Repository context is included only when ContextPackage
-        # contains structured data.
+        # 2. Repository context system message (fold platform message into it).
         repo_context = self._build_repository_context(context_package)
         if repo_context is not None:
+            # Ensure repo context is treated as a system message.
+            repo_context["role"] = "system"
+            # Fold platform message into repo context if needed.
+            platform_msg = self._build_system_message(context_package)
+            if platform_msg and platform_msg["content"]:
+                repo_context["content"] = (
+                    platform_msg["content"] + "\n\n" + repo_context["content"]
+                )
             all_messages.append(repo_context)
 
-        # User messages are copied unchanged.
-        all_messages.extend(user_messages)
+        # 3. Conversation messages (user + assistant) last.
+        all_messages.extend(conversation_messages)
 
         return ProviderRequest(
             provider_type=ProviderType.openai,
@@ -215,9 +229,8 @@ class OpenAISerializer(ProviderSerializer):
     ) -> dict[str, str] | None:
         """Build the platform system message.
 
-        Creates exactly one system message that describes the platform's
-        role and capabilities. The system message is always present when
-        a ContextPackage is provided.
+        Creates a system message that describes the platform's
+        role and capabilities. Returns None if no context is available.
 
         Args:
             context_package: The platform context package, or ``None``.
@@ -383,12 +396,35 @@ class OpenAISerializer(ProviderSerializer):
         }
 
     @staticmethod
-    def _extract_user_messages(
+    def _extract_client_system_messages(
         messages: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
-        """Extract and return user messages unchanged.
+        """Extract client system messages unchanged.
+
+        Returns all incoming ``role: "system"`` messages in their
+        original order. These carry the client's protocol instructions
+        (tool definitions, rules, etc.) and must survive verbatim.
+
+        Args:
+            messages: The full message list from the gateway.
+
+        Returns:
+            A new list containing only system messages, in order.
+        """
+        return [
+            dict(message)  # shallow copy to avoid mutation
+            for message in messages
+            if isinstance(message, dict) and message.get("role") == "system"
+        ]
+
+    @staticmethod
+    def _extract_conversation_messages(
+        messages: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Extract and return user and assistant messages unchanged.
 
         Copies all user and assistant messages in their original order.
+        System messages are excluded (they are handled separately).
         The serializer never modifies user input.
 
         Args:
