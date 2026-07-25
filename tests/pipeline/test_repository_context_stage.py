@@ -408,7 +408,10 @@ class TestDeterministicExecution:
             _make_symbol("helper", "utils.helper", SymbolType.FUNCTION, "utils.py"),
         ]
         index = _make_index(symbols)
-        stage = RepositoryContextStage(index=index)
+        # Determinism is a property of ranking/composition, independent of the
+        # cross-turn delta cache. Disable delta injection so each identical call
+        # is evaluated in isolation (delta behaviour is covered in test_delta.py).
+        stage = RepositoryContextStage(index=index, context_delta_injection=False)
 
         packages = []
         for _ in range(5):
@@ -699,4 +702,3 @@ class TestContextPlanConsumption:
 
         assert result.success is True
         assert context.context_package is not None
-

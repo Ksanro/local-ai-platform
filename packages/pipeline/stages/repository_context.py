@@ -79,6 +79,7 @@ from packages.context.delta import (
     collect_all_symbols,
     conversation_key,
     filter_candidates,
+    store_key,
 )
 from packages.context.models import ContextQuery
 from packages.pipeline.base import PipelineStage
@@ -278,7 +279,7 @@ class RepositoryContextStage(PipelineStage):
 
                 # Store the union under the same key so the next turn can find it.
                 new_symbols = collect_all_symbols(filtered)
-                self._tracker.store(conv_key, already_sent | new_symbols)
+                self._tracker.store(store_key(messages), already_sent | new_symbols)
 
                 # Replace candidates in-place so the composer sees the filter.
                 # ContextResult is frozen, so mutate the list directly.
@@ -462,7 +463,7 @@ class RepositoryContextStage(PipelineStage):
         return " ".join(user_contents).strip() if user_contents else ""
 
     @staticmethod
-    def _get_messages(context: PipelineContext) -> list[dict]:
+    def _get_messages(context: PipelineContext) -> list[dict[str, str]]:
         """Return the messages list from the request, or [].
 
         Args:
@@ -519,4 +520,3 @@ class RepositoryContextStage(PipelineStage):
                 exc,
             )
             # Leave provider_request unset -- graceful degradation.
-
