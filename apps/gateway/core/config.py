@@ -28,6 +28,8 @@ class Settings(BaseSettings):
     models_config: str = ""  # JSON array of model definitions; empty = single-provider fallback
     context_delta_injection: bool = True  # inject only symbols not already sent
     context_delta_cache_size: int = 256  # max conversation keys in LRU cache
+    session_log_enabled: bool = False  # off by default — opt in
+    session_log_path: str = "logs/sessions.jsonl"
 
     model_config = {"env_prefix": "APP_"}
 
@@ -44,4 +46,3 @@ def get_settings() -> Settings:
         The application ``Settings`` instance.
     """
     return Settings()
-

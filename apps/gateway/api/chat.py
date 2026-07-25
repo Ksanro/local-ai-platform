@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 from starlette.responses import StreamingResponse
 
 from apps.gateway.core.config import get_settings
+from packages.pipeline.engine import PipelineEngine
 from packages.pipeline.exceptions import PipelineError
 from packages.pipeline.request import PipelineRequest
 from packages.providers.exceptions import (
@@ -91,6 +92,79 @@ def _status_for_exception(exc: Exception | None) -> int:
     return 502
 
 
+def _surface_session_metadata(
+    request: Request,
+    engine: PipelineEngine,
+    response: Any,
+) -> None:
+    """Surface pipeline context metadata on request.scope for session logging.
+
+    Reads stage results and pipeline context metadata, then writes
+    the relevant fields onto ``request.scope`` so the session logger
+    middleware can capture them without touching PipelineContext directly.
+
+    Args:
+        request: The FastAPI request.
+        engine: The pipeline engine that was used.
+        response: The pipeline response from engine.execute().
+    """
+    scope = request.scope
+
+    # --- Intent from PlanningStage ---
+    # We need access to the PipelineContext to read context_plan.
+    # The engine stores the last context in app state during execute,
+    # but we can also read from response.stage_results.
+    stage_results = response.stage_results if hasattr(response, "stage_results") else {}
+
+    planning_result = stage_results.get("planning")
+    if planning_result is not None and planning_result.data is not None:
+        plan = planning_result.data
+        if hasattr(plan, "intent"):
+            scope["session_intent"] = plan.intent
+        else:
+            scope["session_intent"] = "DEFAULT"
+    else:
+        scope["session_intent"] = "DEFAULT"
+
+    # --- Repository context metadata ---
+    repo_result = stage_results.get("repository_context")
+    if repo_result is not None and repo_result.success:
+        pkg = repo_result.data
+        if pkg is not None:
+            scope["session_context_status"] = "assembled"
+            if hasattr(pkg, "supporting_symbols"):
+                scope["session_symbols_selected"] = len(pkg.supporting_symbols)
+            if hasattr(pkg, "new_symbols"):
+                scope["session_symbols_new"] = len(pkg.new_symbols)
+            if hasattr(pkg, "suppressed_symbols"):
+                scope["session_symbols_suppressed"] = len(pkg.suppressed_symbols)
+            if hasattr(pkg, "estimated_tokens"):
+                scope["session_estimated_tokens"] = pkg.estimated_tokens
+            if hasattr(pkg, "primary_symbol"):
+                scope["session_primary_symbol"] = pkg.primary_symbol
+        else:
+            scope["session_context_status"] = "no_new_symbols"
+            scope["session_symbols_selected"] = 0
+            scope["session_symbols_new"] = 0
+            scope["session_symbols_suppressed"] = 0
+            scope["session_estimated_tokens"] = 0
+    elif repo_result is not None:
+        scope["session_context_status"] = "degraded"
+    else:
+        scope["session_context_status"] = "disabled"
+        scope["session_symbols_selected"] = 0
+        scope["session_symbols_new"] = 0
+        scope["session_symbols_suppressed"] = 0
+        scope["session_estimated_tokens"] = 0
+
+    # --- Backend model from provider stage ---
+    provider_result = stage_results.get("provider")
+    if provider_result is not None and provider_result.data is not None:
+        backend_model = provider_result.data.get("backend_model") if isinstance(provider_result.data, dict) else None
+        if backend_model:
+            scope["session_backend_model"] = backend_model
+
+
 @router.post("/v1/chat/completions", response_model=None)
 async def chat_completions(
     request: Request,
@@ -154,6 +228,9 @@ async def chat_completions(
 
             status_code = _status_for_exception(response.exception)
             raise HTTPException(status_code=status_code, detail=response.error)
+
+        # Surface session metadata on request.scope for the session logger.
+        _surface_session_metadata(request, engine, response)
 
         result = response.data
 

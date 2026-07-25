@@ -25,6 +25,7 @@ from apps.gateway.api.version import router as version_router
 from apps.gateway.core.config import get_settings
 from apps.gateway.core.logging import setup_logging
 from apps.gateway.middleware import RequestMiddleware, TimingMiddleware
+from apps.gateway.session_log import SessionLoggerMiddleware
 from packages.pipeline.engine import PipelineEngine
 from packages.pipeline.stages import (
     ModelResolutionStage,
@@ -216,6 +217,7 @@ def create_app() -> FastAPI:
 
     app.add_middleware(RequestMiddleware)
     app.add_middleware(TimingMiddleware)
+    app.add_middleware(SessionLoggerMiddleware)
 
     # Register custom exception handler for UnknownModelError → HTTP 404.
     app.add_exception_handler(UnknownModelError, lambda req, exc: JSONResponse(
