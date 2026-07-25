@@ -171,16 +171,14 @@ class SessionLoggerMiddleware:
             async def _send(message: dict[str, Any]) -> None:
                 nonlocal response_status
                 if message["type"] == "http.response.start":
-                    for h in message.get("headers", []):
-                        if h[0] == b"status" or h[0] == b"status-code":
-                            try:
-                                response_status = int(h[1].decode())
-                            except (ValueError, AttributeError):
-                                pass
+                    response_status = message.get("status", response_status)
                 elif message["type"] == "http.response.body":
                     body = message.get("body", b"")
                     if body:
                         response_body.append(body)
+                # ALWAYS forward the event downstream, or the client never
+                # receives the response.
+                await send(message)
 
             # Call the next app in the chain.
             await self._app(scope, receive, _send)
