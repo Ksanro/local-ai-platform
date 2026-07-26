@@ -65,3 +65,6 @@ execution-flow.mmd
 
 logs/
 *.jsonl
+
+# Claude Code local settings (tool permissions, etc.)
+.claude/settings.local.json

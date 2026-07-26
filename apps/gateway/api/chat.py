@@ -207,16 +207,22 @@ def _surface_session_metadata(
     # --- Stage durations for timing breakdown ---
     # Extract duration from each PipelineStageResult and write onto scope.
     # The pipeline engine already measures result.duration for each stage.
+    # Append _ms suffix so the keys match what session_log.py and the
+    # analyzer expect (e.g. "repository_context_ms").
     stage_durations_ms: dict[str, float] = {}
     for stage_name, result in stage_results.items():
         dur = result.duration if hasattr(result, "duration") else 0.0
-        stage_durations_ms[stage_name] = round(dur * 1000, 1)  # seconds → ms
+        stage_durations_ms[f"{stage_name}_ms"] = round(dur * 1000, 1)  # seconds → ms
 
     scope["session_stage_durations_ms"] = stage_durations_ms
 
     # Compute pipeline_ms (sum of non-provider stages) and provider_wait_ms.
-    provider_ms = stage_durations_ms.get("provider", 0.0)
-    pipeline_ms = sum(d for k, d in stage_durations_ms.items() if k != "provider")
+    # Keys now have _ms suffix (e.g. "provider_ms").
+    provider_ms = stage_durations_ms.get("provider_ms", 0.0)
+    # Subtract provider_ms from the total to get non-provider stages.
+    pipeline_ms = sum(
+        d for k, d in stage_durations_ms.items() if k != "provider_ms"
+    )
     scope["session_pipeline_ms"] = round(pipeline_ms, 1)
     scope["session_provider_wait_ms"] = round(provider_ms, 1)
 

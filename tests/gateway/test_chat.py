@@ -565,3 +565,98 @@ def test_concurrent_requests_get_different_request_ids() -> None:
         assert id1 != id2, "Concurrent requests must get different request IDs"
         uuid.UUID(id1)
         uuid.UUID(id2)
+
+
+# ---------------------------------------------------------------------------
+# Fix 4 — stage timing keys have _ms suffix
+# ---------------------------------------------------------------------------
+
+
+def test_stage_duration_keys_have_ms_suffix() -> None:
+    """Verify the _surface_session_metadata function writes stage durations
+    with _ms suffix keys (e.g. repository_context_ms, provider_ms) so the
+    session logger can find them."""
+    from fastapi.datastructures import State
+    from starlette.datastructures import Headers
+    from apps.gateway.api.chat import _surface_session_metadata  # noqa: F401
+
+    payload = {
+        "messages": [{"role": "user", "content": "Hello"}],
+        "model": "test-model",
+    }
+    mock_engine = AsyncMock()
+
+    # Build a realistic response with stage_results that have duration.
+    resp = PipelineResponse(
+        success=True,
+        data={
+            "choices": [
+                {"message": {"role": "assistant", "content": "ok"}}
+            ]
+        },
+    )
+    resp.stage_results = {
+        "model_resolution": PipelineStageResult(
+            stage_name="model_resolution",
+            success=True,
+            data=None,
+            duration=0.05,  # 50ms
+        ),
+        "planning": PipelineStageResult(
+            stage_name="planning",
+            success=True,
+            data=None,
+            duration=0.02,  # 20ms
+        ),
+        "repository_context": PipelineStageResult(
+            stage_name="repository_context",
+            success=True,
+            data=None,
+            duration=0.08,  # 80ms
+        ),
+        "provider": PipelineStageResult(
+            stage_name="provider",
+            success=True,
+            data={"backend_model": "vllm-test"},
+            duration=0.5,  # 500ms
+        ),
+    }
+    mock_engine.execute = AsyncMock(return_value=resp)
+
+    # Build a minimal request object with a mutable scope dict.
+    request_scope: dict[str, Any] = {
+        "type": "http",
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "headers": [],
+        "request_id": "test-req-1",
+    }
+    # Build a mock request with a mutable scope dict.
+    class _MockRequest:
+        pass
+
+    mock_req = _MockRequest()
+    mock_req.scope = request_scope
+    mock_req.headers = Headers({})
+
+    _surface_session_metadata(mock_req, mock_engine, resp)
+
+    # Check that session_stage_durations_ms was written on scope.
+    stage_dur = request_scope.get("session_stage_durations_ms", {})
+
+    # Keys should have _ms suffix.
+    assert "repository_context_ms" in stage_dur, (
+        f"Expected 'repository_context_ms' in stage durations, got: {list(stage_dur.keys())}"
+    )
+    assert "provider_ms" in stage_dur, (
+        f"Expected 'provider_ms' in stage durations, got: {list(stage_dur.keys())}"
+    )
+    assert "model_resolution_ms" in stage_dur, (
+        f"Expected 'model_resolution_ms' in stage durations, got: {list(stage_dur.keys())}"
+    )
+    assert "planning_ms" in stage_dur, (
+        f"Expected 'planning_ms' in stage durations, got: {list(stage_dur.keys())}"
+    )
+    # Values should be non-zero when the stage ran.
+    assert stage_dur["repository_context_ms"] == 80.0
+    assert stage_dur["provider_ms"] == 500.0

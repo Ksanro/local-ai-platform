@@ -112,56 +112,70 @@ def _message_token_count(message: dict[str, Any]) -> int:
     return tokens
 
 
-def _pair_tool_calls_results(
+def _build_cap_groups(
     messages: list[dict[str, Any]],
-) -> list[int]:
-    """Build tool-call ↔ tool-result pairing map.
+) -> list[set[int]]:
+    """Build atomic grouping sets for history capping.
 
-    Returns a list where index i maps to its paired index (assistant
-    tool-call ↔ tool-result).  Paired indices are always mutual:
-    pair[i] == j and pair[j] == i when both exist.  Unpaired messages
-    map to -1.
+    Each assistant message with tool calls is grouped together with ALL
+    its tool-result messages.  Standalone messages (no tool calls, no
+    paired results) form their own singleton groups.  This prevents
+    splitting a multi-result group during capping — either the entire
+    assistant+results unit is kept or dropped as one.
 
     Args:
         messages: The full message list.
 
     Returns:
-        Pairing map (list of indices or -1).
+        A list of sets, each set containing indices that must be kept
+        or dropped together.
     """
     n = len(messages)
-    pair = [-1] * n
+    # Union-Find for collapsing tool-call ↔ tool-result links into groups.
+    parent = list(range(n))
+    rank = [0] * n
 
-    # First pass: find tool-calls on assistant messages and their
-    # corresponding tool-result messages that follow.
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a: int, b: int) -> None:
+        ra, rb = find(a), find(b)
+        if ra == rb:
+            return
+        if rank[ra] < rank[rb]:
+            ra, rb = rb, ra
+        parent[rb] = ra
+        if rank[ra] == rank[rb]:
+            rank[ra] += 1
+
+    # First pass: link each assistant tool-call message to its tool results.
     for i, msg in enumerate(messages):
         if msg.get("role") != "assistant":
             continue
         tool_calls = msg.get("tool_calls")
         if not tool_calls:
             continue
-        # Each tool_call has an id; find matching role=tool messages.
         for tc in tool_calls:
             if not isinstance(tc, dict):
                 continue
             tc_id = tc.get("id")
             if not tc_id:
                 continue
-            # Find the matching tool-result message after this assistant.
             for j in range(i + 1, n):
-                if messages[j].get("role") == "tool" and messages[j].get(
-                    "tool_call_id"
-                ) == tc_id:
-                    pair[i] = j
-                    pair[j] = i
+                if (
+                    messages[j].get("role") == "tool"
+                    and messages[j].get("tool_call_id") == tc_id
+                ):
+                    union(i, j)
                     break
 
-    # Second pass: for messages with role=tool that have no assistant
-    # pairing (orphan results), search backwards for the assistant with
-    # a matching tool_call id.
+    # Second pass: orphan tool results → link to nearest preceding
+    # assistant with a matching tool_call id.
     for j, msg in enumerate(messages):
         if msg.get("role") != "tool":
-            continue
-        if pair[j] != -1:
             continue
         tc_id = msg.get("tool_call_id")
         if not tc_id:
@@ -172,13 +186,16 @@ def _pair_tool_calls_results(
             tc_list = messages[i].get("tool_calls", [])
             for tc in tc_list:
                 if isinstance(tc, dict) and tc.get("id") == tc_id:
-                    pair[i] = j
-                    pair[j] = i
+                    union(i, j)
                     break
-            if pair[j] != -1:
-                break
 
-    return pair
+    # Collapse into groups.
+    groups_map: dict[int, set[int]] = {}
+    for idx in range(n):
+        root = find(idx)
+        groups_map.setdefault(root, set()).add(idx)
+
+    return list(groups_map.values())
 
 
 def cap_history(
@@ -241,51 +258,62 @@ def cap_history(
             last_user_idx = i
             break
 
-    # Total tokens of non-system messages.
-    total_non_system_tokens = sum(token_counts[i] for i in non_system_indices)
+    # FIX 3: Total tokens of non-system messages EXCLUDING the last user message.
+    # The last user message is always kept outside the budget.
+    non_last_user_indices = [i for i in non_system_indices if i != last_user_idx]
+    total_non_last_user_tokens = sum(token_counts[i] for i in non_last_user_indices)
 
     # If everything fits, return unchanged.
-    if total_non_system_tokens <= max_history_tokens:
+    if total_non_last_user_tokens <= max_history_tokens:
         return messages, 0
 
     # --- Capping logic ---
 
-    # Build pairing map for tool calls/results.
-    pair = _pair_tool_calls_results(messages)
+    # Build atomic groups for tool-call/result pairing.
+    groups = _build_cap_groups(messages)
 
-    # Build candidate set for dropping: all non-system, non-last-user messages.
-    # We'll try to keep from newest to oldest, stopping when budget exhausted.
-    candidates = sorted(
-        [i for i in non_system_indices if i != last_user_idx],
-    )
+    # Build candidate groups for dropping: exclude system messages and the
+    # last user message's group, and only include groups that have at least
+    # one non-system, non-last-user member.
+    # Each group is a set of indices.
+    candidate_groups: list[set[int]] = []
+    for group in groups:
+        # Skip groups that are entirely system or last-user.
+        has_capable_member = any(
+            i not in system_indices and i != last_user_idx
+            for i in group
+        )
+        if has_capable_member:
+            candidate_groups.append(group)
 
-    # We accumulate tokens from newest to oldest, stopping when budget exhausted.
+    # If no candidate groups, nothing to cap.
+    if not candidate_groups:
+        return messages, 0
+
+    # Sort groups by their maximum index (newest-first ordering).
+    candidate_groups.sort(key=lambda g: max(g), reverse=True)
+
+    # Accumulate tokens from newest groups until budget exhausted.
     accumulated = 0
-    kept_set: set[int] = set()
+    kept_groups: list[set[int]] = []
 
-    # Walk candidates in reverse (newest first).
-    for idx in reversed(candidates):
-        p_idx = pair[idx]
-        msg_tokens = token_counts[idx]
-        pair_tokens = token_counts[p_idx] if p_idx != -1 else 0
-        group_tokens = msg_tokens + (pair_tokens if p_idx != -1 else 0)
-
+    for group in candidate_groups:
+        group_tokens = sum(token_counts[i] for i in group)
         if accumulated + group_tokens <= max_history_tokens:
-            kept_set.add(idx)
-            if p_idx != -1:
-                kept_set.add(p_idx)
+            kept_groups.append(group)
             accumulated += group_tokens
         else:
-            # This and older messages (and their pairs) will be dropped.
+            # This and older groups will be dropped.
             break
 
-    # Ensure the last user message is always kept.
+    # Build kept set: all system indices + last user index + kept group members.
+    kept_set: set[int] = set(system_indices)
     kept_set.add(last_user_idx)
+    for group in kept_groups:
+        kept_set.update(group)
 
-    # Build result: system messages (all) + kept non-system in original order.
-    result = [messages[i] for i in system_indices] + [
-        messages[i] for i in non_system_indices if i in kept_set
-    ]
+    # Build result: all kept messages in original order.
+    result = [messages[i] for i in sorted(kept_set)]
 
     dropped_count = len(messages) - len(result)
 

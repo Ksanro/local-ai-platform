@@ -322,10 +322,14 @@ def _protocol_diff(
                         f"messages[{i}] content differs after capping"
                     )
 
-        # Check tool call/result pairing: no orphaned tool calls.
+        # Check tool call/result pairing on the FULL output message list
+        # (not just out_conv which filters out tool messages).
+        # This catches orphaned tool results that were previously missed
+        # because the old code filtered to out_conv first, then checked
+        # role=="tool" on an already-filtered list.
         out_tool_call_ids: set[str] = set()
         out_tool_results: set[str] = set()
-        for m in out_conv:
+        for m in out_msgs:
             tc_list = m.get("tool_calls", [])
             for tc in tc_list:
                 if isinstance(tc, dict) and tc.get("id"):
@@ -337,6 +341,12 @@ def _protocol_diff(
         if orphan_results:
             diffs.append(
                 f"orphaned tool results without calls after capping: {orphan_results}"
+            )
+        # Each tool call must have a matching result.
+        orphan_calls = out_tool_call_ids - out_tool_results
+        if orphan_calls:
+            diffs.append(
+                f"orphaned tool calls without results after capping: {orphan_calls}"
             )
 
     else:

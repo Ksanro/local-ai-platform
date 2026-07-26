@@ -93,7 +93,8 @@ class PipelineEngine:
         # These are set by the gateway endpoint from settings.
         history_cap_enabled = context.get_metadata("history_cap_enabled", False)
         history_cap_tokens = context.get_metadata("history_cap_tokens", 0)
-        resolved_model = context.get_metadata("resolved_model")
+        # Read from the typed field set by ModelResolutionStage, not metadata.
+        resolved_model = context.resolved_model
         max_tokens_override = context.get_metadata("max_tokens_override")
         context.set_metadata("history_cap_enabled", history_cap_enabled)
         context.set_metadata("history_cap_tokens", history_cap_tokens)
