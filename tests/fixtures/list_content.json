@@ -1,0 +1,13 @@
+{
+  "model": "default",
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {"type": "text", "text": "Analyze this code:"},
+        {"type": "text", "text": "src/main.py"}
+      ]
+    }
+  ],
+  "stream": false
+}

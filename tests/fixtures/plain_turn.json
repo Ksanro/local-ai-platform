@@ -1,0 +1,7 @@
+{
+  "model": "default",
+  "messages": [
+    {"role": "user", "content": "What is Python?"}
+  ],
+  "stream": false
+}
