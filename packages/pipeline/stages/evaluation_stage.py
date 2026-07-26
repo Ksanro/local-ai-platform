@@ -126,9 +126,6 @@ class EvaluationStage(PipelineStage):
             if execution_report is None:
                 raise ValueError("No ExecutionReport available in context")
 
-            # Get optional verification report.
-            verification_report = context.verification_report
-
             # Run evaluation.
             # The WorkflowEvaluator expects specific input types.
             # We pass the execution report and relevant context data.

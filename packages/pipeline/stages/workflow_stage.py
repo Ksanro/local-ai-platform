@@ -287,12 +287,12 @@ class WorkflowStage(PipelineStage):
                 pass
 
             def _do_plan(self, repository_index: object, request: object) -> object:
+                from packages.tasks.models import TaskComplexity
                 from packages.workflows.models import (
                     WorkflowMetrics,
                     WorkflowPlan,
                     WorkflowStep,
                 )
-                from packages.tasks.models import TaskConstraint, TaskComplexity
 
                 # Create a minimal WorkflowPlan.
                 return WorkflowPlan(
@@ -325,8 +325,6 @@ class WorkflowStage(PipelineStage):
                 from packages.tasks.base import Task
                 from packages.tasks.models import (
                     TaskPlan,
-                    TaskRequest,
-                    TaskStep,
                 )
 
                 class _MinimalTask(Task):

@@ -220,6 +220,12 @@ def _surface_session_metadata(
     scope["session_pipeline_ms"] = round(pipeline_ms, 1)
     scope["session_provider_wait_ms"] = round(provider_ms, 1)
 
+    # --- History capping metadata ---
+    # Read from response.metadata (copied from context.metadata in PipelineResponse.from_context).
+    resp_meta = getattr(response, "metadata", {}) or {}
+    scope["session_history_dropped_count"] = resp_meta.get("history_dropped_count", 0)
+    scope["session_history_tokens_after"] = resp_meta.get("history_tokens_after", 0)
+
 
 @router.post("/v1/chat/completions", response_model=None)
 async def chat_completions(
@@ -268,6 +274,10 @@ async def chat_completions(
         metadata={
             "request_id": request_id,
             "context_enabled": settings.repository_context_enabled,
+            # History cap settings — passed through to the engine.
+            "history_cap_enabled": settings.history_cap_enabled,
+            "history_cap_tokens": settings.history_cap_tokens,
+            "max_tokens_override": body.max_tokens,
         },
     )
 

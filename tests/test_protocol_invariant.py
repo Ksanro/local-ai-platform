@@ -165,12 +165,16 @@ def _protocol_diff(
     input_payload: dict[str, Any],
     output_payload: dict[str, Any],
     mode: str,
+    history_cap_enabled: bool = False,
 ) -> list[str]:
     """Compare input vs output and report ALL key-level differences.
 
     Allowed differences:
     - ``model`` may change (client name → backend_model) — allowed in both modes
     - The first system message's content may gain repository context (routed mode only)
+    - When ``history_cap_enabled=True``, some old history messages may be dropped
+      (but kept messages must be unchanged, system messages present, last user
+      message intact, and no tool call/result left orphaned).
 
     Forbidden differences:
     - Everything else must match.
@@ -242,60 +246,151 @@ def _protocol_diff(
             f"(multiple system messages is a regression)"
         )
 
-    # Compare non-system messages (user/assistant) byte-for-byte
+    # Compare non-system messages (user/assistant) byte-for-byte.
+    # With history capping enabled, some old messages may be dropped,
+    # so we verify the weaker property: kept messages are unchanged,
+    # last user message intact, and no tool call/result orphaned.
     inp_conv = [m for m in inp_msgs if m.get("role") in ("user", "assistant")]
     out_conv = [m for m in out_msgs if m.get("role") in ("user", "assistant")]
 
-    if len(inp_conv) != len(out_conv):
-        diffs.append(
-            f"conversation message count: input={len(inp_conv)} output={len(out_conv)}"
-        )
-    else:
-        for i, (inp_m, out_m) in enumerate(zip(inp_conv, out_conv)):
-            if inp_m.get("role") != out_m.get("role"):
+    if history_cap_enabled:
+        # When capping is enabled, dropped messages are a contiguous prefix
+        # of the history (oldest first).  Verify:
+        # 1. The last user message is present in full.
+        # 2. All kept messages are byte-identical to input.
+        # 3. No tool call is left without its result (and vice versa).
+        # 4. System messages are present.
+        if inp_system_count > 0 and out_system_count == 0:
+            diffs.append(
+                "all client system messages were dropped (no system message in output)"
+            )
+
+        # Find the last user message in output and verify it matches.
+        out_last_user = None
+        for m in reversed(out_conv):
+            if m.get("role") == "user":
+                out_last_user = m
+                break
+        inp_last_user = None
+        for m in reversed(inp_conv):
+            if m.get("role") == "user":
+                inp_last_user = m
+                break
+        if inp_last_user is not None and out_last_user is not None:
+            if inp_last_user.get("content") != out_last_user.get("content"):
                 diffs.append(
-                    f"messages[{i}].role: input={inp_m.get('role')} output={out_m.get('role')}"
+                    "last user message content changed by history capping"
                 )
-            if inp_m.get("content") != out_m.get("content"):
-                # For list content, compare structure precisely
-                inp_c = inp_m.get("content")
-                out_c = out_m.get("content")
-                if type(inp_c) is not type(out_c):
+
+        # Verify kept suffix messages match input.
+        # Build a map of content->index for matching.
+        # Since dropped messages are a contiguous prefix of non-system messages,
+        # the kept messages should be a suffix of the input.
+        if len(out_conv) > 0 and len(inp_conv) > 0:
+            # Find the first kept message by matching from the end.
+            # The suffix of out_conv should match a suffix of inp_conv.
+            match_start = 0
+            for offset in range(min(len(inp_conv), len(out_conv))):
+                inp_idx = len(inp_conv) - 1 - offset
+                out_idx = len(out_conv) - 1 - offset
+                inp_m = inp_conv[inp_idx]
+                out_m = out_conv[out_idx]
+                if (inp_m.get("content") == out_m.get("content") and
+                        inp_m.get("role") == out_m.get("role")):
+                    if out_idx == 0:
+                        match_start = inp_idx
+                        break
+                else:
+                    match_start = inp_idx + 1
+                    break
+
+            # Verify all matched messages are identical.
+            for i, out_m in enumerate(out_conv):
+                inp_m = inp_conv[match_start + i] if (match_start + i < len(inp_conv)) else None
+                if inp_m is None:
                     diffs.append(
-                        f"messages[{i}].content type changed: "
-                        f"input={type(inp_c).__name__} "
-                        f"output={type(out_c).__name__}"
+                        f"extra output message at position {i} not in input"
                     )
-                elif inp_c != out_c:
-                    # Check if list content is preserved
-                    if isinstance(inp_c, list) and isinstance(out_c, list):
-                        if len(inp_c) != len(out_c):
+                    continue
+                if inp_m.get("role") != out_m.get("role"):
+                    diffs.append(
+                        f"messages[{i}].role mismatch after capping: "
+                        f"input={inp_m.get('role')} output={out_m.get('role')}"
+                    )
+                if inp_m.get("content") != out_m.get("content"):
+                    diffs.append(
+                        f"messages[{i}] content differs after capping"
+                    )
+
+        # Check tool call/result pairing: no orphaned tool calls.
+        out_tool_call_ids: set[str] = set()
+        out_tool_results: set[str] = set()
+        for m in out_conv:
+            tc_list = m.get("tool_calls", [])
+            for tc in tc_list:
+                if isinstance(tc, dict) and tc.get("id"):
+                    out_tool_call_ids.add(tc["id"])
+            if m.get("role") == "tool" and m.get("tool_call_id"):
+                out_tool_results.add(m["tool_call_id"])
+        # Each tool result must have a matching call.
+        orphan_results = out_tool_results - out_tool_call_ids
+        if orphan_results:
+            diffs.append(
+                f"orphaned tool results without calls after capping: {orphan_results}"
+            )
+
+    else:
+        # Strict mode: no messages may be dropped.
+        if len(inp_conv) != len(out_conv):
+            diffs.append(
+                f"conversation message count: input={len(inp_conv)} output={len(out_conv)}"
+            )
+        else:
+            for i, (inp_m, out_m) in enumerate(zip(inp_conv, out_conv)):
+                if inp_m.get("role") != out_m.get("role"):
+                    diffs.append(
+                        f"messages[{i}].role: input={inp_m.get('role')} output={out_m.get('role')}"
+                    )
+                if inp_m.get("content") != out_m.get("content"):
+                    # For list content, compare structure precisely
+                    inp_c = inp_m.get("content")
+                    out_c = out_m.get("content")
+                    if type(inp_c) is not type(out_c):
+                        diffs.append(
+                            f"messages[{i}].content type changed: "
+                            f"input={type(inp_c).__name__} "
+                            f"output={type(out_c).__name__}"
+                        )
+                    elif inp_c != out_c:
+                        # Check if list content is preserved
+                        if isinstance(inp_c, list) and isinstance(out_c, list):
+                            if len(inp_c) != len(out_c):
+                                diffs.append(
+                                    f"messages[{i}].content list length changed: "
+                                    f"input={len(inp_c)} output={len(out_c)}"
+                                )
+                            else:
+                                for j, (inp_part, out_part) in enumerate(zip(inp_c, out_c)):
+                                    if inp_part != out_part:
+                                        diffs.append(
+                                            f"messages[{i}].content[{j}]: "
+                                            f"input={json.dumps(inp_part)} "
+                                            f"output={json.dumps(out_part)}"
+                                        )
+                        elif isinstance(inp_c, list):
                             diffs.append(
-                                f"messages[{i}].content list length changed: "
-                                f"input={len(inp_c)} output={len(out_c)}"
+                                f"messages[{i}].content: list was stringified to "
+                                f"{type(out_c).__name__}"
+                            )
+                        elif isinstance(out_c, list):
+                            diffs.append(
+                                f"messages[{i}].content: string became list"
                             )
                         else:
-                            for j, (inp_part, out_part) in enumerate(zip(inp_c, out_c)):
-                                if inp_part != out_part:
-                                    diffs.append(
-                                        f"messages[{i}].content[{j}]: "
-                                        f"input={json.dumps(inp_part)} "
-                                        f"output={json.dumps(out_part)}"
-                                    )
-                    elif isinstance(inp_c, list):
-                        diffs.append(
-                            f"messages[{i}].content: list was stringified to "
-                            f"{type(out_c).__name__}"
-                        )
-                    elif isinstance(out_c, list):
-                        diffs.append(
-                            f"messages[{i}].content: string became list"
-                        )
-                    else:
-                        diffs.append(
-                            f"messages[{i}].content: input={repr(inp_c)[:200]} "
-                            f"output={repr(out_c)[:200]}"
-                        )
+                            diffs.append(
+                                f"messages[{i}].content: input={repr(inp_c)[:200]} "
+                                f"output={repr(out_c)[:200]}"
+                            )
 
     # --- client system content must survive ---
     if inp_system_count > 0:

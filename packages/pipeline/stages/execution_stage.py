@@ -36,7 +36,6 @@ The stage only invokes the ExecutionEngine through its public API.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
 
 from packages.execution.adapter import ProviderExecutionAdapter
 from packages.execution.engine import ExecutionEngine

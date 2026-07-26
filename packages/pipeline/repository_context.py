@@ -76,10 +76,10 @@ from packages.context.composer import ContextComposer
 from packages.context.context_package import ContextPackage
 from packages.context.delta import (
     SentSymbolTracker,
-    store_key,
     collect_all_symbols,
     conversation_key,
     filter_candidates,
+    store_key,
 )
 from packages.context.models import ContextQuery
 from packages.pipeline.base import PipelineStage

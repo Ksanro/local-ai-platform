@@ -24,6 +24,8 @@ class PipelineResponse:
         error: Error message if the pipeline failed.
         elapsed: Total wall-clock time (seconds).
         request_id: Unique request identifier.
+        metadata: Free-form dict for pipeline-level metadata (e.g. history
+            capping stats).
     """
 
     def __init__(
@@ -34,6 +36,7 @@ class PipelineResponse:
         error: str | None = None,
         elapsed: float = 0.0,
         request_id: str = "",
+        metadata: dict[str, Any] | None = None,
     ) -> None:
         """Initialize a pipeline response.
 
@@ -44,6 +47,7 @@ class PipelineResponse:
             error: Error message if failed.
             elapsed: Total elapsed time.
             request_id: Request identifier.
+            metadata: Free-form pipeline metadata.
         """
         self.data = data
         self.stage_results = stage_results or {}
@@ -51,6 +55,7 @@ class PipelineResponse:
         self.error = error
         self.elapsed = elapsed
         self.request_id = request_id
+        self.metadata = metadata or {}
 
     @property
     def exception(self) -> Exception | None:
@@ -109,4 +114,5 @@ class PipelineResponse:
             error=error,
             elapsed=context.elapsed,
             request_id=context.request_id,
+            metadata=dict(context.metadata),
         )

@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import asyncio
 import uuid
 from collections.abc import AsyncGenerator
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
-import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -102,7 +100,12 @@ def test_chat_completions_provider_not_found() -> None:
         return_value=type(
             "FakeSettings",
             (),
-            {"default_provider": "nonexistent", "repository_context_enabled": True},
+            {
+                "default_provider": "nonexistent",
+                "repository_context_enabled": True,
+                "history_cap_enabled": False,
+                "history_cap_tokens": 0,
+            },
         )(),
     ):
         mock_engine = AsyncMock()
@@ -233,7 +236,12 @@ def test_chat_completions_provider_connection_error_returns_503() -> None:
         return_value=type(
             "FakeSettings",
             (),
-            {"default_provider": "vllm", "repository_context_enabled": True},
+            {
+                "default_provider": "vllm",
+                "repository_context_enabled": True,
+                "history_cap_enabled": False,
+                "history_cap_tokens": 0,
+            },
         )(),
     ):
         mock_engine = AsyncMock()
@@ -297,7 +305,12 @@ def test_chat_completions_404_passthrough() -> None:
         return_value=type(
             "FakeSettings",
             (),
-            {"default_provider": "vllm", "repository_context_enabled": True},
+            {
+                "default_provider": "vllm",
+                "repository_context_enabled": True,
+                "history_cap_enabled": False,
+                "history_cap_tokens": 0,
+            },
         )(),
     ):
         mock_engine = _make_engine_for_exception(
@@ -321,7 +334,12 @@ def test_chat_completions_400_passthrough() -> None:
         return_value=type(
             "FakeSettings",
             (),
-            {"default_provider": "vllm", "repository_context_enabled": True},
+            {
+                "default_provider": "vllm",
+                "repository_context_enabled": True,
+                "history_cap_enabled": False,
+                "history_cap_tokens": 0,
+            },
         )(),
     ):
         mock_engine = _make_engine_for_exception(
@@ -345,7 +363,12 @@ def test_chat_completions_422_passthrough() -> None:
         return_value=type(
             "FakeSettings",
             (),
-            {"default_provider": "vllm", "repository_context_enabled": True},
+            {
+                "default_provider": "vllm",
+                "repository_context_enabled": True,
+                "history_cap_enabled": False,
+                "history_cap_tokens": 0,
+            },
         )(),
     ):
         mock_engine = _make_engine_for_exception(
@@ -369,7 +392,12 @@ def test_chat_completions_500_becomes_502() -> None:
         return_value=type(
             "FakeSettings",
             (),
-            {"default_provider": "vllm", "repository_context_enabled": True},
+            {
+                "default_provider": "vllm",
+                "repository_context_enabled": True,
+                "history_cap_enabled": False,
+                "history_cap_tokens": 0,
+            },
         )(),
     ):
         mock_engine = _make_engine_for_exception(
@@ -393,7 +421,12 @@ def test_chat_completions_503_becomes_502() -> None:
         return_value=type(
             "FakeSettings",
             (),
-            {"default_provider": "vllm", "repository_context_enabled": True},
+            {
+                "default_provider": "vllm",
+                "repository_context_enabled": True,
+                "history_cap_enabled": False,
+                "history_cap_tokens": 0,
+            },
         )(),
     ):
         mock_engine = _make_engine_for_exception(
@@ -423,7 +456,12 @@ def test_request_id_generated_when_no_header() -> None:
         return_value=type(
             "FakeSettings",
             (),
-            {"default_provider": "vllm", "repository_context_enabled": True},
+            {
+                "default_provider": "vllm",
+                "repository_context_enabled": True,
+                "history_cap_enabled": False,
+                "history_cap_tokens": 0,
+            },
         )(),
     ):
         mock_engine = _make_engine_for_exception(
@@ -453,7 +491,12 @@ def test_request_id_passed_when_header_supplied() -> None:
         return_value=type(
             "FakeSettings",
             (),
-            {"default_provider": "vllm", "repository_context_enabled": True},
+            {
+                "default_provider": "vllm",
+                "repository_context_enabled": True,
+                "history_cap_enabled": False,
+                "history_cap_tokens": 0,
+            },
         )(),
     ):
         mock_engine = _make_engine_for_exception(
@@ -491,7 +534,12 @@ def test_concurrent_requests_get_different_request_ids() -> None:
         return_value=type(
             "FakeSettings",
             (),
-            {"default_provider": "vllm", "repository_context_enabled": True},
+            {
+                "default_provider": "vllm",
+                "repository_context_enabled": True,
+                "history_cap_enabled": False,
+                "history_cap_tokens": 0,
+            },
         )(),
     ):
         mock_engine = _make_engine_for_exception(
