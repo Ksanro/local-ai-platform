@@ -528,26 +528,34 @@ class RepositoryContextStage(PipelineStage):
         context: PipelineContext,
         context_package: ContextPackage,
     ) -> None:
-        """Serialize the context package into a ProviderRequest.
+        """Serialize the context package into the normalized request.
 
         Looks up the OpenAI serializer via the factory, produces a
-        ``ProviderRequest``, and attaches it to the pipeline context
-        so downstream stages can consume it.
+        serialized message list, and updates the ``normalized_request``
+        on the pipeline context so downstream stages (ProviderStage)
+        can emit a deterministic provider payload.
+
+        The serializer combines the client system message(s) with the
+        repository-context system message into a single system message,
+        then preserves the conversation messages.
 
         Args:
             context: The pipeline context with request data.
             context_package: The assembled context package to serialize.
         """
-        request = context.request
-        if not isinstance(request, dict):
-            return
-
-        messages = request.get("messages", [])
-        if not messages:
-            return
-
-        # Extract model from the request.
-        model = request.get("model", "default")
+        nr = context.normalized_request
+        if nr is None:
+            # Fallback: try to read from context.request.
+            request = context.request
+            if not isinstance(request, dict):
+                return
+            messages = request.get("messages", [])
+            if not messages:
+                return
+            model = request.get("model", "default")
+        else:
+            messages = list(nr.messages)
+            model = nr.model
 
         try:
             serializer = SerializerFactory.create(ProviderType.openai)
@@ -556,7 +564,15 @@ class RepositoryContextStage(PipelineStage):
                 messages=messages,
                 model=model,
             )
-            context.set_metadata("provider_request", provider_request)
+
+            # Update the normalized request with the serialized messages
+            # (which now include the combined system message).
+            if nr is not None:
+                updated_nr = nr.with_messages(provider_request.messages)
+                context.normalized_request = updated_nr
+            else:
+                # Store ProviderRequest in metadata for backward compat.
+                context.set_metadata("provider_request", provider_request)
         except Exception as exc:
             logger.warning(
                 "serialization request_id=%s error=%s",

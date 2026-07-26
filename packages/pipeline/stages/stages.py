@@ -9,8 +9,8 @@ import logging
 
 from packages.pipeline.base import PipelineStage
 from packages.pipeline.context import PipelineContext
+from packages.pipeline.normalized import NormalizedRequest
 from packages.pipeline.result import PipelineStageResult
-from packages.serializers.models import ProviderRequest
 
 logger = logging.getLogger(__name__)
 
@@ -34,8 +34,12 @@ class ProviderStage(PipelineStage):
     async def execute(self, context: PipelineContext) -> PipelineStageResult:
         """Call the already-resolved provider's chat method.
 
-        Reads the provider from ``context.resolved_model`` and calls
-        ``chat()`` with kwargs from the context.
+        Reads the normalized request from ``context.normalized_request``
+        and calls ``chat()`` with a single, deterministic provider payload
+        produced by ``NormalizedRequest.to_provider_payload()``.
+
+        There is **no dual-path** logic.  The provider payload is built
+        once from the normalized request.
 
         Args:
             context: The pipeline context with request data.
@@ -53,7 +57,16 @@ class ProviderStage(PipelineStage):
 
         provider = resolved.provider
         model = resolved.definition.model
-        backend_model = resolved.definition.backend_model or resolved.definition.model
+        # Use the backend model from the resolved definition, or override
+        # with context.backend_model if explicitly set.
+        # Only accept real strings — MagicMock children would pass
+        # `is not None` but would corrupt the payload.
+        _dbm = resolved.definition.backend_model
+        backend_model: str | None = (
+            _dbm if isinstance(_dbm, str) else None
+        )
+        if backend_model is None:
+            backend_model = model
 
         logger.info(
             "provider_stage request_id=%s provider=%s model=%s backend_model=%s",
@@ -64,25 +77,20 @@ class ProviderStage(PipelineStage):
         )
 
         try:
-            # Prefer the serialized ProviderRequest produced by the
-            # RepositoryContextStage.  If no ProviderRequest is
-            # available, fall back to the raw request dict.
-            provider_request = context.get_metadata("provider_request")
-            if isinstance(provider_request, ProviderRequest):
-                kwargs = provider_request.to_dict()
+            # Single-path: build provider payload from the normalized request.
+            nr = context.normalized_request
+            if isinstance(nr, NormalizedRequest):
+                kwargs = nr.to_provider_payload(backend_model)
             else:
-                kwargs = context.request.copy()
-
-            # Ensure stream is always forwarded (ProviderRequest does
-            # not carry transport concerns).
-            kwargs["stream"] = context.request.get("stream", False)
-
-            # Forward stream_options when streaming is enabled.
-            if kwargs["stream"]:
-                kwargs["stream_options"] = {"include_usage": True}
-
-            # Override model with backend_model for the upstream call.
-            kwargs["model"] = backend_model
+                # Fallback for tests that don't set normalized_request.
+                # Build payload from context.request + explicit overrides.
+                kwargs = dict(context.request)
+                # Override model with backend_model.
+                kwargs["model"] = backend_model
+                # Ensure stream is forwarded.
+                kwargs["stream"] = kwargs.get("stream", False)
+                if kwargs["stream"]:
+                    kwargs["stream_options"] = {"include_usage": True}
 
             result = await provider.chat(**kwargs)
             return PipelineStageResult(

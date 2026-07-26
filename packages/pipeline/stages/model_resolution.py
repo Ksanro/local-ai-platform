@@ -42,6 +42,10 @@ class ModelResolutionStage(PipelineStage):
     async def execute(self, context: PipelineContext) -> PipelineStageResult:
         """Resolve the model and store on context.
 
+        Reads the requested model from ``normalized_request`` (set by the
+        gateway) with a fallback to ``context.request`` and settings.
+        Stores the resolved model and backend_model on context.
+
         Args:
             context: The pipeline context with request data.
 
@@ -49,9 +53,14 @@ class ModelResolutionStage(PipelineStage):
             A success result with the resolved model stored on context,
             or a failed result if resolution fails.
         """
-        # Read the requested model from the request, falling back to
-        # settings.default_model.
-        request_model = context.request.get("model")
+        # Read the requested model from normalized_request, falling back
+        # to settings.default_model.
+        request_model: str | None = None
+        nr = context.normalized_request
+        if nr is not None:
+            request_model = nr.model
+        if not request_model:
+            request_model = context.request.get("model")
         if not request_model:
             from packages.config import load_config
 
@@ -60,8 +69,11 @@ class ModelResolutionStage(PipelineStage):
 
         try:
             resolved = self._router.resolve(request_model)
-            # Store on typed field, not in metadata dict.
+            # Store on typed fields, not in metadata dict.
             context.resolved_model = resolved
+            context.backend_model = (
+                resolved.definition.backend_model or resolved.definition.model
+            )
 
             logger.info(
                 "model_resolution request_id=%s model=%s provider=%s context_window=%s",
