@@ -10,6 +10,9 @@ Reads a JSONL session log and prints a structured summary including:
 - Delta-injection effectiveness
 - 5 slowest requests
 - Error requests
+- **Timing breakdown**: pipeline_ms vs provider_wait_ms
+- **Latency-by-prompt-size buckets** with Pearson correlation
+- **Context cost**: tokens added and assembly time
 
 Usage
 -----
@@ -94,6 +97,58 @@ def _mean(values: list[float] | list[int]) -> float:
     if not values:
         return 0.0
     return statistics.mean(values)
+
+
+# ---------------------------------------------------------------------------
+# Additional helpers for attribution analysis
+# ---------------------------------------------------------------------------
+
+
+def _pearson(x: list[float], y: list[float]) -> float:
+    """Compute Pearson correlation coefficient between two lists.
+
+    Args:
+        x: First list of values.
+        y: Second list of values (same length as *x*).
+
+    Returns:
+        The Pearson r coefficient in [-1, 1], or 0.0 if lists are empty
+        or variance is zero.
+    """
+    n = len(x)
+    if n < 2:
+        return 0.0
+    sum_x = sum(x)
+    sum_y = sum(y)
+    sum_x2 = sum(v * v for v in x)
+    sum_y2 = sum(v * v for v in y)
+    sum_xy = sum(xi * yi for xi, yi in zip(x, y))
+    numerator = n * sum_xy - sum_x * sum_y
+    denom = math.sqrt(
+        (n * sum_x2 - sum_x * sum_x) * (n * sum_y2 - sum_y * sum_y)
+    )
+    if denom == 0:
+        return 0.0
+    return numerator / denom
+
+
+def _bucket_key(tokens: int) -> str:
+    """Return the bucket string for a prompt-token count.
+
+    Args:
+        tokens: Number of prompt tokens.
+
+    Returns:
+        A bucket label such as ``<10k``, ``10-30k``, ``30-60k``, or ``>60k``.
+    """
+    if tokens < 10_000:
+        return "<10k"
+    elif tokens < 30_000:
+        return "10-30k"
+    elif tokens < 60_000:
+        return "30-60k"
+    else:
+        return ">60k"
 
 
 def analyze(records: list[dict[str, Any]]) -> None:
@@ -283,7 +338,16 @@ def analyze(records: list[dict[str, Any]]) -> None:
         print(f"  Min turns:            {min(turn_counts)}")
     print()
 
-    # --- 5 slowest requests ---
+    # --- Timing breakdown: pipeline vs provider ---
+    _print_timing_breakdown(records)
+
+    # --- Latency-by-prompt-size buckets + correlation ---
+    _print_latency_buckets(records)
+
+    # --- Context cost ---
+    _print_context_cost(records)
+
+    # --- 5 slowest requests (with attribution) ---
     print("-" * 40)
     print("5 SLOWEST REQUESTS")
     print("-" * 40)
@@ -296,8 +360,24 @@ def analyze(records: list[dict[str, Any]]) -> None:
         req_id = r.get("request_id", "unknown")[:12]
         latency = r.get("timing", {}).get("total_ms", 0) or 0
         tokens = r.get("usage", {}).get("prompt_tokens") or 0
+        completion_tokens = r.get("usage", {}).get("completion_tokens") or 0
         preview = r.get("last_user_message", "")[:80]
-        print(f"  {i:>1}. id={req_id}  latency={latency:.0f}ms  prompt_tokens={tokens}")
+        t = r.get("timing", {})
+        pipeline_ms = t.get("pipeline_ms")
+        provider_wait = t.get("provider_wait_ms")
+        ctx_status = r.get("context", {}).get("status", "unknown")
+
+        detail = (
+            f"  {i:>1}. id={req_id}  latency={latency:.0f}ms  "
+            f"prompt_tokens={tokens}  completion_tokens={completion_tokens}"
+        )
+        if pipeline_ms is not None:
+            detail += (
+                f"  pipeline_ms={float(pipeline_ms):.0f}"
+                f"  provider_wait_ms={float(provider_wait or 0):.0f}"
+            )
+        detail += f"  context={ctx_status}"
+        print(detail)
         print(f"     msg: {preview}")
     print()
 
@@ -324,6 +404,223 @@ def analyze(records: list[dict[str, Any]]) -> None:
     print("=" * 60)
 
 
+def _print_timing_breakdown(records: list[dict[str, Any]]) -> None:
+    """Print the timing breakdown section.
+
+    Shows pipeline_ms vs provider_wait_ms for every record that has
+    those fields.
+
+    Args:
+        records: A list of session log record dicts.
+    """
+    print("-" * 40)
+    print("TIMING BREAKDOWN: pipeline vs provider")
+    print("-" * 40)
+
+    has_pipeline = False
+    for r in records:
+        t = r.get("timing", {})
+        if t.get("pipeline_ms") is not None or t.get("provider_wait_ms") is not None:
+            has_pipeline = True
+            break
+
+    if not has_pipeline:
+        print("  No timing breakdown data available (pipeline_ms / provider_wait_ms).")
+        print("  This is expected for session logs generated before this feature.")
+        print()
+        return
+
+    pipeline_values: list[float] = []
+    provider_values: list[float] = []
+    for r in records:
+        t = r.get("timing", {})
+        pm = t.get("pipeline_ms")
+        pw = t.get("provider_wait_ms")
+        if pm is not None:
+            pipeline_values.append(float(pm))
+        if pw is not None:
+            provider_values.append(float(pw))
+
+    if pipeline_values:
+        print("  Pipeline overhead (our code):")
+        print(f"    Median:  {statistics.median(pipeline_values):.1f} ms")
+        print(f"    Mean:    {_mean(pipeline_values):.1f} ms")
+    if provider_values:
+        print("  Provider wait (vLLM):")
+        print(f"    Median:  {statistics.median(provider_values):.1f} ms")
+        print(f"    Mean:    {_mean(provider_values):.1f} ms")
+
+    # Stages breakdown (if available)
+    for r in records:
+        t = r.get("timing", {})
+        stages = t.get("stages")
+        if stages:
+            print()
+            print("  Stage durations (sample):")
+            for stage, dur in sorted(stages.items(), key=lambda x: -x[1]):
+                print(f"    {stage:>25}  {dur:.1f} ms")
+            break
+
+    print()
+
+
+def _print_latency_buckets(records: list[dict[str, Any]]) -> None:
+    """Print the latency-by-prompt-size bucket table.
+
+    Buckets: ``<10k``, ``10-30k``, ``30-60k``, ``>60k`` prompt tokens.
+    Shows median and p90 total latency and median provider_wait_ms per bucket.
+
+    Args:
+        records: A list of session log record dicts.
+    """
+    print("-" * 40)
+    print("LATENCY BY PROMPT SIZE")
+    print("-" * 40)
+
+    # Bucket data: key -> list of (total_ms, provider_wait_ms)
+    buckets: dict[str, list[tuple[float, float]]] = {}
+    for r in records:
+        t = r.get("timing", {})
+        u = r.get("usage", {})
+        pt = u.get("prompt_tokens")
+        tm = t.get("total_ms")
+        pw = t.get("provider_wait_ms")
+        if pt is None or tm is None:
+            continue
+        pt_int = int(pt)
+        key = _bucket_key(pt_int)
+        buckets.setdefault(key, []).append(
+            (float(tm), float(pw) if pw is not None else 0.0)
+        )
+
+    if not buckets:
+        print("  No data available.")
+        print()
+        return
+
+    bucket_order = ["<10k", "10-30k", "30-60k", ">60k"]
+    print(f"  {'Bucket':<10} {'n':>4} {'median_ms':>10} {'p90_ms':>10} {'median_provider_ms':>16}")
+    print(f"  {'-' * 10} {'-' * 4} {'-' * 10} {'-' * 10} {'-' * 16}")
+    for key in bucket_order:
+        items = buckets.get(key, [])
+        if not items:
+            continue
+        total_latencies = [x[0] for x in items]
+        provider_lats = [x[1] for x in items]
+        print(
+            f"  {key:<10} {len(items):>4} "
+            f"{_percentile(total_latencies, 50):>10.1f} "
+            f"{_percentile(total_latencies, 90):>10.1f} "
+            f"{_percentile(provider_lats, 50):>16.1f}"
+        )
+    print()
+
+    # --- Pearson correlation ---
+    print("CORRELATION COEFFICIENTS")
+    print("-" * 40)
+
+    paired_total: list[tuple[float, float]] = []
+    paired_provider: list[tuple[float, float]] = []
+    for r in records:
+        t = r.get("timing", {})
+        u = r.get("usage", {})
+        pt = u.get("prompt_tokens")
+        tm = t.get("total_ms")
+        pw = t.get("provider_wait_ms")
+        if pt is not None and tm is not None:
+            paired_total.append((float(pt), float(tm)))
+        if pt is not None and pw is not None:
+            paired_provider.append((float(pt), float(pw)))
+
+    if paired_total:
+        xt, yt = zip(*paired_total)
+        r_total = _pearson(list(xt), list(yt))
+        print(f"  prompt_tokens vs total_ms:          r={r_total:.4f}")
+    if paired_provider:
+        xp, yp = zip(*paired_provider)
+        r_provider = _pearson(list(xp), list(yp))
+        print(f"  prompt_tokens vs provider_wait_ms:  r={r_provider:.4f}")
+    print()
+
+
+def _print_context_cost(records: list[dict[str, Any]]) -> None:
+    """Print the context cost attribution section.
+
+    Compares ``prompt_tokens`` on ``assembled`` vs ``empty``/``disabled``
+    turns of similar conversation depth to estimate tokens added by
+    context, and reports ``repository_context_ms`` assembly time.
+
+    Args:
+        records: A list of session log record dicts.
+    """
+    print("-" * 40)
+    print("CONTEXT COST")
+    print("-" * 40)
+
+    # Gather prompt_tokens by context status
+    assembled_tokens: list[int] = []
+    empty_tokens: list[int] = []
+    disabled_tokens: list[int] = []
+    repo_ms_values: list[float] = []
+
+    for r in records:
+        t = r.get("timing", {})
+        u = r.get("usage", {})
+        ctx = r.get("context", {})
+        pt = u.get("prompt_tokens")
+        status = ctx.get("status", "disabled")
+        if pt is not None:
+            if status == "assembled":
+                assembled_tokens.append(int(pt))
+            elif status == "empty":
+                empty_tokens.append(int(pt))
+            elif status == "disabled":
+                disabled_tokens.append(int(pt))
+        stages = t.get("stages", {})
+        rctx = stages.get("repository_context_ms")
+        if rctx is not None:
+            repo_ms_values.append(float(rctx))
+
+    if assembled_tokens and (empty_tokens or disabled_tokens):
+        baseline = empty_tokens if empty_tokens else disabled_tokens
+        print("  Tokens added by context:")
+        print(
+            f"    Assembled turns:     "
+            f"median={statistics.median(assembled_tokens):.0f}  "
+            f"mean={_mean(assembled_tokens):.0f}  "
+            f"n={len(assembled_tokens)}"
+        )
+        print(
+            f"    Empty/disabled turns: "
+            f"median={statistics.median(baseline):.0f}  "
+            f"mean={_mean(baseline):.0f}  "
+            f"n={len(baseline)}"
+        )
+        implied = [a - b for a, b in zip(assembled_tokens, baseline[:len(assembled_tokens)])]
+        if implied:
+            print(
+                f"    Implied delta:       "
+                f"~{statistics.median(implied):.0f} tokens (median)"
+            )
+    elif assembled_tokens:
+        print("  Tokens added by context:")
+        print(
+            f"    Assembled turns:     "
+            f"median={statistics.median(assembled_tokens):.0f}  "
+            f"mean={_mean(assembled_tokens):.0f}  "
+            f"n={len(assembled_tokens)}"
+        )
+    print()
+
+    if repo_ms_values:
+        print("  Assembly time (repository_context_ms):")
+        print(f"    Median:  {statistics.median(repo_ms_values):.1f} ms")
+        print(f"    Mean:    {_mean(repo_ms_values):.1f} ms")
+    else:
+        print("  Assembly time: no per-stage data available.")
+    print()
+
+
 def main() -> None:
     """CLI entry point for the session log analyzer."""
     if len(sys.argv) < 2:
@@ -341,3 +638,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+

@@ -326,6 +326,29 @@ class SessionLoggerMiddleware:
         if ttft_ms is not None:
             ttft_ms = round(ttft_ms, 1)
 
+        # Timing breakdown from stage durations.
+        stage_durations_ms = scope.get("session_stage_durations_ms", {})
+        pipeline_ms = scope.get("session_pipeline_ms")
+        provider_wait_ms = scope.get("session_provider_wait_ms")
+
+        # Build the stages sub-dict with the expected keys.
+        _known_stages = [
+            "model_resolution_ms",
+            "planning_ms",
+            "repository_context_ms",
+            "workflow_ms",
+            "provider_ms",
+        ]
+        stages_breakdown: dict[str, float] = {}
+        for key in _known_stages:
+            val = stage_durations_ms.get(key)
+            if val is not None:
+                stages_breakdown[key] = round(float(val), 1)
+        # Capture any extra stages not in the known list.
+        for key, val in stage_durations_ms.items():
+            if key not in stages_breakdown:
+                stages_breakdown[key] = round(float(val), 1)
+
         # --- status and error ---
         status = "ok" if response_status < 400 else "error"
         error = None
@@ -404,6 +427,9 @@ class SessionLoggerMiddleware:
             "timing": {
                 "total_ms": total_ms,
                 "ttft_ms": ttft_ms,
+                "pipeline_ms": pipeline_ms,
+                "provider_wait_ms": provider_wait_ms,
+                "stages": stages_breakdown,
             },
             "status": status,
             "error": error,

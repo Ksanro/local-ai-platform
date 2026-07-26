@@ -62,3 +62,6 @@ all_files_list.txt
 execution-flow-engineering.mmd
 .claude/agents/test-agent.md
 execution-flow.mmd
+
+logs/
+*.jsonl

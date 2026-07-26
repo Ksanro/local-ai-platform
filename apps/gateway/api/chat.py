@@ -103,6 +103,14 @@ def _surface_session_metadata(
     the relevant fields onto ``request.scope`` so the session logger
     middleware can capture them without touching PipelineContext directly.
 
+    Architecture
+    ------------
+
+    The pipeline engine already measures ``PipelineStageResult.duration``
+    for every stage (in ``PipelineEngine.execute``, line 118).  This
+    function extracts those durations and writes them onto the scope
+    so the session logger can surface them in the timing breakdown.
+
     Args:
         request: The FastAPI request.
         engine: The pipeline engine that was used.
@@ -195,6 +203,22 @@ def _surface_session_metadata(
         )
         if backend_model:
             scope["session_backend_model"] = backend_model
+
+    # --- Stage durations for timing breakdown ---
+    # Extract duration from each PipelineStageResult and write onto scope.
+    # The pipeline engine already measures result.duration for each stage.
+    stage_durations_ms: dict[str, float] = {}
+    for stage_name, result in stage_results.items():
+        dur = result.duration if hasattr(result, "duration") else 0.0
+        stage_durations_ms[stage_name] = round(dur * 1000, 1)  # seconds → ms
+
+    scope["session_stage_durations_ms"] = stage_durations_ms
+
+    # Compute pipeline_ms (sum of non-provider stages) and provider_wait_ms.
+    provider_ms = stage_durations_ms.get("provider", 0.0)
+    pipeline_ms = sum(d for k, d in stage_durations_ms.items() if k != "provider")
+    scope["session_pipeline_ms"] = round(pipeline_ms, 1)
+    scope["session_provider_wait_ms"] = round(provider_ms, 1)
 
 
 @router.post("/v1/chat/completions", response_model=None)
