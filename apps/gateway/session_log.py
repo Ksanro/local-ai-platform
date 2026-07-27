@@ -331,6 +331,15 @@ class SessionLoggerMiddleware:
         pipeline_ms = scope.get("session_pipeline_ms")
         provider_wait_ms = scope.get("session_provider_wait_ms")
 
+        # --- history capping metadata ---
+        history_dropped_count = scope.get("session_history_dropped_count", 0)
+        history_tokens_after = scope.get("session_history_tokens_after", 0)
+        history_section = {
+            "cap_enabled": (history_dropped_count or 0) > 0 or (history_tokens_after or 0) > 0,
+            "dropped_count": history_dropped_count if history_dropped_count is not None else 0,
+            "tokens_after": history_tokens_after if history_tokens_after is not None else 0,
+        }
+
         # Build the stages sub-dict with the expected keys.
         _known_stages = [
             "model_resolution_ms",
@@ -431,6 +440,7 @@ class SessionLoggerMiddleware:
                 "provider_wait_ms": provider_wait_ms,
                 "stages": stages_breakdown,
             },
+            "history": history_section,
             "status": status,
             "error": error,
             "answer_preview": answer_preview,

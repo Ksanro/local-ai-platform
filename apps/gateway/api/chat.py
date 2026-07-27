@@ -333,7 +333,7 @@ async def chat_completions(
 
         return StreamingResponse(
             content=_wrap_stream_duration(
-                generator_fn(), provider_name, model, start_time, request_id
+                generator_fn(), provider_name, model, start_time, request_id, request
             ),
             media_type=media_type,
         )
@@ -360,6 +360,7 @@ def _wrap_stream_duration(
     model: str,
     start_time: float,
     request_id: str,
+    request: Request | None = None,
 ) -> Any:
     """Wrap a streaming generator to log total duration and TTFT on exhaustion.
 
@@ -367,12 +368,18 @@ def _wrap_stream_duration(
     sees the same stream, but logs the full wall-clock time and
     time-to-first-token once iteration is complete.
 
+    Also writes ``session_provider_wait_ms`` and ``session_ttft_ms``
+    onto ``request.scope`` so the session logger can capture the true
+    streaming drain time (which otherwise reads ~0 because the provider
+    stage returns a lazy generator immediately).
+
     Args:
         generator: The async generator returned by the provider.
         provider_name: Name of the provider for logging.
         model: Model identifier for logging.
         start_time: perf_counter timestamp before the provider call.
         request_id: Request ID for logging.
+        request: Optional FastAPI request (for writing timing to scope).
 
     Returns:
         An async generator that yields the same events and logs
@@ -381,11 +388,12 @@ def _wrap_stream_duration(
     async def _wrapped() -> Any:
         status = "stream_ok"
         ttft: float | None = None
+        gen_start: float = time.perf_counter()
         try:
             first = True
             async for event in generator:
                 if first:
-                    ttft = time.perf_counter() - start_time
+                    ttft = time.perf_counter() - gen_start
                     first = False
                 yield event
         except GeneratorExit:
@@ -396,6 +404,15 @@ def _wrap_stream_duration(
             raise
         finally:
             elapsed = time.perf_counter() - start_time
+            drain_ms = (time.perf_counter() - gen_start) * 1000
+            ttft_ms_val: float | None = round(ttft * 1000, 1) if ttft is not None else None
+
+            # Write true streaming timing onto scope for the session logger.
+            if request is not None:
+                scope = request.scope
+                scope["session_provider_wait_ms"] = round(drain_ms, 1)
+                scope["session_ttft_ms"] = ttft_ms_val
+
             ttft_str = f" ttft={ttft:.3f}" if ttft is not None else ""
             logger.info(
                 "provider=%s model=%s duration=%.3f%s status=%s request_id=%s",

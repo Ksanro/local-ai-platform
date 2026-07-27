@@ -347,6 +347,9 @@ def analyze(records: list[dict[str, Any]]) -> None:
     # --- Context cost ---
     _print_context_cost(records)
 
+    # --- History capping stats ---
+    _print_history_capping(records)
+
     # --- 5 slowest requests (with attribution) ---
     print("-" * 40)
     print("5 SLOWEST REQUESTS")
@@ -540,6 +543,39 @@ def _print_latency_buckets(records: list[dict[str, Any]]) -> None:
         xp, yp = zip(*paired_provider)
         r_provider = _pearson(list(xp), list(yp))
         print(f"  prompt_tokens vs provider_wait_ms:  r={r_provider:.4f}")
+    print()
+
+
+def _print_history_capping(records: list[dict[str, Any]]) -> None:
+    """Print the history capping analysis section.
+
+    Args:
+        records: A list of session log record dicts.
+    """
+    print("-" * 40)
+    print("HISTORY CAPPING")
+    print("-" * 40)
+
+    cap_enabled_count = 0
+    dropped_count_values: list[int] = []
+    tokens_after_values: list[int] = []
+
+    for r in records:
+        h = r.get("history", {})
+        if h.get("cap_enabled", False):
+            cap_enabled_count += 1
+        dc = h.get("dropped_count", 0)
+        ta = h.get("tokens_after", 0)
+        tokens_after_values.append(ta)
+        if dc and int(dc) > 0:
+            dropped_count_values.append(int(dc))
+
+    print(f"  requests with cap enabled:       {cap_enabled_count}")
+    print(f"  requests where history was dropped: {len(dropped_count_values)}")
+    if dropped_count_values:
+        print(f"  median dropped_count (when >0):   {statistics.median(dropped_count_values):.0f}")
+    if tokens_after_values:
+        print(f"  median tokens_after:              {statistics.median(tokens_after_values):.0f}")
     print()
 
 
