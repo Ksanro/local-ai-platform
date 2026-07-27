@@ -269,6 +269,48 @@ class TestMessageExtraction:
         messages = PlanningStage._extract_messages(context)
         assert messages[0] == "Explain this"
 
+    def test_extract_messages_from_list_content(self):
+        """List-form text content is extracted for Cline-style messages."""
+        context = PipelineContext(
+            request={
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "  Explain this module  "},
+                            {"type": "image_url", "image_url": {"url": "ignored"}},
+                        ],
+                    },
+                ]
+            }
+        )
+
+        messages = PlanningStage._extract_messages(context)
+
+        assert messages == ["Explain this module"]
+
+    def test_execute_detects_intent_from_list_content(self):
+        """Intent detection uses text inside list-form content."""
+        stage = PlanningStage()
+        context = PipelineContext(
+            request={
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "Fix the failing gateway test"},
+                        ],
+                    },
+                ]
+            }
+        )
+
+        result = asyncio.run(stage.execute(context))
+
+        assert result.success is True
+        assert result.data is not None
+        assert result.data.intent == "DEBUG"
+
     def test_extract_messages_skips_non_user(self):
         """Non-user messages are skipped."""
         context = PipelineContext(
