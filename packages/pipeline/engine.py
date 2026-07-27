@@ -85,6 +85,19 @@ class PipelineEngine:
         context.set_metadata("model", request.model)
         context.set_metadata("context_enabled", request.metadata.get("context_enabled", True))
 
+        # History cap settings arrive on request.metadata (set by the gateway
+        # endpoint from settings); the engine reads them from context metadata
+        # below, so they must be forwarded here or capping never engages.
+        context.set_metadata(
+            "history_cap_enabled", request.metadata.get("history_cap_enabled", False)
+        )
+        context.set_metadata(
+            "history_cap_tokens", request.metadata.get("history_cap_tokens", 0)
+        )
+        context.set_metadata(
+            "max_tokens_override", request.metadata.get("max_tokens_override")
+        )
+
         # Create NormalizedRequest early so downstream stages can use it.
         # This is the single source of truth for protocol fields.
         context.normalized_request = NormalizedRequest.from_client(context.request)
@@ -264,12 +277,6 @@ def _apply_history_cap(
         # via response.metadata (set by _surface_history_metadata).
         context.set_metadata("history_dropped_count", dropped_count)
         context.set_metadata("history_tokens_after", total_after)
-
-        # Also set on response metadata so it survives PipelineResponse.from_context.
-        if not hasattr(context, "_response_metadata"):
-            context._response_metadata: dict[str, Any] = {}
-        context._response_metadata["history_dropped_count"] = dropped_count
-        context._response_metadata["history_tokens_after"] = total_after
 
         logger.info(
             "history_cap request_id=%s dropped=%d tokens_after=%d budget=%d",

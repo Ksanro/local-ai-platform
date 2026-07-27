@@ -30,7 +30,7 @@ class Settings(BaseSettings):
     context_delta_cache_size: int = 256  # max conversation keys in LRU cache
     session_log_enabled: bool = False  # off by default — opt in
     session_log_path: str = "logs/sessions.jsonl"
-    history_cap_enabled: bool = False  # off by default — opt in to reduce prefill
+    history_cap_enabled: bool = True  # off by default — opt in to reduce prefill
     history_cap_tokens: int = 0  # 0 = derive from context_window
 
     model_config = {"env_prefix": "APP_"}
