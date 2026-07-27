@@ -106,8 +106,6 @@ class PipelineEngine:
         # These are set by the gateway endpoint from settings.
         history_cap_enabled = context.get_metadata("history_cap_enabled", False)
         history_cap_tokens = context.get_metadata("history_cap_tokens", 0)
-        # Read from the typed field set by ModelResolutionStage, not metadata.
-        resolved_model = context.resolved_model
         max_tokens_override = context.get_metadata("max_tokens_override")
         context.set_metadata("history_cap_enabled", history_cap_enabled)
         context.set_metadata("history_cap_tokens", history_cap_tokens)
@@ -167,7 +165,11 @@ class PipelineEngine:
                 # (where the repo-context system message is injected) and
                 # before ProviderStage calls to_provider_payload.
                 if stage_name == "repository_context" and history_cap_enabled:
-                    _apply_history_cap(context, resolved_model, max_tokens_override)
+                    _apply_history_cap(
+                        context,
+                        context.resolved_model,
+                        max_tokens_override,
+                    )
 
             except Exception as exc:
                 elapsed = time.perf_counter() - stage_start
@@ -254,6 +256,9 @@ def _apply_history_cap(
     else:
         return
 
+    context.set_metadata("history_cap_applied", True)
+    context.set_metadata("history_cap_budget", max_history_tokens)
+
     # Apply capping.
     messages = nr.messages
     capped_messages, dropped_count = cap_history(
@@ -262,21 +267,17 @@ def _apply_history_cap(
         estimate=lambda text: int(len(text) / CHARS_PER_TOKEN) if text else 0,
     )
 
+    total_after = sum(
+        int(len(_content_to_text(m.get("content", ""))) / CHARS_PER_TOKEN)
+        for m in capped_messages
+    )
+    context.set_metadata("history_dropped_count", dropped_count)
+    context.set_metadata("history_tokens_after", total_after)
+
     if dropped_count > 0:
         # Create a new NormalizedRequest with capped messages.
         capped_nr = nr.with_messages(capped_messages)
         context.normalized_request = capped_nr
-
-        # Estimate tokens after capping for logging.
-        total_after = sum(
-            int(len(_content_to_text(m.get("content", ""))) / CHARS_PER_TOKEN)
-            for m in capped_messages
-        )
-
-        # Store on context.metadata for the session logger to surface
-        # via response.metadata (set by _surface_history_metadata).
-        context.set_metadata("history_dropped_count", dropped_count)
-        context.set_metadata("history_tokens_after", total_after)
 
         logger.info(
             "history_cap request_id=%s dropped=%d tokens_after=%d budget=%d",

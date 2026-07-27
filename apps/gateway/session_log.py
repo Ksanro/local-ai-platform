@@ -332,10 +332,15 @@ class SessionLoggerMiddleware:
         provider_wait_ms = scope.get("session_provider_wait_ms")
 
         # --- history capping metadata ---
+        history_cap_enabled = scope.get("session_history_cap_enabled", False)
+        history_cap_applied = scope.get("session_history_cap_applied", False)
+        history_cap_budget = scope.get("session_history_cap_budget", 0)
         history_dropped_count = scope.get("session_history_dropped_count", 0)
         history_tokens_after = scope.get("session_history_tokens_after", 0)
         history_section = {
-            "cap_enabled": (history_dropped_count or 0) > 0 or (history_tokens_after or 0) > 0,
+            "cap_enabled": bool(history_cap_enabled),
+            "cap_applied": bool(history_cap_applied),
+            "budget": history_cap_budget if history_cap_budget is not None else 0,
             "dropped_count": history_dropped_count if history_dropped_count is not None else 0,
             "tokens_after": history_tokens_after if history_tokens_after is not None else 0,
         }

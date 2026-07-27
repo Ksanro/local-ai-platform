@@ -229,6 +229,9 @@ def _surface_session_metadata(
     # --- History capping metadata ---
     # Read from response.metadata (copied from context.metadata in PipelineResponse.from_context).
     resp_meta = getattr(response, "metadata", {}) or {}
+    scope["session_history_cap_enabled"] = resp_meta.get("history_cap_enabled", False)
+    scope["session_history_cap_applied"] = resp_meta.get("history_cap_applied", False)
+    scope["session_history_cap_budget"] = resp_meta.get("history_cap_budget", 0)
     scope["session_history_dropped_count"] = resp_meta.get("history_dropped_count", 0)
     scope["session_history_tokens_after"] = resp_meta.get("history_tokens_after", 0)
 

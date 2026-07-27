@@ -557,6 +557,8 @@ def _print_history_capping(records: list[dict[str, Any]]) -> None:
     print("-" * 40)
 
     cap_enabled_count = 0
+    cap_applied_count = 0
+    budget_values: list[int] = []
     dropped_count_values: list[int] = []
     tokens_after_values: list[int] = []
 
@@ -564,6 +566,11 @@ def _print_history_capping(records: list[dict[str, Any]]) -> None:
         h = r.get("history", {})
         if h.get("cap_enabled", False):
             cap_enabled_count += 1
+        if h.get("cap_applied", False):
+            cap_applied_count += 1
+        budget = h.get("budget", 0)
+        if budget:
+            budget_values.append(int(budget))
         dc = h.get("dropped_count", 0)
         ta = h.get("tokens_after", 0)
         tokens_after_values.append(ta)
@@ -571,6 +578,9 @@ def _print_history_capping(records: list[dict[str, Any]]) -> None:
             dropped_count_values.append(int(dc))
 
     print(f"  requests with cap enabled:       {cap_enabled_count}")
+    print(f"  requests where cap ran:          {cap_applied_count}")
+    if budget_values:
+        print(f"  median cap budget:               {statistics.median(budget_values):.0f}")
     print(f"  requests where history was dropped: {len(dropped_count_values)}")
     if dropped_count_values:
         print(f"  median dropped_count (when >0):   {statistics.median(dropped_count_values):.0f}")
