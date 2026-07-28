@@ -39,11 +39,13 @@ independent decision logic.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 from packages.pipeline.base import PipelineStage
 from packages.pipeline.context import PipelineContext
 from packages.pipeline.result import PipelineStageResult
+from packages.planning.intent import Intent
 from packages.planning.planner import ContextPlanner
 
 logger = logging.getLogger(__name__)
@@ -114,11 +116,13 @@ class PlanningStage(PipelineStage):
         try:
             # Extract user messages from the request.
             messages = self._extract_messages(context)
+            intent_match = Intent.detect_match(messages)
             context.set_metadata("planning_user_message_count", len(messages))
             context.set_metadata(
                 "planning_last_user_message",
                 messages[-1] if messages else "",
             )
+            context.set_metadata("planning_matched_keyword", intent_match.keyword)
 
             # Run the planner.
             plan = self._planner.build(
@@ -211,7 +215,7 @@ class PlanningStage(PipelineStage):
                 if text:
                     user_messages.append(text)
 
-        return user_messages
+        return _select_intent_messages(user_messages)
 
 
 def _content_to_text(content: Any) -> str:
@@ -227,3 +231,38 @@ def _content_to_text(content: Any) -> str:
                 parts.append(item)
         return " ".join(parts)
     return ""
+
+
+def _select_intent_messages(messages: list[str]) -> list[str]:
+    """Select user-authored task text for intent detection.
+
+    Cline sends tool results back as user-role messages. For those
+    requests, the original ``<task>`` block is a cleaner signal than
+    read-file output, tool reminders, or other harness text.
+    """
+    filtered = [
+        message
+        for message in messages
+        if not _looks_like_tool_result_message(message)
+    ]
+
+    task_messages: list[str] = []
+    for message in filtered:
+        task_messages.extend(
+            match.strip()
+            for match in re.findall(r"<task>\s*(.*?)\s*</task>", message, re.DOTALL)
+            if match.strip()
+        )
+    if task_messages:
+        return task_messages
+
+    return filtered or messages
+
+
+def _looks_like_tool_result_message(message: str) -> bool:
+    """Return True for Cline tool-result/user-reminder messages."""
+    stripped = message.lstrip()
+    return (
+        stripped.startswith("[read_file for ")
+        or stripped.startswith("[ERROR] You did not use a tool")
+    )

@@ -130,7 +130,7 @@ class EvaluationStage(PipelineStage):
             # The WorkflowEvaluator expects specific input types.
             # We pass the execution report and relevant context data.
             evaluation_report = self._evaluator.evaluate(
-                workflow_plan=context.get_metadata("workflow_plan"),
+                workflow_plan=context.workflow_plan,
                 execution_report=execution_report,
                 capability_result=None,  # CapabilityResult not available in v1
                 task_plan=None,  # TaskPlan not directly available

@@ -36,6 +36,15 @@ positives where common coding words appear in symbol names.
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class IntentMatch:
+    """Details about the first keyword match used for intent detection."""
+
+    intent: str
+    keyword: str = ""
 
 
 class Intent:
@@ -83,13 +92,6 @@ class Intent:
                 "understand",
                 "architecture",
                 "overview",
-                "work",
-                "flow",
-                "mechanism",
-                "purpose",
-                "role",
-                "function",
-                "means",
             ),
         ),
         (
@@ -192,6 +194,44 @@ class Intent:
         return {w.lower() for w in re.findall(r"\b[\w]+\b", text)}
 
     @classmethod
+    def detect_match(cls, messages: list[str]) -> IntentMatch:
+        """Detect intent from user messages and return match details.
+
+        Checks keywords in priority order. First match wins.
+        Keywords are matched as whole words, not substrings.
+        If no keywords match, returns DEFAULT.
+
+        Args:
+            messages: List of user message strings.
+
+        Returns:
+            An IntentMatch with the detected intent and matched keyword.
+        """
+        if not messages:
+            return IntentMatch(cls.DEFAULT)
+
+        # Combine all messages into a single lowercase string for matching.
+        combined = " ".join(msg.strip().lower() for msg in messages if msg and msg.strip())
+
+        if not combined:
+            return IntentMatch(cls.DEFAULT)
+
+        # Extract unique words for whole-word matching.
+        words = cls._extract_words(combined)
+
+        for intent, keywords in cls._KEYWORD_PATTERNS:
+            for keyword in keywords:
+                # Multi-word keywords: check as literal substring.
+                if " " in keyword:
+                    if keyword in combined:
+                        return IntentMatch(intent, keyword)
+                # Single-word keywords: check as set membership.
+                elif keyword in words:
+                    return IntentMatch(intent, keyword)
+
+        return IntentMatch(cls.DEFAULT)
+
+    @classmethod
     def detect(cls, messages: list[str]) -> str:
         """Detect intent from user messages.
 
@@ -205,26 +245,4 @@ class Intent:
         Returns:
             The detected intent string.
         """
-        if not messages:
-            return cls.DEFAULT
-
-        # Combine all messages into a single lowercase string for matching.
-        combined = " ".join(msg.strip().lower() for msg in messages if msg and msg.strip())
-
-        if not combined:
-            return cls.DEFAULT
-
-        # Extract unique words for whole-word matching.
-        words = cls._extract_words(combined)
-
-        for intent, keywords in cls._KEYWORD_PATTERNS:
-            for keyword in keywords:
-                # Multi-word keywords: check as literal substring.
-                if " " in keyword:
-                    if keyword in combined:
-                        return intent
-                # Single-word keywords: check as set membership.
-                elif keyword in words:
-                    return intent
-
-        return cls.DEFAULT
+        return cls.detect_match(messages).intent

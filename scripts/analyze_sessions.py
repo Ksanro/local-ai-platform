@@ -12,7 +12,7 @@ Reads a JSONL session log and prints a structured summary including:
 - Error requests
 - **Timing breakdown**: pipeline_ms vs provider_wait_ms
 - **Latency-by-prompt-size buckets** with Pearson correlation
-- **Context cost**: tokens added and assembly time
+- **Context cost**: repository-context tokens, prompt share, and assembly time
 
 Usage
 -----
@@ -592,9 +592,9 @@ def _print_history_capping(records: list[dict[str, Any]]) -> None:
 def _print_context_cost(records: list[dict[str, Any]]) -> None:
     """Print the context cost attribution section.
 
-    Compares ``prompt_tokens`` on ``assembled`` vs ``empty``/``disabled``
-    turns of similar conversation depth to estimate tokens added by
-    context, and reports ``repository_context_ms`` assembly time.
+    Reports direct ``context.estimated_tokens`` values written by the
+    repository-context stage. Also reports repository-context assembly
+    time and, when available, a rough assembled-vs-baseline prompt delta.
 
     Args:
         records: A list of session log record dicts.
@@ -603,10 +603,12 @@ def _print_context_cost(records: list[dict[str, Any]]) -> None:
     print("CONTEXT COST")
     print("-" * 40)
 
-    # Gather prompt_tokens by context status
+    # Gather prompt_tokens by context status and direct context estimates.
     assembled_tokens: list[int] = []
     empty_tokens: list[int] = []
     disabled_tokens: list[int] = []
+    context_tokens: list[int] = []
+    context_prompt_pct: list[float] = []
     repo_ms_values: list[float] = []
 
     for r in records:
@@ -615,6 +617,13 @@ def _print_context_cost(records: list[dict[str, Any]]) -> None:
         ctx = r.get("context", {})
         pt = u.get("prompt_tokens")
         status = ctx.get("status", "disabled")
+        est = ctx.get("estimated_tokens")
+        if est is not None:
+            est_int = int(est)
+            if est_int > 0:
+                context_tokens.append(est_int)
+                if pt:
+                    context_prompt_pct.append((est_int / int(pt)) * 100)
         if pt is not None:
             if status == "assembled":
                 assembled_tokens.append(int(pt))
@@ -627,9 +636,27 @@ def _print_context_cost(records: list[dict[str, Any]]) -> None:
         if rctx is not None:
             repo_ms_values.append(float(rctx))
 
+    if context_tokens:
+        print("  Direct repository context estimate:")
+        print(
+            f"    Median:  {statistics.median(context_tokens):.0f} tokens"
+        )
+        print(f"    Mean:    {_mean(context_tokens):.0f} tokens")
+        print(f"    Min:     {min(context_tokens):.0f} tokens")
+        print(f"    Max:     {max(context_tokens):.0f} tokens")
+        print(f"    n:       {len(context_tokens)}")
+        if context_prompt_pct:
+            print(
+                f"    Median share of prompt: "
+                f"{statistics.median(context_prompt_pct):.1f}%"
+            )
+    else:
+        print("  Direct repository context estimate: no context token data.")
+    print()
+
     if assembled_tokens and (empty_tokens or disabled_tokens):
         baseline = empty_tokens if empty_tokens else disabled_tokens
-        print("  Tokens added by context:")
+        print("  Prompt-token comparison by context status:")
         print(
             f"    Assembled turns:     "
             f"median={statistics.median(assembled_tokens):.0f}  "
@@ -649,13 +676,14 @@ def _print_context_cost(records: list[dict[str, Any]]) -> None:
                 f"~{statistics.median(implied):.0f} tokens (median)"
             )
     elif assembled_tokens:
-        print("  Tokens added by context:")
+        print("  Prompt-token comparison by context status:")
         print(
             f"    Assembled turns:     "
             f"median={statistics.median(assembled_tokens):.0f}  "
             f"mean={_mean(assembled_tokens):.0f}  "
             f"n={len(assembled_tokens)}"
         )
+        print("    Baseline:            no empty/disabled turns available")
     print()
 
     if repo_ms_values:

@@ -158,6 +158,77 @@ class TestPlanningStageExecute:
         assert context.get_metadata("planning_last_user_message") == (
             "Locate cap metadata"
         )
+        assert context.get_metadata("planning_matched_keyword") == "find"
+
+    def test_execute_uses_cline_task_block_for_intent_metadata(self):
+        """Cline task text is used instead of noisy tool-result messages."""
+        stage = PlanningStage()
+        context = PipelineContext(
+            request={
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": (
+                            "<task>Locate session logging</task>\n"
+                            "# task_progress RECOMMENDED\n"
+                            "Include a todo list when you work."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            "[read_file for 'apps/gateway/session_log.py'] Result:\n"
+                            '"""JSONL session logger for the gateway."""'
+                        ),
+                    },
+                ]
+            }
+        )
+
+        asyncio.run(stage.execute(context))
+
+        plan = context.get_metadata("context_plan")
+        assert plan.intent == "SEARCH"
+        assert context.get_metadata("planning_user_message_count") == 1
+        assert context.get_metadata("planning_last_user_message") == (
+            "Locate session logging"
+        )
+        assert context.get_metadata("planning_matched_keyword") == "locate"
+
+    def test_execute_ignores_task_blocks_inside_tool_results(self):
+        """Task-shaped source text in tool results is not planner input."""
+        stage = PlanningStage()
+        context = PipelineContext(
+            request={
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": (
+                            "<task>Test session logging metadata</task>\n"
+                            "# task_progress RECOMMENDED"
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            "[read_file for 'tests/planning/test_planning_stage.py'] "
+                            "Result:\n"
+                            'text = "<task>Locate session logging</task>"'
+                        ),
+                    },
+                ]
+            }
+        )
+
+        asyncio.run(stage.execute(context))
+
+        plan = context.get_metadata("context_plan")
+        assert plan.intent == "TEST"
+        assert context.get_metadata("planning_user_message_count") == 1
+        assert context.get_metadata("planning_last_user_message") == (
+            "Test session logging metadata"
+        )
+        assert context.get_metadata("planning_matched_keyword") == "test"
 
     def test_execute_with_custom_planner(self):
         """Execute uses custom planner when provided."""

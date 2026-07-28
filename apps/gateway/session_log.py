@@ -278,6 +278,7 @@ class SessionLoggerMiddleware:
                 scope.get("session_planning_last_user_message", ""),
                 500,
             ),
+            "matched_keyword": scope.get("session_planning_matched_keyword", ""),
         }
 
         # Backend model.

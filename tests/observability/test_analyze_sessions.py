@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import json
 import tempfile
-from pathlib import Path
 
 from scripts.analyze_sessions import _load_records, analyze
 
@@ -173,6 +172,59 @@ class TestMixedTokenValues:
         assert "prompt_tokens=0" in output
 
 
+class TestContextCost:
+    """Tests for repository-context cost attribution."""
+
+    def _write_fixture(self, records: list[dict[str, object]]) -> str:
+        fh = tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False)
+        for r in records:
+            fh.write(json.dumps(r) + "\n")
+        fh.close()
+        return fh.name
+
+    def test_context_cost_uses_direct_estimated_tokens(self) -> None:
+        """Analyzer reports context.estimated_tokens separately from prompt tokens."""
+        records = [
+            {
+                "context": {
+                    "status": "assembled",
+                    "estimated_tokens": 1000,
+                },
+                "usage": {"prompt_tokens": 4000, "completion_tokens": 100},
+                "timing": {"total_ms": 100, "stages": {"repository_context_ms": 12.5}},
+                "status": "ok",
+            },
+            {
+                "context": {
+                    "status": "assembled",
+                    "estimated_tokens": 2000,
+                },
+                "usage": {"prompt_tokens": 8000, "completion_tokens": 100},
+                "timing": {"total_ms": 200, "stages": {"repository_context_ms": 17.5}},
+                "status": "ok",
+            },
+        ]
+        path = self._write_fixture(records)
+        recs = _load_records(path)
+
+        import io
+        import sys
+
+        out = io.StringIO()
+        old_stdout = sys.stdout
+        sys.stdout = out
+        try:
+            analyze(recs)
+        finally:
+            sys.stdout = old_stdout
+
+        output = out.getvalue()
+        assert "Direct repository context estimate" in output
+        assert "Median:  1500 tokens" in output
+        assert "Median share of prompt: 25.0%" in output
+        assert "Prompt-token comparison by context status" in output
+
+
 class TestLastUserMessagePreview:
     """Tests for last_user_message preview in analyzer output."""
 
@@ -191,7 +243,10 @@ class TestLastUserMessagePreview:
                 "usage": {"prompt_tokens": 100, "completion_tokens": 50},
                 "timing": {"total_ms": 1000},
                 "status": "ok",
-                "last_user_message": "This is a test message that should appear in the slowest requests preview",
+                "last_user_message": (
+                    "This is a test message that should appear in the "
+                    "slowest requests preview"
+                ),
             },
         ]
         path = self._write_fixture(records)

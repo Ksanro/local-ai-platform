@@ -216,11 +216,9 @@ class TestWordBoundaryMatching:
         assert Intent.detect(messages) == Intent.DEFAULT
 
     def test_work_not_in_network(self):
-        """'work' keyword should NOT match 'network'."""
+        """Generic flow wording should not trigger EXPLAIN."""
         messages = ["The network flow is slow"]
-        # "network" contains "work", "flow" is an EXPLAIN keyword
-        # "flow" as a standalone word should match EXPLAIN
-        assert Intent.detect(messages) == Intent.EXPLAIN
+        assert Intent.detect(messages) == Intent.DEFAULT
 
     def test_function_not_in_functionality(self):
         """'function' keyword should NOT match 'functionality'."""
@@ -258,29 +256,19 @@ class TestAdversarialCollision:
     """Test adversarial multi-intent messages that trigger collision detection."""
 
     def test_debug_with_function_keyword(self):
-        """Message with 'function' (EXPLAIN) and 'fix' (DEBUG) should be DEBUG."""
-        # EXPLAIN is checked first, but "function" as a whole word
-        # should not cause misclassification when DEBUG keywords are present
+        """Generic code nouns should not override DEBUG keywords."""
         messages = ["the auth function is broken, fix it"]
-        # "function" is EXPLAIN keyword, "broken" and "fix" are DEBUG keywords
-        # EXPLAIN is checked first in priority order, so "function" matches EXPLAIN
-        # This is expected behavior: EXPLAIN wins on first-match
-        assert Intent.detect(messages) == Intent.EXPLAIN
+        assert Intent.detect(messages) == Intent.DEBUG
 
     def test_debug_with_work_keyword(self):
-        """Message with 'work' (EXPLAIN) and 'fix' (DEBUG) should be EXPLAIN."""
+        """Generic 'work' wording should not override DEBUG keywords."""
         messages = ["the tests don't work, fix them"]
-        # "work" is EXPLAIN keyword, "fix" is DEBUG keyword
-        # EXPLAIN is checked first, so "work" matches EXPLAIN first
-        assert Intent.detect(messages) == Intent.EXPLAIN
+        assert Intent.detect(messages) == Intent.DEBUG
 
     def test_pure_debug_no_explain_keywords(self):
         """Pure DEBUG message without EXPLAIN keywords should be DEBUG."""
         messages = ["the auth function is broken, fix it now"]
-        # "function" is EXPLAIN keyword, "broken" and "fix" are DEBUG keywords
-        # Since EXPLAIN is checked first and "function" is a whole word match,
-        # EXPLAIN wins. This is the expected first-match-wins behavior.
-        assert Intent.detect(messages) == Intent.EXPLAIN
+        assert Intent.detect(messages) == Intent.DEBUG
 
     def test_pure_debug_message(self):
         """Pure DEBUG message should correctly return DEBUG."""
@@ -295,11 +283,16 @@ class TestAdversarialCollision:
         assert Intent.detect(messages) == Intent.REFACTOR
 
     def test_implementation_with_explain_keywords(self):
-        """IMPLEMENT with EXPLAIN keywords should still be IMPLEMENT."""
+        """Generic flow wording should not override IMPLEMENT."""
         messages = ["implement a new feature that explains the flow"]
-        # "implement" is IMPLEMENT, "flow" is EXPLAIN
-        # EXPLAIN is checked first, so "flow" matches EXPLAIN first
-        assert Intent.detect(messages) == Intent.EXPLAIN
+        assert Intent.detect(messages) == Intent.IMPLEMENT
+
+    def test_detect_match_returns_keyword(self):
+        """Detection can report the keyword that selected the intent."""
+        match = Intent.detect_match(["Locate session logging"])
+
+        assert match.intent == Intent.SEARCH
+        assert match.keyword == "locate"
 
 
 class TestExtractWords:

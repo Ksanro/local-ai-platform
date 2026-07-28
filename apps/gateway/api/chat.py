@@ -143,6 +143,10 @@ def _surface_session_metadata(
         "planning_last_user_message",
         "",
     )
+    scope["session_planning_matched_keyword"] = resp_meta.get(
+        "planning_matched_keyword",
+        "",
+    )
 
     # --- Repository context metadata ---
     repo_result = stage_results.get("repository_context")

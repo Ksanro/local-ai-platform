@@ -57,6 +57,7 @@ def test_enabled_logger_writes_record(tmp_path: Path) -> None:
             "session_primary_symbol": "test.symbol",
             "session_planning_user_message_count": 1,
             "session_planning_last_user_message": "Hello",
+            "session_planning_matched_keyword": "",
             "session_backend_model": "unsloth/qwen36",
             "session_conversation_key": "__new__",
         }
@@ -101,6 +102,7 @@ def test_enabled_logger_writes_record(tmp_path: Path) -> None:
     assert record["intent"] == "DEFAULT"
     assert record["planning"]["user_message_count"] == 1
     assert record["planning"]["last_user_message"] == "Hello"
+    assert record["planning"]["matched_keyword"] == ""
     assert record["context"]["status"] == "assembled"
     assert record["context"]["symbols_selected"] == 5
     assert record["answer_preview"] == "ok"
