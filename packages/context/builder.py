@@ -65,7 +65,12 @@ from __future__ import annotations
 import os
 
 from packages.context.budget import ContextBudget
-from packages.context.models import ContextCandidate, ContextQuery, ContextResult
+from packages.context.models import (
+    ContextBudgetResult,
+    ContextCandidate,
+    ContextQuery,
+    ContextResult,
+)
 from packages.context.ranking import RankingEngine
 from packages.repository.index.models import RepositoryIndex
 from packages.repository.symbols.graph import SymbolGraphView
@@ -161,7 +166,11 @@ class ContextBuilder:
                 symbol_id=sym.id,
                 qualified_name=sym.qualified_name,
                 module=sym.module,
-                symbol_type=sym.symbol_type.value if hasattr(sym.symbol_type, 'value') else str(sym.symbol_type),
+                symbol_type=(
+                    sym.symbol_type.value
+                    if hasattr(sym.symbol_type, "value")
+                    else str(sym.symbol_type)
+                ),
                 is_in_init_py=is_in_init_py,
             ))
 
@@ -217,13 +226,12 @@ class ContextBuilder:
                 if len(selected_modules) >= max_modules:
                     break
 
-        # Estimate context size against the token budget using actual
-        # assembled content (Context Quality v2).
-        budget_engine = ContextBudget()
-        budget = budget_engine.estimate(
-            candidates=candidates,
-            modules=selected_modules,
-            max_tokens=query.max_tokens,
+        # Enforce the context token budget after enrichment, where actual
+        # source/docstring content is available to estimate.
+        candidates, selected_modules, budget = self._enforce_budget(
+            candidates,
+            selected_modules,
+            query.max_tokens,
         )
 
         return ContextResult(
@@ -231,6 +239,76 @@ class ContextBuilder:
             selected_modules=selected_modules,
             budget=budget,
         )
+
+    def _enforce_budget(
+        self,
+        candidates: list[ContextCandidate],
+        selected_modules: list[str],
+        max_tokens: int,
+    ) -> tuple[list[ContextCandidate], list[str], ContextBudgetResult]:
+        """Trim enriched context until it fits the configured token budget.
+
+        Keeps the primary candidate whenever possible, drops supporting
+        candidates from the tail, then trims verbose primary/supporting
+        source fields if the remaining package is still over budget.
+        """
+        budget_engine = ContextBudget()
+        effective_max = max_tokens if max_tokens > 0 else 4096
+        budget = budget_engine.estimate(candidates, selected_modules, effective_max)
+        if budget.within_budget:
+            return candidates, selected_modules, budget
+
+        trimmed = list(candidates)
+        while len(trimmed) > 1:
+            trimmed.pop()
+            modules = self._select_modules_for_candidates(trimmed, selected_modules)
+            budget = budget_engine.estimate(trimmed, modules, effective_max)
+            if budget.within_budget:
+                return trimmed, modules, budget
+
+        if trimmed:
+            modules = self._select_modules_for_candidates(trimmed, selected_modules)
+            self._trim_candidate_content_to_budget(trimmed[0], modules, effective_max)
+
+        modules = self._select_modules_for_candidates(trimmed, selected_modules)
+        budget = budget_engine.estimate(trimmed, modules, effective_max)
+        return trimmed, modules, budget
+
+    @staticmethod
+    def _select_modules_for_candidates(
+        candidates: list[ContextCandidate],
+        selected_modules: list[str],
+    ) -> list[str]:
+        """Keep selected modules that still have included candidates."""
+        candidate_modules = {candidate.module for candidate in candidates}
+        return [module for module in selected_modules if module in candidate_modules]
+
+    @staticmethod
+    def _trim_candidate_content_to_budget(
+        candidate: ContextCandidate,
+        selected_modules: list[str],
+        max_tokens: int,
+    ) -> None:
+        """Trim verbose candidate fields to fit approximately within budget."""
+        max_chars = max(0, (max_tokens * 4) - 4)
+        fixed_chars = (
+            len(candidate.qualified_name)
+            + len(candidate.module)
+            + len(candidate.signature)
+            + sum(len(module) for module in selected_modules)
+        )
+        available_chars = max(0, max_chars - fixed_chars)
+
+        if candidate.source and len(candidate.source) > available_chars:
+            candidate.source = candidate.source[:available_chars]
+            candidate.source_preview = ""
+            candidate.docstring = ""
+            return
+
+        used = len(candidate.source) + len(candidate.source_preview)
+        remaining = max(0, available_chars - used)
+        if candidate.docstring and len(candidate.docstring) > remaining:
+            candidate.docstring = candidate.docstring[:remaining]
 
     def _enrich_with_source_data(
         self,
@@ -312,7 +390,10 @@ class ContextBuilder:
                         candidate.source_lines = len(source.splitlines()) if source else 0
                         # Deduct from remaining budget.
                         estimated_tokens = len(preview) // 4
-                        remaining_support_tokens = max(0, remaining_support_tokens - estimated_tokens)
+                        remaining_support_tokens = max(
+                            0,
+                            remaining_support_tokens - estimated_tokens,
+                        )
                 elif source:
                     # Still count lines even if no preview.
                     candidate.source_lines = len(source.splitlines()) if source else 0

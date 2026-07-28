@@ -47,9 +47,12 @@ injects repository context into the provider-bound messages. Delta injection
 suppresses symbols already sent in the conversation.
 
 `APP_REPOSITORY_CONTEXT_MAX_TOKENS` controls the token budget passed to
-repository-context ranking and relationship expansion. Session logs record
-both `context.estimated_tokens` and `context.max_tokens` so context size can
-be measured separately from full provider prompt tokens.
+repository-context ranking, relationship expansion, and final assembled
+context trimming. The builder preserves the primary symbol first, drops
+lower-ranked supporting symbols, and trims oversized primary source when
+needed. Session logs record both `context.estimated_tokens` and
+`context.max_tokens` so context size can be measured separately from full
+provider prompt tokens.
 
 ### History Capping
 
@@ -145,8 +148,8 @@ Recommended live-path checks:
 - CI still runs broad repo checks and should be realigned to the documented
   baseline or cleaned up.
 - Repository context can dominate prompt size; history capping alone is not the
-  full latency lever. A configurable repository-context budget now exists, but
-  hard serialization-level truncation is still future work.
+  full latency lever. Configurable repository-context budget enforcement now
+  exists; the next step is live tuning by intent/model.
 - Token estimates still use `CHARS_PER_TOKEN = 4.0`, not model-specific
   tokenizers.
 - Only vLLM is implemented as a concrete provider; true multi-provider

@@ -432,6 +432,51 @@ def main():
 
         assert len(result.candidates) == 0
 
+    def test_build_drops_supporting_symbols_to_fit_budget(self):
+        """Builder drops lowest-ranked supporting symbols when over budget."""
+        source = "def alpha():\n" + ("    return 'alpha'\n" * 200)
+        symbols = [
+            _make_symbol("mod.alpha", "mod.py", lineno=1),
+            _make_symbol("mod.beta", "mod.py", lineno=2),
+            _make_symbol("mod.gamma", "mod.py", lineno=3),
+        ]
+        index = _make_index([_make_module("mod.py", symbols, source=source)])
+
+        query = ContextQuery(
+            text="alpha beta gamma",
+            max_symbols=3,
+            max_modules=1,
+            max_tokens=32,
+        )
+
+        builder = ContextBuilder(index=index)
+        result = builder.build(query)
+
+        assert len(result.candidates) == 1
+        assert result.budget.estimated_tokens <= query.max_tokens
+        assert result.budget.within_budget is True
+
+    def test_build_trims_primary_source_to_fit_budget(self):
+        """Builder trims oversized primary source when no support remains."""
+        source = "def alpha():\n" + ("    return 'alpha'\n" * 400)
+        symbols = [_make_symbol("mod.alpha", "mod.py", lineno=1)]
+        index = _make_index([_make_module("mod.py", symbols, source=source)])
+
+        query = ContextQuery(
+            text="alpha",
+            max_symbols=1,
+            max_modules=1,
+            max_tokens=48,
+        )
+
+        builder = ContextBuilder(index=index)
+        result = builder.build(query)
+
+        assert len(result.candidates) == 1
+        assert len(result.candidates[0].source) < len(source)
+        assert result.budget.estimated_tokens <= query.max_tokens
+        assert result.budget.within_budget is True
+
 
 # ------------------------------------------------------------------
 # Tests: ContextComposer source-aware context
