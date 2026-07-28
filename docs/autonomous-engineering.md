@@ -1,5 +1,10 @@
 # Autonomous Engineering Framework
 
+> Status: dormant / not wired into the live gateway.
+>
+> This document describes scaffolded future architecture. It is not runtime
+> behavior unless `docs/STATUS.md` says otherwise.
+
 ## Architecture Overview
 
 The Autonomous Engineering Framework is the orchestration layer of the platform. It sits **above** the Workflow Engine and repeatedly invokes existing workflows until an engineering objective is achieved or a deterministic stopping condition is reached.

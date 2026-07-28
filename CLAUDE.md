@@ -22,6 +22,20 @@ The live request path is **four pipeline stages**, registered in this order in
 
 See `docs/execution-flow.mmd`.
 
+## Documentation authority
+
+When documentation disagrees, use this order:
+
+1. `CLAUDE.md` for agent/contributor operating rules
+2. `docs/STATUS.md` for current runtime status
+3. `docs/roadmap.md` for current goals
+4. `TESTING.md` for measurement protocol
+5. older design docs only as dormant/future background
+
+Do not treat a package-specific doc as proof that code is wired into the live
+gateway. Runtime truth comes from `apps/gateway/main.py`, session logs, and
+focused tests.
+
 ## What does NOT run
 
 These packages have **zero references** from `apps/` or from any pipeline stage. They are not

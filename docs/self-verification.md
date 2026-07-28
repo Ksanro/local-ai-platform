@@ -1,5 +1,10 @@
 # Self Verification Framework
 
+> Status: dormant / not wired into the live gateway.
+>
+> This document describes scaffolded future architecture. It is not runtime
+> behavior unless `docs/STATUS.md` says otherwise.
+
 ## Architecture
 
 The Self Verification Framework validates the result of engineering execution. It determines whether an engineering execution produced the expected outcome and generates a deterministic `VerificationReport`.

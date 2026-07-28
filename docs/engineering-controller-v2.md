@@ -1,5 +1,10 @@
 # Engineering Controller v2
 
+> Status: dormant / not wired into the live gateway.
+>
+> This document describes scaffolded future architecture. It is not runtime
+> behavior unless `docs/STATUS.md` says otherwise.
+
 ## Central Orchestration Component for Autonomous Engineering Sessions
 
 The Engineering Controller v2 is the central orchestration component responsible for autonomous engineering sessions. It coordinates existing platform components without duplicating their responsibilities.

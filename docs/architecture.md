@@ -1,5 +1,12 @@
 # Local AI Platform Architecture
 
+> Status: historical / partially stale.
+>
+> For current runtime behavior, read `docs/STATUS.md`, `docs/roadmap.md`,
+> `CLAUDE.md`, and `apps/gateway/main.py`. This document contains older
+> architectural goals and may describe dormant or future systems as if they
+> are active.
+
 Version: 0.1
 Status: Draft
 License: Apache 2.0

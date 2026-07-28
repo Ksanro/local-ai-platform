@@ -1,66 +1,73 @@
 # Documentation Index
 
-Documentation for Local AI Platform.
+This index separates runtime documentation from older design and scaffold
+documents. When files disagree, prefer the runtime docs below.
 
-## Core Architecture
+## Authoritative Runtime Docs
 
-- [Status & Architecture Overview](STATUS.md) — Comprehensive status, architecture, features, and roadmap
-- [Architecture](architecture.md) — Detailed architecture documentation
+- [README](../README.md) - human quick start and project overview
+- [CLAUDE](../CLAUDE.md) - operating rules for agents and contributors
+- [TESTING](../TESTING.md) - live measurement and test protocol
+- [Current Status](STATUS.md) - current live gateway snapshot
+- [Roadmap](roadmap.md) - current goals and deferred work
+- [Execution Flow](execution-flow.mmd) - live gateway pipeline diagram
 
-## Repository Intelligence
+## Live Gateway Internals
 
-- [Symbol Graph](symbol-graph.md) — Language-independent symbol representation, Python AST extractor, 82 tests
-- [Repository Index Service](STATUS.md#9-repository-index-service) — Structured index with symbol graph, relationships, statistics
-- [Repository Scanner](STATUS.md#5-repository-scanner) — Directory walking, language detection, gitignore filtering
-- [Relationship-Aware Ranking](relationship-ranking.md) — Relationship signals for context ranking
-- [Relationship Extraction](relationship-extraction.md) — Language-independent extractors (CallExtractor), registry pattern
-- [Workspace Dependency Graph](workspace-dependency-graph.md) — Immutable graph from RepositoryIndex with deterministic traversal
-- [Repository Diagnostics](repository-diagnostics.md) — Dead code, orphan modules, large modules, graph statistics
-- [Change Impact Analysis](change-impact.md) — Deterministic impact analysis with confidence scoring
+These docs describe components that are in or directly support the live path.
+Some may still contain older wording, but the components are reachable.
 
-## Context & Planning
+- [Context Builder](context-builder.md)
+- [Context Package](context-package.md)
+- [Context Planning](context-planning.md)
+- [Planner Rules](planner-rules.md)
+- [Scoring Rules](scoring-rules.md)
+- [Serialization](serialization.md)
+- [Symbol Graph](symbol-graph.md)
+- [Relationship Ranking](relationship-ranking.md)
+- [Relationship Extraction](relationship-extraction.md)
+- [Repository Diagnostics](repository-diagnostics.md)
+- [Workspace Dependency Graph](workspace-dependency-graph.md)
+- [Change Impact](change-impact.md)
 
-- [Context Builder](context-builder.md) — Ranking engine, budget estimation, context composer
-- [Context Package](context-package.md) — Context Package v2 documentation
-- [Context Planning Engine](context-planning.md) — Intent detection, ContextPlan, PlanningStage
-- [Planning Rules](planner-rules.md) — PlanningRule dataclass, RuleEngine, BUILTIN_RULES
-- [Scoring Rules](scoring-rules.md) — RankingReason, score_candidate(), score_relationship(), additive scoring model
+## Dormant Or Future Architecture Docs
 
-## Capabilities
+These documents describe scaffolding or future architecture that is not wired
+into the live gateway path. They are useful background, not runtime truth.
 
-- [Capability Framework](capabilities.md) — ExplainCapability, DebugCapability, RefactorCapability, CapabilityRegistry, CapabilityFactory, RetrievalProfile
+- [Architecture](architecture.md)
+- [Capabilities](capabilities.md)
+- [Tasks](tasks.md)
+- [Workflows](workflows.md)
+- [Controller](controller.md)
+- [Engineering Controller v2](engineering-controller-v2.md)
+- [Engineering Controller Flow](engineering-controller-flow.mmd)
+- [Engineering Session](engineering-session.md)
+- [Autonomous Engineering](autonomous-engineering.md)
+- [Execution Engine](execution-engine.md)
+- [Execution Planner](execution-planner.md)
+- [Self Verification](self-verification.md)
+- [Evaluation Framework](evaluation-framework.md)
+- [Code Modification Engine](code-modification-engine.md)
+- [Patch Generator](patch-generator.md)
+- [Observability](observability.md)
+- [Bootstrap](bootstrap.md)
+- [Platform Validation](platform-validation.md)
+- [Benchmark Framework](benchmark-framework.md)
+- [Refactoring Advisor](advisors-refactoring.md)
+- [Architecture Review](architecture-review.md)
+- [Bug Investigation](bug-investigation.md)
+- [Pull Request Review](pull-request-review.md)
+- [Planning v2](planning-v2.md)
+- [Ranking v2](ranking-v2.md)
 
-## Advisors
+## Archive Policy
 
-- [Refactoring Advisor](advisors-refactoring.md) — Deterministic refactoring recommendations, confidence scoring, immutable models
+Dormant docs do not need to be deleted. Before reviving one, first answer:
 
-## Serialization
+- Is the corresponding code reachable from `apps/gateway/main.py`?
+- Is behavior visible in session logs or API responses?
+- Is there a focused test for the live path?
+- Does `docs/STATUS.md` list it as live?
 
-- [Serialization Layer](serialization.md) — ProviderSerializer ABC, SerializerFactory, OpenAISerializer
-
-## Benchmarking
-
-- [Benchmark Framework](benchmark-framework.md) — Deterministic pipeline benchmarking without LLM calls
-
-## Package Reference
-
-| Package | Purpose | Key Exports |
-|---------|---------|-------------|
-| `packages.providers` | Provider abstraction | Provider, create_provider, register |
-| `packages.providers.vllm` | vLLM provider | VLLMProvider |
-| `packages.repository` | Repository scanner | scan, SourceFile, Directory, Statistics |
-| `packages.repository.index` | Repository index | RepositoryIndex, IndexBuilder |
-| `packages.repository.symbols` | Symbol graph | SymbolGraphView, Symbol, SymbolType |
-| `packages.repository.relationships` | Relationship extraction | RelationshipExtractor, RelationshipRegistry, CallExtractor |
-| `packages.repository.dependencies` | Dependency graph | DependencyGraphBuilder, WorkspaceDependencyGraph |
-| `packages.repository.diagnostics` | Diagnostics | DiagnosticsEngine, analyzers |
-| `packages.repository.impact` | Impact analysis | ChangeImpactAnalyzer, ImpactNode, ImpactReport |
-| `packages.context` | Context builder | ContextBuilder, RankingEngine, ContextBudget, ContextComposer |
-| `packages.context.scoring` | Scoring | score_candidate, score_relationship, RankingReason |
-| `packages.capabilities` | Capability framework | Capability, CapabilityRegistry, CapabilityFactory |
-| `packages.planning` | Context planning | ContextPlanner, ContextPlan, Intent |
-| `packages.planning.rules` | Planning rules | PlanningRule, RuleEngine, BUILTIN_RULES |
-| `packages.serializers` | Serialization | ProviderSerializer, SerializerFactory, ProviderRequest |
-| `packages.pipeline` | Pipeline engine | PipelineEngine, PipelineStage, ProviderStage |
-| `packages.benchmark` | Benchmarking | BenchmarkRunner, BenchmarkCase, BenchmarkReport |
-| `packages.config` | Configuration | load_config, get_env_or_config |
+If not, keep it marked dormant or move it under `docs/archive/`.

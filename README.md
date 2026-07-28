@@ -1,131 +1,126 @@
 # Local AI Platform
 
-A production-ready Python project structure for AI platform development.
+Local AI Platform is an OpenAI-compatible gateway for coding agents.
+Agents such as Cline, Claude Code, and curl point at this gateway instead
+of talking directly to vLLM. The gateway resolves the requested model,
+adds ranked repository context, optionally caps forwarded chat history,
+and forwards the request to the backend provider.
 
-## Project Structure
+The project currently optimizes one live path: making local coding-agent
+requests faster and more repository-aware while preserving OpenAI protocol
+compatibility.
 
-```
-├── apps/
-│   └── gateway/          # FastAPI gateway application
-├── packages/
-│   ├── config/           # Configuration management
-│   ├── pipeline/         # Request processing pipeline (stages, engine, context)
-│   ├── providers/        # AI provider implementations
-│   ├── repository/       # Repository scanner and index
-│   ├── advisors/         # Deterministic analysis and recommendations
-│   └── telemetry/        # Telemetry and monitoring (stub)
-├── tests/                # Test suite
-│   ├── gateway/          # Gateway unit tests
-│   ├── pipeline/         # Pipeline unit tests
-│   ├── providers/        # Provider unit tests
-│   ├── repository/       # Scanner unit tests
-│   ├── advisors/         # Refactoring advisor tests
-│   └── integration/      # End-to-end integration tests
-├── scripts/              # Utility scripts
-└── .github/              # GitHub Actions workflows
-```
+## What Runs
 
-## Getting Started
+The live request path is registered in `apps/gateway/main.py`:
 
-### Prerequisites
-
-- Python 3.12+
-- [uv](https://github.com/astral-sh/uv) package manager
-
-### Installation
-
-```bash
-# Install dependencies
-uv sync
-
-# Run linter
-ruff check .
-
-# Run type checker
-mypy .
-
-# Run tests
-pytest
+```text
+FastAPI /v1/chat/completions
+  -> ModelResolutionStage
+  -> PlanningStage
+  -> RepositoryContextStage
+  -> history capping in PipelineEngine
+  -> ProviderStage
+  -> vLLM
 ```
 
-## Running the Gateway
+Large parts of `packages/` are future scaffolding and are not reachable
+from the gateway. Treat `CLAUDE.md` as the operational source of truth for
+what runs and what is dormant.
 
-Start the gateway with uvicorn:
+## Core Features
 
-```bash
-uvicorn apps.gateway.main:create_app --factory --reload
+- OpenAI-compatible `/v1/chat/completions` endpoint
+- vLLM provider with streaming and non-streaming support
+- model registry with client-facing `model` and upstream `backend_model`
+- repository index built at gateway startup
+- deterministic planning and intent detection
+- ranked repository-context injection
+- normalized request boundary preserving OpenAI protocol fields
+- optional history capping to reduce vLLM prefill latency
+- JSONL session logging and analyzer for real Cline/vLLM measurements
+
+## Setup
+
+```powershell
+.\uv sync
 ```
 
-The gateway exposes the following endpoints:
+Create or edit `.env`. A minimal local configuration looks like:
 
-| Method | Path                    | Description                    |
-|--------|-------------------------|--------------------------------|
-| GET    | `/health`               | Health check                   |
-| GET    | `/version`              | Application version metadata   |
-| POST   | `/v1/chat/completions`  | Chat completions (OpenAI API)  |
+```env
+VLLM_BASE_URL=http://localhost:8000/v1
+VLLM_API_KEY=empty
+REQUEST_TIMEOUT=120
+DEFAULT_MODEL=qwen36
 
-## Environment Variables
-
-| Variable                        | Default            | Description                              |
-|---------------------------------|--------------------|------------------------------------------|
-| `APP_LOG_LEVEL`                 | `INFO`             | Logging level                            |
-| `APP_REPOSITORY_CONTEXT_ENABLED`| `true`             | Enable repository intelligence           |
-| `REPOSITORY_CONTEXT_MAX_SYMBOLS`| `20`               | Maximum symbols in context               |
-| `REPOSITORY_CONTEXT_MAX_MODULES`| `10`               | Maximum modules in context               |
-| `REPOSITORY_CONTEXT_MAX_TOKENS` | `4096`             | Maximum token budget                     |
-| `GATEWAY_HOST`                  | `localhost`        | Gateway host for smoke / integration tests |
-| `GATEWAY_PORT`                  | `8001`             | Gateway port for smoke / integration tests |
-| `VLLM_BASE_URL`                 | `http://localhost:8000/v1` | vLLM server URL                    |
-| `VLLM_API_KEY`                | `empty`            | vLLM API key                             |
-| `DEFAULT_MODEL`                 | `default-model`    | Default model identifier                 |
-| `REQUEST_TIMEOUT`               | `30`               | Request timeout in seconds               |
-
-## Smoke Test
-
-Run the quick smoke test to verify the gateway and vLLM integration:
-
-```bash
-python scripts/test_gateway.py
+APP_DEFAULT_PROVIDER=vllm
+APP_DEFAULT_MODEL=qwen36
+APP_REPOSITORY_PATH=.
+APP_REPOSITORY_CONTEXT_ENABLED=true
+APP_SESSION_LOG_ENABLED=true
+APP_HISTORY_CAP_ENABLED=true
+APP_HISTORY_CAP_TOKENS=10000
+APP_MODELS_CONFIG=[{"model":"qwen36","backend_model":"backend/model/name","provider":"vllm","base_url":"http://localhost:8000/v1","context_window":131072,"max_output_tokens":8192}]
 ```
 
-Expected output on success:
+`DEFAULT_MODEL` and `APP_DEFAULT_MODEL` are different variables. In normal
+local use they should usually agree.
 
-```
-Local AI Platform - Gateway Smoke Test
-  Gateway : http://localhost:8001
-  vLLM    : http://localhost:8000/v1
-  Model   : default-model
+## Run The Gateway
 
-[PASS] Gateway reachable
-[PASS] Chat successful
-[PASS] Streaming successful
-[PASS] Repository Intelligence pipeline
-
-RESULT: PASSED
+```powershell
+.\uv run uvicorn apps.gateway.main:create_app --factory --port 8001
 ```
 
-## Integration Tests
+Check it:
 
-End-to-end integration tests live in `tests/integration/`. They require a running vLLM instance and skip automatically when `VLLM_BASE_URL` is not set:
-
-```bash
-VLLM_BASE_URL=http://localhost:8000/v1 pytest tests/integration/
+```powershell
+curl http://localhost:8001/v1/models
 ```
 
-## Tech Stack
+Point Cline or another OpenAI-compatible client at:
 
-- **Language:** Python 3.12
-- **Framework:** FastAPI
-- **Package Manager:** uv
-- **Linter/Formatter:** Ruff
-- **Type Checking:** mypy
-- **Testing:** pytest
-- **Containerization:** Docker Compose
-- **CI/CD:** GitHub Actions
+```text
+http://localhost:8001/v1
+```
+
+## Session Logs
+
+With `APP_SESSION_LOG_ENABLED=true`, requests are written to
+`logs/sessions.jsonl`.
+
+Analyze them with:
+
+```powershell
+.\uv run python scripts\analyze_sessions.py logs\sessions.jsonl
+```
+
+The analyzer reports prompt tokens, latency, provider wait time, context
+status, intent distribution, and history-capping behavior.
+
+## Focused Gates
+
+Use focused gates for live-path work:
+
+```powershell
+.\uv run python -m pytest tests\pipeline tests\gateway tests\providers tests\planning tests\context tests\repository -q
+.\uv run python -m ruff check apps\gateway packages\pipeline packages\providers packages\planning packages\context packages\repository scripts
+.\uv run python -m mypy packages\providers packages\pipeline apps\gateway
+```
+
+The full repository still contains dormant packages with known failures and
+lint debt. Do not use a green full-repo run as the definition of live-path
+correctness until CI is realigned.
+
+## Documentation
+
+- `CLAUDE.md` - operational truth for agents and contributors
+- `TESTING.md` - live measurement and A/B testing protocol
+- `docs/STATUS.md` - current runtime status snapshot
+- `docs/roadmap.md` - current goals and deferred work
+- `docs/index.md` - documentation map, including dormant/future docs
 
 ## License
 
-Apache 2.0 - See [LICENSE](LICENSE) file for details.
-
-## Bench context run results
-Recording 12/14 vs 3/14 at commit 61cb266
+Apache 2.0. See `LICENSE`.

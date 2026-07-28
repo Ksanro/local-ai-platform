@@ -1,5 +1,10 @@
 # Engineering Session Framework v1
 
+> Status: dormant / not wired into the live gateway.
+>
+> This document describes scaffolded future architecture. It is not runtime
+> behavior unless `docs/STATUS.md` says otherwise.
+
 ## Overview
 
 The Engineering Session Framework provides a deterministic execution session spanning an entire engineering request. It is the root object for future UI, CLI, IDE integration and long-running engineering work.

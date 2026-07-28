@@ -1,5 +1,10 @@
 # Execution Engine
 
+> Status: dormant / not wired into the live gateway.
+>
+> This document describes scaffolded future architecture. It is not runtime
+> behavior unless `docs/STATUS.md` says otherwise.
+
 ## Overview
 
 The Execution Engine is responsible for executing immutable `WorkflowPlan` objects through an `ExecutionAdapter` abstraction. It is the bridge between Planning and AI execution.

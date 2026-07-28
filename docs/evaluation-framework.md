@@ -1,5 +1,10 @@
 # Evaluation Framework v1
 
+> Status: dormant / not wired into the live gateway.
+>
+> This document describes scaffolded future architecture. It is not runtime
+> behavior unless `docs/STATUS.md` says otherwise.
+
 ## Purpose
 
 The Evaluation Framework provides **deterministic evaluation** of engineering workflow executions.
