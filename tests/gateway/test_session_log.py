@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import json
 import asyncio
+import json
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -55,6 +55,8 @@ def test_enabled_logger_writes_record(tmp_path: Path) -> None:
             "session_symbols_suppressed": 3,
             "session_estimated_tokens": 1000,
             "session_primary_symbol": "test.symbol",
+            "session_planning_user_message_count": 1,
+            "session_planning_last_user_message": "Hello",
             "session_backend_model": "unsloth/qwen36",
             "session_conversation_key": "__new__",
         }
@@ -95,7 +97,10 @@ def test_enabled_logger_writes_record(tmp_path: Path) -> None:
     assert record["model"] == "qwen36"
     assert record["stream"] is False
     assert record["n_messages"] == 1
+    assert record["last_user_message"] == "Hello"
     assert record["intent"] == "DEFAULT"
+    assert record["planning"]["user_message_count"] == 1
+    assert record["planning"]["last_user_message"] == "Hello"
     assert record["context"]["status"] == "assembled"
     assert record["context"]["symbols_selected"] == 5
     assert record["answer_preview"] == "ok"
@@ -276,7 +281,11 @@ def test_truncation_to_500_chars(tmp_path: Path) -> None:
                 await send({
                     "type": "http.response.body",
                     # Simulate a response body with answer > 500 chars
-                    "body": b'{"choices":[{"message":{"role":"assistant","content":"' + long_text.encode() + b'"}}]}',
+                    "body": (
+                        b'{"choices":[{"message":{"role":"assistant","content":"'
+                        + long_text.encode()
+                        + b'"}}]}'
+                    ),
                 })
 
         middleware = SessionLoggerMiddleware(inner_app)
@@ -437,7 +446,6 @@ def test_analyzer_fixture_counts() -> None:
     - Conversation def67890: 2 turns
     """
     from scripts.analyze_sessions import _load_records
-    from scripts.analyze_sessions import analyze as _analyze
 
     fixture_path = "tests/fixtures/session_log_fixture.jsonl"
 
@@ -474,13 +482,21 @@ def test_analyzer_fixture_counts() -> None:
     assert context_statuses["disabled"] == 2
 
     # Timing
-    latencies = [r["timing"]["total_ms"] for r in records if r["timing"]["total_ms"] is not None]
+    latencies = [
+        r["timing"]["total_ms"]
+        for r in records
+        if r["timing"]["total_ms"] is not None
+    ]
     assert len(latencies) == 10
     assert min(latencies) == 200
     assert max(latencies) == 8000
 
     # Prompt tokens
-    tokens = [r["usage"]["prompt_tokens"] for r in records if r["usage"]["prompt_tokens"] is not None]
+    tokens = [
+        r["usage"]["prompt_tokens"]
+        for r in records
+        if r["usage"]["prompt_tokens"] is not None
+    ]
     assert len(tokens) == 10
     assert min(tokens) == 529
     assert max(tokens) == 6029

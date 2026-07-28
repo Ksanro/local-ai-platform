@@ -134,6 +134,16 @@ def _surface_session_metadata(
     else:
         scope["session_intent"] = "DEFAULT"
 
+    resp_meta = getattr(response, "metadata", {}) or {}
+    scope["session_planning_user_message_count"] = resp_meta.get(
+        "planning_user_message_count",
+        0,
+    )
+    scope["session_planning_last_user_message"] = resp_meta.get(
+        "planning_last_user_message",
+        "",
+    )
+
     # --- Repository context metadata ---
     repo_result = stage_results.get("repository_context")
     if repo_result is not None and repo_result.success:
@@ -228,7 +238,6 @@ def _surface_session_metadata(
 
     # --- History capping metadata ---
     # Read from response.metadata (copied from context.metadata in PipelineResponse.from_context).
-    resp_meta = getattr(response, "metadata", {}) or {}
     scope["session_history_cap_enabled"] = resp_meta.get("history_cap_enabled", False)
     scope["session_history_cap_applied"] = resp_meta.get("history_cap_applied", False)
     scope["session_history_cap_budget"] = resp_meta.get("history_cap_budget", 0)
@@ -259,6 +268,7 @@ async def chat_completions(
     """
     request_id = request.scope.get("request_id") or str(uuid.uuid4())
     model: str = body.model
+    request.scope["request_data"] = body.model_dump()
     start_time: float = time.perf_counter()
 
     # Look up the configured provider via the factory.

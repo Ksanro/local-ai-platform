@@ -272,6 +272,13 @@ class SessionLoggerMiddleware:
 
         # Intent from PlanningStage.
         intent = scope.get("session_intent", "DEFAULT")
+        planning = {
+            "user_message_count": scope.get("session_planning_user_message_count", 0),
+            "last_user_message": _truncate(
+                scope.get("session_planning_last_user_message", ""),
+                500,
+            ),
+        }
 
         # Backend model.
         backend_model = scope.get("session_backend_model", model)
@@ -437,6 +444,7 @@ class SessionLoggerMiddleware:
             "last_user_message": last_user_message,
             "context": context,
             "intent": intent,
+            "planning": planning,
             "usage": usage,
             "timing": {
                 "total_ms": total_ms,

@@ -114,6 +114,11 @@ class PlanningStage(PipelineStage):
         try:
             # Extract user messages from the request.
             messages = self._extract_messages(context)
+            context.set_metadata("planning_user_message_count", len(messages))
+            context.set_metadata(
+                "planning_last_user_message",
+                messages[-1] if messages else "",
+            )
 
             # Run the planner.
             plan = self._planner.build(

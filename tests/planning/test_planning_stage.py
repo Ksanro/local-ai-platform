@@ -139,6 +139,26 @@ class TestPlanningStageExecute:
         assert plan is not None
         assert plan.intent == "DEBUG"
 
+    def test_execute_stores_detected_message_metadata(self):
+        """Execute stores the user messages seen by intent detection."""
+        stage = PlanningStage()
+        context = PipelineContext(
+            request={
+                "messages": [
+                    {"role": "user", "content": "Find session logging"},
+                    {"role": "assistant", "content": "Sure"},
+                    {"role": "user", "content": "Locate cap metadata"},
+                ]
+            }
+        )
+
+        asyncio.run(stage.execute(context))
+
+        assert context.get_metadata("planning_user_message_count") == 2
+        assert context.get_metadata("planning_last_user_message") == (
+            "Locate cap metadata"
+        )
+
     def test_execute_with_custom_planner(self):
         """Execute uses custom planner when provided."""
         custom_rules = (
