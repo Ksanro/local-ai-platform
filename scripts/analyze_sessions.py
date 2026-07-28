@@ -609,6 +609,8 @@ def _print_context_cost(records: list[dict[str, Any]]) -> None:
     disabled_tokens: list[int] = []
     context_tokens: list[int] = []
     context_prompt_pct: list[float] = []
+    context_budget_pct: list[float] = []
+    context_budgets: list[int] = []
     repo_ms_values: list[float] = []
 
     for r in records:
@@ -618,12 +620,17 @@ def _print_context_cost(records: list[dict[str, Any]]) -> None:
         pt = u.get("prompt_tokens")
         status = ctx.get("status", "disabled")
         est = ctx.get("estimated_tokens")
+        budget = ctx.get("max_tokens")
         if est is not None:
             est_int = int(est)
             if est_int > 0:
                 context_tokens.append(est_int)
                 if pt:
                     context_prompt_pct.append((est_int / int(pt)) * 100)
+                if budget:
+                    budget_int = int(budget)
+                    context_budgets.append(budget_int)
+                    context_budget_pct.append((est_int / budget_int) * 100)
         if pt is not None:
             if status == "assembled":
                 assembled_tokens.append(int(pt))
@@ -649,6 +656,16 @@ def _print_context_cost(records: list[dict[str, Any]]) -> None:
             print(
                 f"    Median share of prompt: "
                 f"{statistics.median(context_prompt_pct):.1f}%"
+            )
+        if context_budgets:
+            print(
+                f"    Median configured budget: "
+                f"{statistics.median(context_budgets):.0f} tokens"
+            )
+        if context_budget_pct:
+            print(
+                f"    Median budget utilization: "
+                f"{statistics.median(context_budget_pct):.1f}%"
             )
     else:
         print("  Direct repository context estimate: no context token data.")

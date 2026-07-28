@@ -165,6 +165,7 @@ def _surface_session_metadata(
                 scope["session_symbols_new"] = 0
                 scope["session_symbols_suppressed"] = 0
                 scope["session_estimated_tokens"] = 0
+                scope["session_context_max_tokens"] = pkg.get("max_context_tokens", 0)
                 scope["session_primary_symbol"] = ""
             elif "package" in pkg:
                 # Assembled path with counts.
@@ -175,6 +176,7 @@ def _surface_session_metadata(
                 scope["session_symbols_suppressed"] = pkg.get("symbols_suppressed", 0)
                 est = getattr(package, "estimated_tokens", 0) if package else 0
                 scope["session_estimated_tokens"] = est
+                scope["session_context_max_tokens"] = pkg.get("max_context_tokens", 0)
                 prim = getattr(package, "primary_symbol", "") if package else ""
                 scope["session_primary_symbol"] = prim
             else:
@@ -188,6 +190,7 @@ def _surface_session_metadata(
                 scope["session_symbols_new"] = symbols_new
                 scope["session_symbols_suppressed"] = symbols_suppressed
                 scope["session_estimated_tokens"] = 0
+                scope["session_context_max_tokens"] = pkg.get("max_context_tokens", 0)
                 scope["session_primary_symbol"] = ""
         else:
             scope["session_context_status"] = "disabled"
@@ -195,18 +198,21 @@ def _surface_session_metadata(
             scope["session_symbols_new"] = 0
             scope["session_symbols_suppressed"] = 0
             scope["session_estimated_tokens"] = 0
+            scope["session_context_max_tokens"] = 0
     elif repo_result is not None:
         scope["session_context_status"] = "degraded"
         scope["session_symbols_selected"] = 0
         scope["session_symbols_new"] = 0
         scope["session_symbols_suppressed"] = 0
         scope["session_estimated_tokens"] = 0
+        scope["session_context_max_tokens"] = 0
     else:
         scope["session_context_status"] = "disabled"
         scope["session_symbols_selected"] = 0
         scope["session_symbols_new"] = 0
         scope["session_symbols_suppressed"] = 0
         scope["session_estimated_tokens"] = 0
+        scope["session_context_max_tokens"] = 0
 
     # --- Backend model from provider stage ---
     provider_result = stage_results.get("provider")

@@ -54,6 +54,7 @@ def test_enabled_logger_writes_record(tmp_path: Path) -> None:
             "session_symbols_new": 2,
             "session_symbols_suppressed": 3,
             "session_estimated_tokens": 1000,
+            "session_context_max_tokens": 4096,
             "session_primary_symbol": "test.symbol",
             "session_planning_user_message_count": 1,
             "session_planning_last_user_message": "Hello",
@@ -105,6 +106,8 @@ def test_enabled_logger_writes_record(tmp_path: Path) -> None:
     assert record["planning"]["matched_keyword"] == ""
     assert record["context"]["status"] == "assembled"
     assert record["context"]["symbols_selected"] == 5
+    assert record["context"]["estimated_tokens"] == 1000
+    assert record["context"]["max_tokens"] == 4096
     assert record["answer_preview"] == "ok"
 
 

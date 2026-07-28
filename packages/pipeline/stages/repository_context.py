@@ -142,6 +142,7 @@ class RepositoryContextStage(PipelineStage):
         index: RepositoryIndex | None = None,
         context_delta_injection: bool = True,
         context_delta_cache_size: int = 256,
+        max_context_tokens: int = 4096,
     ) -> None:
         """Initialize with an optional repository index.
 
@@ -153,10 +154,12 @@ class RepositoryContextStage(PipelineStage):
                 not already sent in this conversation are injected.
             context_delta_cache_size: Maximum number of conversation keys
                 in the LRU cache.
+            max_context_tokens: Token budget for assembled repository context.
         """
         self._index = index
         self._delta_enabled = context_delta_injection
         self._tracker = SentSymbolTracker(maxsize=context_delta_cache_size)
+        self._max_context_tokens = max_context_tokens if max_context_tokens > 0 else 4096
 
     @property
     def name(self) -> str:
@@ -185,8 +188,11 @@ class RepositoryContextStage(PipelineStage):
                 stage_name=self.name,
                 success=True,
                 data={
-                    "enabled": False, "symbols_selected": 0,
-                    "symbols_new": 0, "symbols_suppressed": 0
+                    "enabled": False,
+                    "symbols_selected": 0,
+                    "symbols_new": 0,
+                    "symbols_suppressed": 0,
+                    "max_context_tokens": self._max_context_tokens,
                 },
             )
         return None
@@ -241,13 +247,20 @@ class RepositoryContextStage(PipelineStage):
             # of truth for retrieval configuration.  When no plan is present
             # (planning disabled or not yet run), fall back to safe defaults.
             plan = context.get_metadata("context_plan")
+            max_context_tokens = context.get_metadata(
+                "repository_context_max_tokens",
+                self._max_context_tokens,
+            )
+            if not isinstance(max_context_tokens, int) or max_context_tokens <= 0:
+                max_context_tokens = self._max_context_tokens
+            context.set_metadata("repository_context_max_tokens", max_context_tokens)
 
             if plan is not None:
                 query = ContextQuery(
                     text=query_text,
                     max_symbols=20,
                     max_modules=10,
-                    max_tokens=4096,
+                    max_tokens=max_context_tokens,
                     maximum_depth=plan.maximum_depth,
                     relationship_expansion=plan.relationship_expansion,
                 )
@@ -256,7 +269,7 @@ class RepositoryContextStage(PipelineStage):
                     text=query_text,
                     max_symbols=20,
                     max_modules=10,
-                    max_tokens=4096,
+                    max_tokens=max_context_tokens,
                 )
 
             builder = ContextBuilder(self._index)
@@ -282,7 +295,12 @@ class RepositoryContextStage(PipelineStage):
                 return PipelineStageResult(
                     stage_name=self.name,
                     success=True,
-                    data={"symbols_selected": 0, "symbols_new": 0, "symbols_suppressed": 0},
+                    data={
+                        "symbols_selected": 0,
+                        "symbols_new": 0,
+                        "symbols_suppressed": 0,
+                        "max_context_tokens": max_context_tokens,
+                    },
                 )
 
             # ------------------------------------------------------------------
@@ -344,6 +362,7 @@ class RepositoryContextStage(PipelineStage):
                             "symbols_selected": symbols_selected,
                             "symbols_new": symbols_new,
                             "symbols_suppressed": symbols_suppressed,
+                            "max_context_tokens": max_context_tokens,
                         },
                     )
 
@@ -419,6 +438,7 @@ class RepositoryContextStage(PipelineStage):
                     "symbols_selected": symbols_selected,
                     "symbols_new": symbols_new,
                     "symbols_suppressed": symbols_suppressed,
+                    "max_context_tokens": max_context_tokens,
                 },
             )
 

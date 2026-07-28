@@ -189,6 +189,7 @@ class TestContextCost:
                 "context": {
                     "status": "assembled",
                     "estimated_tokens": 1000,
+                    "max_tokens": 4000,
                 },
                 "usage": {"prompt_tokens": 4000, "completion_tokens": 100},
                 "timing": {"total_ms": 100, "stages": {"repository_context_ms": 12.5}},
@@ -198,6 +199,7 @@ class TestContextCost:
                 "context": {
                     "status": "assembled",
                     "estimated_tokens": 2000,
+                    "max_tokens": 8000,
                 },
                 "usage": {"prompt_tokens": 8000, "completion_tokens": 100},
                 "timing": {"total_ms": 200, "stages": {"repository_context_ms": 17.5}},
@@ -222,6 +224,8 @@ class TestContextCost:
         assert "Direct repository context estimate" in output
         assert "Median:  1500 tokens" in output
         assert "Median share of prompt: 25.0%" in output
+        assert "Median configured budget: 6000 tokens" in output
+        assert "Median budget utilization: 25.0%" in output
         assert "Prompt-token comparison by context status" in output
 
 

@@ -48,7 +48,7 @@ History capping works, but repository context often dominates total prompt
 tokens. Next performance work should:
 
 - log repository-context token contribution separately from history
-- apply model-aware repository-context budgets
+- apply configurable and then model-aware repository-context budgets
 - tune selected symbols/modules by intent
 - measure prompt-token and latency impact with live Cline traffic
 

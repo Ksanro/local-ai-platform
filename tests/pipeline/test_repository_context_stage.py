@@ -153,6 +153,67 @@ class TestContextAttached:
         assert result.data.get("package") is context.context_package
         assert isinstance(result.data.get("package"), ContextPackage)
 
+    @pytest.mark.asyncio
+    async def test_stage_uses_configured_context_token_budget(self) -> None:
+        """Configured context budget is passed into ContextQuery."""
+        symbols = [_make_symbol("App", "main.App", SymbolType.CLASS, "main.py")]
+        index = _make_index(symbols)
+        stage = RepositoryContextStage(index=index, max_context_tokens=2048)
+
+        captured_queries = []
+
+        with patch(
+            "packages.pipeline.stages.repository_context.ContextBuilder"
+        ) as mock_builder:
+            builder = mock_builder.return_value
+
+            def _build(query):
+                captured_queries.append(query)
+                from packages.context.models import ContextResult
+
+                return ContextResult(candidates=[], selected_modules=[])
+
+            builder.build.side_effect = _build
+
+            context = _make_context()
+            result = await stage.execute(context)
+
+        assert result.success is True
+        assert captured_queries
+        assert captured_queries[0].max_tokens == 2048
+        assert context.get_metadata("repository_context_max_tokens") == 2048
+        assert result.data["max_context_tokens"] == 2048
+
+    @pytest.mark.asyncio
+    async def test_request_metadata_overrides_context_token_budget(self) -> None:
+        """Request metadata can override the stage default context budget."""
+        symbols = [_make_symbol("App", "main.App", SymbolType.CLASS, "main.py")]
+        index = _make_index(symbols)
+        stage = RepositoryContextStage(index=index, max_context_tokens=4096)
+
+        captured_queries = []
+
+        with patch(
+            "packages.pipeline.stages.repository_context.ContextBuilder"
+        ) as mock_builder:
+            builder = mock_builder.return_value
+
+            def _build(query):
+                captured_queries.append(query)
+                from packages.context.models import ContextResult
+
+                return ContextResult(candidates=[], selected_modules=[])
+
+            builder.build.side_effect = _build
+
+            context = _make_context()
+            context.set_metadata("repository_context_max_tokens", 1536)
+            result = await stage.execute(context)
+
+        assert result.success is True
+        assert captured_queries[0].max_tokens == 1536
+        assert result.data["max_context_tokens"] == 1536
+
 
 # ------------------------------------------------------------------
 # Disabled feature skips stage

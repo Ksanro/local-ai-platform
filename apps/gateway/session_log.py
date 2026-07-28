@@ -267,6 +267,7 @@ class SessionLoggerMiddleware:
             "symbols_new": scope.get("session_symbols_new", 0),
             "symbols_suppressed": scope.get("session_symbols_suppressed", 0),
             "estimated_tokens": scope.get("session_estimated_tokens", 0),
+            "max_tokens": scope.get("session_context_max_tokens", 0),
             "primary_symbol": scope.get("session_primary_symbol", ""),
         }
 
