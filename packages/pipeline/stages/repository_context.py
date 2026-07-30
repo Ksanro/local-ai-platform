@@ -70,6 +70,7 @@ from __future__ import annotations
 
 import logging
 import time
+from typing import Any
 
 from packages.context.builder import ContextBuilder
 from packages.context.composer import ContextComposer
@@ -143,6 +144,7 @@ class RepositoryContextStage(PipelineStage):
         context_delta_injection: bool = True,
         context_delta_cache_size: int = 256,
         max_context_tokens: int = 4096,
+        intent_context_budgets: dict[str, int] | None = None,
     ) -> None:
         """Initialize with an optional repository index.
 
@@ -155,11 +157,17 @@ class RepositoryContextStage(PipelineStage):
             context_delta_cache_size: Maximum number of conversation keys
                 in the LRU cache.
             max_context_tokens: Token budget for assembled repository context.
+            intent_context_budgets: Optional per-intent budget overrides.
         """
         self._index = index
         self._delta_enabled = context_delta_injection
         self._tracker = SentSymbolTracker(maxsize=context_delta_cache_size)
         self._max_context_tokens = max_context_tokens if max_context_tokens > 0 else 4096
+        self._intent_context_budgets = {
+            intent.upper(): tokens
+            for intent, tokens in (intent_context_budgets or {}).items()
+            if tokens > 0
+        }
 
     @property
     def name(self) -> str:
@@ -247,12 +255,7 @@ class RepositoryContextStage(PipelineStage):
             # of truth for retrieval configuration.  When no plan is present
             # (planning disabled or not yet run), fall back to safe defaults.
             plan = context.get_metadata("context_plan")
-            max_context_tokens = context.get_metadata(
-                "repository_context_max_tokens",
-                self._max_context_tokens,
-            )
-            if not isinstance(max_context_tokens, int) or max_context_tokens <= 0:
-                max_context_tokens = self._max_context_tokens
+            max_context_tokens = self._resolve_context_budget(context, plan)
             context.set_metadata("repository_context_max_tokens", max_context_tokens)
 
             if plan is not None:
@@ -490,6 +493,24 @@ class RepositoryContextStage(PipelineStage):
                 result.error,
             )
         return None
+
+    def _resolve_context_budget(
+        self,
+        context: PipelineContext,
+        plan: Any,
+    ) -> int:
+        """Resolve request, intent, or default repository-context budget."""
+        override = context.get_metadata("repository_context_max_tokens")
+        if isinstance(override, int) and override > 0:
+            return override
+
+        intent = getattr(plan, "intent", "")
+        if isinstance(intent, str):
+            intent_budget = self._intent_context_budgets.get(intent.upper())
+            if intent_budget is not None:
+                return intent_budget
+
+        return self._max_context_tokens
 
     @staticmethod
     def _extract_query(context: PipelineContext) -> str:

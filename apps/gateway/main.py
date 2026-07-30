@@ -170,6 +170,7 @@ async def lifespan(app: FastAPI):
                 context_delta_injection=settings.context_delta_injection,
                 context_delta_cache_size=settings.context_delta_cache_size,
                 max_context_tokens=settings.repository_context_max_tokens,
+                intent_context_budgets=settings.repository_context_intent_budget_map,
             )
         )
         # ProviderStage is routing-agnostic — reads from context.resolved_model.

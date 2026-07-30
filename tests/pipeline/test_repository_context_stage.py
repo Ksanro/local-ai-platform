@@ -214,6 +214,80 @@ class TestContextAttached:
         assert captured_queries[0].max_tokens == 1536
         assert result.data["max_context_tokens"] == 1536
 
+    @pytest.mark.asyncio
+    async def test_intent_budget_overrides_default_context_budget(self) -> None:
+        """ContextPlan intent can select a per-intent context budget."""
+        from packages.planning.plan import ContextPlan
+
+        symbols = [_make_symbol("App", "main.App", SymbolType.CLASS, "main.py")]
+        index = _make_index(symbols)
+        stage = RepositoryContextStage(
+            index=index,
+            max_context_tokens=4096,
+            intent_context_budgets={"SEARCH": 2048},
+        )
+
+        captured_queries = []
+
+        with patch(
+            "packages.pipeline.stages.repository_context.ContextBuilder"
+        ) as mock_builder:
+            builder = mock_builder.return_value
+
+            def _build(query):
+                captured_queries.append(query)
+                from packages.context.models import ContextResult
+
+                return ContextResult(candidates=[], selected_modules=[])
+
+            builder.build.side_effect = _build
+
+            context = _make_context()
+            context.set_metadata("context_plan", ContextPlan(intent="SEARCH"))
+            result = await stage.execute(context)
+
+        assert result.success is True
+        assert captured_queries[0].max_tokens == 2048
+        assert context.get_metadata("repository_context_max_tokens") == 2048
+        assert result.data["max_context_tokens"] == 2048
+
+    @pytest.mark.asyncio
+    async def test_request_budget_overrides_intent_context_budget(self) -> None:
+        """Explicit request metadata wins over per-intent defaults."""
+        from packages.planning.plan import ContextPlan
+
+        symbols = [_make_symbol("App", "main.App", SymbolType.CLASS, "main.py")]
+        index = _make_index(symbols)
+        stage = RepositoryContextStage(
+            index=index,
+            max_context_tokens=4096,
+            intent_context_budgets={"SEARCH": 2048},
+        )
+
+        captured_queries = []
+
+        with patch(
+            "packages.pipeline.stages.repository_context.ContextBuilder"
+        ) as mock_builder:
+            builder = mock_builder.return_value
+
+            def _build(query):
+                captured_queries.append(query)
+                from packages.context.models import ContextResult
+
+                return ContextResult(candidates=[], selected_modules=[])
+
+            builder.build.side_effect = _build
+
+            context = _make_context()
+            context.set_metadata("context_plan", ContextPlan(intent="SEARCH"))
+            context.set_metadata("repository_context_max_tokens", 1024)
+            result = await stage.execute(context)
+
+        assert result.success is True
+        assert captured_queries[0].max_tokens == 1024
+        assert result.data["max_context_tokens"] == 1024
+
 
 # ------------------------------------------------------------------
 # Disabled feature skips stage

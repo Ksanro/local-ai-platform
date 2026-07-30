@@ -54,6 +54,10 @@ needed. Session logs record both `context.estimated_tokens` and
 `context.max_tokens` so context size can be measured separately from full
 provider prompt tokens.
 
+`APP_REPOSITORY_CONTEXT_INTENT_BUDGETS` can override the default by planner
+intent, for example `SEARCH:2048,TEST:3072,DEBUG:4096,EXPLAIN:8192`. Explicit
+request metadata still wins over intent defaults.
+
 ### History Capping
 
 When `APP_HISTORY_CAP_ENABLED=true`, `PipelineEngine` caps non-system
