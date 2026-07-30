@@ -124,6 +124,7 @@ Public API
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from packages.context.models import ContextCandidate
@@ -137,6 +138,8 @@ from packages.context.scoring import (
 if TYPE_CHECKING:
     from packages.context.models import ContextCandidate as _ContextCandidate
     from packages.context.scoring import RankingReason
+
+CandidateTokenEstimator = Callable[["ContextCandidate", bool], int]
 
 
 class RankingEngine:
@@ -158,6 +161,7 @@ class RankingEngine:
         primary_symbol: _ContextCandidate | None = None,
         relationship_enabled: bool | None = None,
         expansion_enabled: bool | None = None,
+        token_estimator: CandidateTokenEstimator | None = None,
     ) -> None:
         """Initialise the ranking engine.
 
@@ -172,6 +176,9 @@ class RankingEngine:
             expansion_enabled: Whether relationship expansion is applied.
                 Defaults to ``True`` if environment variable
                 ``RELATIONSHIP_EXPANSION_ENABLED`` is not ``"false"``.
+            token_estimator: Optional callback used to estimate candidate
+                token cost during relationship expansion. The callback
+                receives ``(candidate, is_primary)``.
         """
 
         # Determine defaults from environment variables.
@@ -188,6 +195,7 @@ class RankingEngine:
         self._primary_symbol = primary_symbol
         self._relationship_enabled = relationship_enabled
         self._expansion_enabled = expansion_enabled
+        self._token_estimator = token_estimator
 
     @property
     def relationship_enabled(self) -> bool:
@@ -393,7 +401,7 @@ class RankingEngine:
         # Add expansion candidates within budget.
         result: list[_ContextCandidate] = list(ranked)
         for candidate in expansion_candidates:
-            est = self._estimate_tokens_for_candidate(candidate)
+            est = self._estimate_tokens_for_candidate(candidate, is_primary=False)
             if existing_tokens + est <= max_tokens:
                 result.append(candidate)
                 existing_tokens += est
@@ -402,11 +410,11 @@ class RankingEngine:
 
         return result
 
-    @staticmethod
-    def _estimate_tokens(candidates: list[_ContextCandidate]) -> int:
+    def _estimate_tokens(self, candidates: list[_ContextCandidate]) -> int:
         """Estimate token count for a list of candidates.
 
-        Each candidate is estimated at ~100 tokens.
+        Uses the configured estimator when available, otherwise falls
+        back to the historical ~100 tokens per candidate heuristic.
 
         Args:
             candidates: The candidate list.
@@ -414,18 +422,36 @@ class RankingEngine:
         Returns:
             Estimated token count.
         """
-        return len(candidates) * 100
+        total = 0
+        for i, candidate in enumerate(candidates):
+            explicit_primary = (
+                self._primary_symbol is not None
+                and candidate.qualified_name == self._primary_symbol.qualified_name
+            )
+            inferred_primary = self._primary_symbol is None and i == 0
+            total += self._estimate_tokens_for_candidate(
+                candidate,
+                is_primary=explicit_primary or inferred_primary,
+            )
+        return total
 
-    @staticmethod
-    def _estimate_tokens_for_candidate(candidate: _ContextCandidate) -> int:
+    def _estimate_tokens_for_candidate(
+        self,
+        candidate: _ContextCandidate,
+        is_primary: bool,
+    ) -> int:
         """Estimate token count for a single candidate.
 
         Args:
             candidate: The candidate.
+            is_primary: Whether the candidate is expected to be the primary
+                symbol in the assembled context.
 
         Returns:
             Estimated token count (~100 per candidate).
         """
+        if self._token_estimator is not None:
+            return self._token_estimator(candidate, is_primary)
         return 100
 
     @staticmethod

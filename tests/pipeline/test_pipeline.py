@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from unittest.mock import AsyncMock
 
 import pytest
@@ -17,8 +16,8 @@ from packages.pipeline.exceptions import PipelineExecutionError
 from packages.pipeline.request import PipelineRequest
 from packages.pipeline.response import PipelineResponse
 from packages.pipeline.result import PipelineStageResult
-from packages.providers.models import ModelDefinition, ResolvedModel
 from packages.pipeline.stages.stages import ProviderStage
+from packages.providers.models import ModelDefinition, ResolvedModel
 
 
 class _TrackingStage(PipelineStage):
@@ -149,6 +148,50 @@ class TestPipelineEngine:
         assert stage.before_called is True
         assert stage.execute_called is True
         assert stage.after_called is True
+
+    @pytest.mark.asyncio
+    async def test_execute_forwards_repository_context_budget_override(self) -> None:
+        """PipelineRequest metadata can override repository context budget."""
+        engine = PipelineEngine()
+
+        class _BudgetReaderStage(PipelineStage):
+            @property
+            def name(self) -> str:
+                return "budget_reader"
+
+            async def before(
+                self,
+                context: PipelineContext,
+            ) -> PipelineStageResult | None:
+                return None
+
+            async def execute(self, context: PipelineContext) -> PipelineStageResult:
+                return PipelineStageResult(
+                    stage_name=self.name,
+                    success=True,
+                    data={
+                        "budget": context.get_metadata(
+                            "repository_context_max_tokens"
+                        ),
+                    },
+                )
+
+            async def after(
+                self,
+                context: PipelineContext,
+                result: PipelineStageResult,
+            ) -> None:
+                pass
+
+        engine.register(_BudgetReaderStage())
+
+        request = PipelineRequest(
+            metadata={"repository_context_max_tokens": 1536},
+        )
+        response = await engine.execute(request)
+
+        assert response.success is True
+        assert response.stage_results["budget_reader"].data == {"budget": 1536}
 
     @pytest.mark.asyncio
     async def test_execute_multiple_stages_in_order(self) -> None:

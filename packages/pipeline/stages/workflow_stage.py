@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import logging
 
+from packages.context.content import content_to_text
 from packages.pipeline.base import PipelineStage
 from packages.pipeline.context import PipelineContext
 from packages.pipeline.result import PipelineStageResult
@@ -242,9 +243,9 @@ class WorkflowStage(PipelineStage):
             messages = request.get("messages", [])
             for message in messages:
                 if isinstance(message, dict) and message.get("role") == "user":
-                    content = message.get("content", "")
-                    if isinstance(content, str):
-                        query = content.strip()
+                    text = content_to_text(message.get("content", ""))
+                    if text:
+                        query = text.strip()
 
         repository_root = request.get(
             "repository_root", "."

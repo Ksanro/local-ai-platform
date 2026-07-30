@@ -251,11 +251,11 @@ def normalise_query_text(text: str) -> list[str]:
         if not all_forms:
             return []
         # Deduplicate while preserving order.
-        seen: set[str] = set()
+        fallback_seen: set[str] = set()
         deduped: list[str] = []
         for t in text.lower().split():
-            if t and t not in seen:
-                seen.add(t)
+            if t and t not in fallback_seen:
+                fallback_seen.add(t)
                 deduped.append(t)
         return deduped
 
@@ -282,6 +282,17 @@ def _extract_name_segments(qualified_name: str) -> list[str]:
         List of name segments in order.
     """
     return _SEGMENT_RE.findall(qualified_name)
+
+
+def _boundary_phrase_forms(segment: str) -> set[str]:
+    """Return underscore-boundary phrases for a symbol name segment."""
+    stripped = segment.lower().strip("_")
+    forms = {stripped} if stripped else set()
+    parts = [part for part in stripped.split("_") if part]
+    for start in range(len(parts)):
+        for end in range(start + 2, len(parts) + 1):
+            forms.add("_".join(parts[start:end]))
+    return forms
 
 
 def _last_segment(qualified_name: str) -> str:
@@ -471,7 +482,8 @@ def score_candidate_v2(
     seg_length_penalty = 0
     for token in query_tokens:
         for seg in name_segments:
-            if seg.lower() == token:
+            segment_forms = _boundary_phrase_forms(seg)
+            if seg.lower() == token or token in segment_forms:
                 exact_symbol = True
                 # Check if this matched segment is a non-prefix substring
                 # of any other segment (indicating a compound name match).

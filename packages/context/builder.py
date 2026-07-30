@@ -64,7 +64,7 @@ from __future__ import annotations
 
 import os
 
-from packages.context.budget import ContextBudget
+from packages.context.budget import CHARS_PER_TOKEN, ContextBudget
 from packages.context.models import (
     ContextBudgetResult,
     ContextCandidate,
@@ -200,6 +200,7 @@ class ContextBuilder:
             primary_symbol=primary_symbol if relationship_enabled else None,
             relationship_enabled=relationship_enabled,
             expansion_enabled=expansion_enabled,
+            token_estimator=self._estimate_candidate_tokens_for_ranking,
         )
         candidates = engine.rank(query.text, candidates, max_tokens=query.max_tokens)
 
@@ -356,11 +357,21 @@ class ContextBuilder:
             if full_context is None:
                 continue
 
-            signature = full_context.get("signature", "")
-            docstring = full_context.get("docstring", "")
-            decorators = full_context.get("decorators", [])
+            raw_signature = full_context.get("signature", "")
+            raw_docstring = full_context.get("docstring", "")
+            raw_decorators = full_context.get("decorators", [])
             location = full_context.get("location", None)
-            source = full_context.get("source", "")
+            raw_source = full_context.get("source", "")
+
+            signature = raw_signature if isinstance(raw_signature, str) else ""
+            docstring = raw_docstring if isinstance(raw_docstring, str) else ""
+            decorators = (
+                raw_decorators
+                if isinstance(raw_decorators, list)
+                and all(isinstance(item, str) for item in raw_decorators)
+                else []
+            )
+            source = raw_source if isinstance(raw_source, str) else ""
 
             if is_primary:
                 # PRIMARY: complete source body (within budget).
@@ -399,3 +410,37 @@ class ContextBuilder:
                     candidate.source_lines = len(source.splitlines()) if source else 0
 
         return candidates
+
+    def _estimate_candidate_tokens_for_ranking(
+        self,
+        candidate: ContextCandidate,
+        is_primary: bool,
+    ) -> int:
+        """Estimate candidate cost using the same content model as final budget."""
+        total_chars = len(candidate.qualified_name) + len(candidate.module)
+
+        full_context = self._index.get_symbol_full_context(candidate.qualified_name)
+        if full_context is None:
+            return max(1, int(total_chars / CHARS_PER_TOKEN))
+
+        signature = full_context.get("signature", "")
+        docstring = full_context.get("docstring", "")
+        source = full_context.get("source", "")
+
+        if isinstance(signature, str):
+            total_chars += len(signature)
+        if isinstance(docstring, str):
+            total_chars += len(docstring)
+
+        if is_primary:
+            if isinstance(source, str):
+                total_chars += len(source)
+        else:
+            preview = self._index.get_symbol_source_excerpts(
+                candidate.qualified_name,
+                max_tokens=self._supporting_symbol_max_tokens,
+            )
+            if preview:
+                total_chars += len(preview)
+
+        return max(1, int(total_chars / CHARS_PER_TOKEN))

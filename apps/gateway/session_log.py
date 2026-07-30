@@ -41,6 +41,7 @@ from pathlib import Path
 from typing import Any
 
 from apps.gateway.core.config import get_settings
+from packages.context.content import content_to_text
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +67,74 @@ def _truncate(value: Any, max_length: int = 500) -> str:
 def _utc_timestamp() -> str:
     """Return the current UTC time in ISO-8601 with trailing Z."""
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+
+def _choice_content(choice: dict[str, Any]) -> str:
+    """Extract assistant content from either full JSON or streaming chunks."""
+    message = choice.get("message")
+    if isinstance(message, dict):
+        content = message.get("content", "")
+        return content if isinstance(content, str) else ""
+
+    delta = choice.get("delta")
+    if isinstance(delta, dict):
+        content = delta.get("content", "")
+        return content if isinstance(content, str) else ""
+
+    return ""
+
+
+def _extract_answer_preview(response_body: list[bytes], max_length: int = 500) -> str:
+    """Extract a preview from non-streaming JSON or streaming SSE chunks."""
+    preview_parts: list[str] = []
+
+    try:
+        body_str = b"".join(response_body).decode("utf-8")
+    except UnicodeDecodeError:
+        return ""
+
+    for line in body_str.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+
+        if line.startswith("data: "):
+            data_str = line[6:]
+            if data_str == "[DONE]":
+                continue
+            try:
+                parsed = json.loads(data_str)
+            except json.JSONDecodeError:
+                continue
+        elif line.startswith("data:"):
+            data_str = line[5:].strip()
+            if data_str == "[DONE]":
+                continue
+            try:
+                parsed = json.loads(data_str)
+            except json.JSONDecodeError:
+                continue
+        else:
+            try:
+                parsed = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+        choices = parsed.get("choices", [])
+        if not choices:
+            continue
+
+        content = _choice_content(choices[0])
+        if content:
+            preview_parts.append(content)
+
+        if not line.startswith("data:"):
+            break
+
+        if sum(len(part) for part in preview_parts) >= max_length:
+            break
+
+    return _truncate("".join(preview_parts), max_length)
 
 
 class SessionLogger:
@@ -245,16 +314,10 @@ class SessionLoggerMiddleware:
         last_user_message = ""
         for msg in reversed(messages):
             if isinstance(msg, dict) and msg.get("role") == "user":
-                content = msg.get("content", "")
-                if isinstance(content, str):
-                    last_user_message = _truncate(content, 500)
-                elif isinstance(content, list):
-                    # Handle multimodal content.
-                    text_parts = []
-                    for part in content:
-                        if isinstance(part, dict) and part.get("type") == "text":
-                            text_parts.append(str(part.get("text", "")))
-                    last_user_message = _truncate(" ".join(text_parts), 500)
+                last_user_message = _truncate(
+                    content_to_text(msg.get("content", "")),
+                    500,
+                )
                 break
 
         # Conversation key.
@@ -404,36 +467,7 @@ class SessionLoggerMiddleware:
         # --- answer preview ---
         answer_preview = ""
         if response_body and status == "ok":
-            try:
-                body_str = b"".join(response_body).decode("utf-8")
-                # Non-streaming: full JSON response.
-                for line in body_str.split("\n"):
-                    line = line.strip()
-                    if line.startswith("data: "):
-                        data_str = line[6:]
-                        if data_str != "[DONE]":
-                            try:
-                                chunk = json.loads(data_str)
-                                choices = chunk.get("choices", [])
-                                if choices:
-                                    message = choices[0].get("message", {})
-                                    content = message.get("content", "")
-                                    answer_preview = _truncate(content, 500)
-                            except json.JSONDecodeError:
-                                pass
-                    elif line and not line.startswith("data:"):
-                        try:
-                            parsed = json.loads(line)
-                            choices = parsed.get("choices", [])
-                            if choices:
-                                message = choices[0].get("message", {})
-                                content = message.get("content", "")
-                                answer_preview = _truncate(content, 500)
-                            break
-                        except json.JSONDecodeError:
-                            pass
-            except UnicodeDecodeError:
-                pass
+            answer_preview = _extract_answer_preview(response_body)
 
         return {
             "timestamp": now,

@@ -31,15 +31,16 @@ from unittest.mock import MagicMock
 from packages.context.models import ContextCandidate
 from packages.context.ranking import RankingEngine
 from packages.context.ranking_config import RankingConfig
+from packages.context.scoring import (
+    RankingReason,
+    score_relationship,
+)
+
 WEIGHT_DIRECT_CALLER = RankingConfig.WEIGHT_CALL_GRAPH_DIRECT_CALLER
 WEIGHT_DIRECT_CALLEE = RankingConfig.WEIGHT_CALL_GRAPH_DIRECT_CALLEE
 WEIGHT_SHARED_CLASS = RankingConfig.WEIGHT_CALL_GRAPH_SAME_CLASS
 WEIGHT_SHARED_MODULE = RankingConfig.WEIGHT_CALL_GRAPH_SAME_MODULE
 WEIGHT_SHARED_PARENT = RankingConfig.WEIGHT_CALL_GRAPH_SHARED_PARENT
-from packages.context.scoring import (
-    RankingReason,
-    score_relationship,
-)
 
 # ------------------------------------------------------------------
 # Fixtures
@@ -776,6 +777,37 @@ class TestExpansionEnabled:
         ranked = engine.rank("test", candidates, max_tokens=100)
         # Only the original candidate fits; no expansion due to budget
         assert len(ranked) == 1
+
+    def test_expansion_uses_configured_token_estimator(self) -> None:
+        """Expansion budget uses real candidate estimates when provided."""
+        primary = _candidate("auth.App.run", "auth.App.run", "auth/app.py")
+        candidates = [
+            _candidate("auth.App.validate", "auth.App.validate", "auth/app.py"),
+        ]
+
+        graph_view = _mock_graph_view(
+            callers_map={"auth.App.run": ["auth.views.login"]},
+        )
+
+        def estimate(candidate: ContextCandidate, is_primary: bool) -> int:
+            if is_primary:
+                return 100
+            if candidate.qualified_name == "auth.views.login":
+                return 400
+            return 100
+
+        engine = RankingEngine(
+            symbol_graph_view=graph_view,
+            primary_symbol=primary,
+            relationship_enabled=True,
+            expansion_enabled=True,
+            token_estimator=estimate,
+        )
+
+        ranked = engine.rank("test", candidates, max_tokens=250)
+
+        qualified_names = [c.qualified_name for c in ranked]
+        assert qualified_names == ["auth.App.validate"]
 
     def test_expansion_skips_existing(self) -> None:
         """Expansion skips candidates already in the ranked list."""

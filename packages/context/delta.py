@@ -21,6 +21,8 @@ import hashlib
 from collections import OrderedDict
 from typing import TYPE_CHECKING
 
+from packages.context.content import content_to_text
+
 if TYPE_CHECKING:
     from packages.context.models import ContextCandidate
 
@@ -46,14 +48,7 @@ def _hash_user_turns(users: list[dict[str, str]]) -> str:
     h = hashlib.sha256()
     for i, m in enumerate(users):
         h.update(f"{i}\x00".encode())
-        content = m.get("content", "")
-        if not isinstance(content, str):
-            # OpenAI list-content: concatenate text parts.
-            content = " ".join(
-                p["text"]
-                for p in content
-                if isinstance(p, dict) and isinstance(p.get("text"), str)
-            ) if isinstance(content, list) else ""
+        content = content_to_text(m.get("content", ""))
         h.update(content.encode("utf-8"))
         h.update(b"\x00")
     return h.hexdigest()

@@ -40,8 +40,8 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any
 
+from packages.context.content import content_to_text
 from packages.pipeline.base import PipelineStage
 from packages.pipeline.context import PipelineContext
 from packages.pipeline.result import PipelineStageResult
@@ -211,26 +211,11 @@ class PlanningStage(PipelineStage):
         user_messages: list[str] = []
         for message in messages:
             if isinstance(message, dict) and message.get("role") == "user":
-                text = _content_to_text(message.get("content", "")).strip()
+                text = content_to_text(message.get("content", "")).strip()
                 if text:
                     user_messages.append(text)
 
         return _select_intent_messages(user_messages)
-
-
-def _content_to_text(content: Any) -> str:
-    """Normalize chat message content to text for intent detection."""
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts: list[str] = []
-        for item in content:
-            if isinstance(item, dict) and isinstance(item.get("text"), str):
-                parts.append(item["text"])
-            elif isinstance(item, str):
-                parts.append(item)
-        return " ".join(parts)
-    return ""
 
 
 def _select_intent_messages(messages: list[str]) -> list[str]:

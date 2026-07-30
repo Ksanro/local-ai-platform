@@ -73,6 +73,7 @@ import time
 
 from packages.context.builder import ContextBuilder
 from packages.context.composer import ContextComposer
+from packages.context.content import content_to_text
 from packages.context.context_package import ContextPackage
 from packages.context.delta import (
     SentSymbolTracker,
@@ -452,13 +453,13 @@ class RepositoryContextStage(PipelineStage):
         # Find the last user message.
         for message in reversed(messages):
             if isinstance(message, dict) and message.get("role") == "user":
-                content = message.get("content", "")
-                if isinstance(content, str):
-                    return content.strip()
+                text = content_to_text(message.get("content", ""))
+                if text:
+                    return text.strip()
 
         # Fallback: join all user message contents.
         user_contents = [
-            msg.get("content", "")
+            content_to_text(msg.get("content", ""))
             for msg in messages
             if isinstance(msg, dict) and msg.get("role") == "user"
         ]

@@ -10,6 +10,7 @@ import logging
 import time
 from typing import Any
 
+from packages.context.content import content_to_text
 from packages.pipeline.base import PipelineStage
 from packages.pipeline.context import PipelineContext
 from packages.pipeline.exceptions import PipelineExecutionError
@@ -97,6 +98,11 @@ class PipelineEngine:
         context.set_metadata(
             "max_tokens_override", request.metadata.get("max_tokens_override")
         )
+        if "repository_context_max_tokens" in request.metadata:
+            context.set_metadata(
+                "repository_context_max_tokens",
+                request.metadata.get("repository_context_max_tokens"),
+            )
 
         # Create NormalizedRequest early so downstream stages can use it.
         # This is the single source of truth for protocol fields.
@@ -268,7 +274,7 @@ def _apply_history_cap(
     )
 
     total_after = sum(
-        int(len(_content_to_text(m.get("content", ""))) / CHARS_PER_TOKEN)
+        int(len(content_to_text(m.get("content", ""))) / CHARS_PER_TOKEN)
         for m in capped_messages
     )
     context.set_metadata("history_dropped_count", dropped_count)
@@ -286,29 +292,3 @@ def _apply_history_cap(
             total_after,
             max_history_tokens,
         )
-
-
-def _content_to_text(content: object) -> str:
-    """Normalise an OpenAI message ``content`` field to plain text.
-
-    Content may be a string, or a list of parts such as
-    ``[{"type": "text", "text": "..."}]`` (the format Cline and other
-    clients send). Non-text parts are ignored.
-
-    Args:
-        content: The raw ``content`` value from a message.
-
-    Returns:
-        The concatenated text, or an empty string.
-    """
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts: list[str] = []
-        for item in content:
-            if isinstance(item, dict) and isinstance(item.get("text"), str):
-                parts.append(item["text"])
-            elif isinstance(item, str):
-                parts.append(item)
-        return " ".join(parts)
-    return ""

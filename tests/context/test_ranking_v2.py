@@ -21,23 +21,13 @@ Tests covering:
 
 from __future__ import annotations
 
-import pytest
-
-from packages.context.budget import ContextBudget
 from packages.context.builder import ContextBuilder
-from packages.context.composer import ContextComposer
 from packages.context.context_package import (
     ContextMetadata,
-    ContextPackage,
-    ModuleDescription,
-    RelationshipSummary,
-    SymbolContext,
 )
 from packages.context.models import (
-    ContextBudgetResult,
     ContextCandidate,
     ContextQuery,
-    ContextResult,
 )
 from packages.context.ranking import RankingEngine
 from packages.context.ranking_config import RankingConfig
@@ -45,12 +35,10 @@ from packages.context.scoring import (
     RankingReason,
     normalise_query_text,
     score_candidate,
-    score_candidate_v2,
     score_relationship,
 )
 from packages.repository.index.models import RepositoryIndex
 from packages.repository.symbols.models import Module, Relationship, Symbol, SymbolType
-
 
 # ------------------------------------------------------------------
 # Fixtures
@@ -101,7 +89,6 @@ def _make_index(modules: list[Module]) -> RepositoryIndex:
         all_relationships.extend(mod.relationships)
         modules_dict[mod.path] = mod
 
-    stats = mod_list = None  # Not needed for tests
     return RepositoryIndex(
         modules=modules_dict,
         _symbols=all_symbols,
@@ -119,7 +106,6 @@ def _make_candidate(
     is_in_init_py: bool = False,
 ) -> ContextCandidate:
     """Helper to create a ContextCandidate."""
-    name = qualified_name.rsplit(".", 1)[-1]
     return ContextCandidate(
         symbol_id=qualified_name,
         qualified_name=qualified_name,
@@ -234,6 +220,29 @@ class TestExactMatches:
         assert RankingReason.EXACT_SYMBOL_NAME in reasons
         assert score >= RankingConfig.WEIGHT_EXACT_MATCH
 
+    def test_snake_case_query_phrase_matches_symbol_boundary(self):
+        """Code-shaped query tokens should match snake_case symbol phrases."""
+        target = _make_candidate(
+            qualified_name="session_log._extract_answer_preview",
+            module="session_log.py",
+            symbol_type="FUNCTION",
+        )
+        generic = _make_candidate(
+            qualified_name="chat.ChatCompletionRequest",
+            module="chat.py",
+            symbol_type="CLASS",
+        )
+
+        query = normalise_query_text(
+            "Find answer_preview extraction for streaming chat responses"
+        )
+
+        target_score, target_reasons = score_candidate(target, query)
+        generic_score, _generic_reasons = score_candidate(generic, query)
+
+        assert RankingReason.EXACT_SYMBOL_NAME in target_reasons
+        assert target_score > generic_score
+
 
 # ------------------------------------------------------------------
 # Tests: Partial matches
@@ -267,7 +276,10 @@ class TestPartialMatches:
         score, reasons = score_candidate(candidate, ["random"])
 
         # Should get module match or partial match.
-        assert any(r in reasons for r in [RankingReason.MODULE_MATCH, RankingReason.PARTIAL_SYMBOL_NAME])
+        assert any(
+            r in reasons
+            for r in [RankingReason.MODULE_MATCH, RankingReason.PARTIAL_SYMBOL_NAME]
+        )
 
 
 # ------------------------------------------------------------------
@@ -413,7 +425,10 @@ class TestModuleInfluence:
         score, reasons = score_candidate(candidate, ["auth"])
 
         # Should have exact symbol match or module match.
-        assert any(r in reasons for r in [RankingReason.EXACT_SYMBOL_NAME, RankingReason.MODULE_MATCH])
+        assert any(
+            r in reasons
+            for r in [RankingReason.EXACT_SYMBOL_NAME, RankingReason.MODULE_MATCH]
+        )
 
 
 # ------------------------------------------------------------------
@@ -447,9 +462,9 @@ class TestPublicAPIPreference:
         score, reasons = score_candidate(candidate, ["private"])
 
         assert RankingReason.PRIVATE_SYMBOL in reasons
-        # The penalty should reduce the score. Without other bonuses, the penalty should be noticeable.
+        # The penalty should reduce the score.
         # Check that the penalty reason is present.
-        assert RankingConfig.PENALTY_PRIVATE_SYMBOL < 0  # Verify the penalty value is negative
+        assert RankingConfig.PENALTY_PRIVATE_SYMBOL < 0
 
     def test_public_name_bonus(self):
         """Public name should receive PUBLIC_NAME bonus."""
@@ -490,7 +505,12 @@ class TestDeterministicOrdering:
         """Higher score should come before lower score."""
         candidates = [
             _make_candidate("mod.z_class", "mod.py", symbol_type="CLASS"),
-            _make_candidate("mod.a_class", "mod.py", symbol_type="CLASS", source="def a_class():\n    pass\n"),
+            _make_candidate(
+                "mod.a_class",
+                "mod.py",
+                symbol_type="CLASS",
+                source="def a_class():\n    pass\n",
+            ),
         ]
 
         engine = RankingEngine()
@@ -820,7 +840,7 @@ class TestEndToEnd:
 
 class AuthMiddleware:
     """Authentication middleware."""
-    
+
     def authenticate(self, request):
         """Authenticate request."""
         token = request.headers.get("Authorization")

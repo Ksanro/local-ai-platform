@@ -74,6 +74,7 @@ from typing import Any
 
 from packages.context.builder import ContextBuilder
 from packages.context.composer import ContextComposer
+from packages.context.content import content_to_text
 from packages.context.context_package import ContextPackage
 from packages.context.delta import (
     SentSymbolTracker,
@@ -94,31 +95,6 @@ from packages.serializers.types import ProviderType
 logger = logging.getLogger(__name__)
 
 
-
-def _content_to_text(content: object) -> str:
-    """Normalise an OpenAI message ``content`` field to plain text.
-
-    Content may be a string, or a list of parts such as
-    ``[{"type": "text", "text": "..."}]`` (the format Cline and other
-    clients send). Non-text parts are ignored.
-
-    Args:
-        content: The raw ``content`` value from a message.
-
-    Returns:
-        The concatenated text, or an empty string.
-    """
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts = []
-        for item in content:
-            if isinstance(item, dict) and isinstance(item.get("text"), str):
-                parts.append(item["text"])
-            elif isinstance(item, str):
-                parts.append(item)
-        return " ".join(parts)
-    return ""
 
 class RepositoryContextStage(PipelineStage):
     """Pipeline stage that assembles repository context.
@@ -535,13 +511,13 @@ class RepositoryContextStage(PipelineStage):
         # Find the last user message.
         for message in reversed(messages):
             if isinstance(message, dict) and message.get("role") == "user":
-                text = _content_to_text(message.get("content", ""))
+                text = content_to_text(message.get("content", ""))
                 if text:
                     return text.strip()
 
         # Fallback: join all user message contents.
         user_contents = [
-            _content_to_text(msg.get("content", ""))
+            content_to_text(msg.get("content", ""))
             for msg in messages
             if isinstance(msg, dict) and msg.get("role") == "user"
         ]

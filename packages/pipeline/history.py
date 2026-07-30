@@ -34,32 +34,7 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from packages.context.budget import CHARS_PER_TOKEN
-
-
-def _content_to_text(content: object) -> str:
-    """Normalise an OpenAI message ``content`` field to plain text.
-
-    Content may be a string, or a list of parts such as
-    ``[{"type": "text", "text": "..."}]`` (the format Cline and other
-    clients send). Non-text parts are ignored.
-
-    Args:
-        content: The raw ``content`` value from a message.
-
-    Returns:
-        The concatenated text, or an empty string.
-    """
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts: list[str] = []
-        for item in content:
-            if isinstance(item, dict) and isinstance(item.get("text"), str):
-                parts.append(item["text"])
-            elif isinstance(item, str):
-                parts.append(item)
-        return " ".join(parts)
-    return ""
+from packages.context.content import content_to_text
 
 
 def _estimate_tokens(content: str) -> int:
@@ -87,14 +62,14 @@ def _message_token_count(message: dict[str, Any]) -> int:
     Returns:
         Estimated token count.
     """
-    text = _content_to_text(message.get("content", ""))
+    text = content_to_text(message.get("content", ""))
     tokens = _estimate_tokens(text)
 
     if message.get("name"):
         tokens += _estimate_tokens(message["name"])
 
     if message.get("reasoning_content"):
-        reasoning = _content_to_text(message["reasoning_content"])
+        reasoning = content_to_text(message["reasoning_content"])
         tokens += _estimate_tokens(reasoning)
 
     # Count tool_calls content for assistant messages.
