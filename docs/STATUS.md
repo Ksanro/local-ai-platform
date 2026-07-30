@@ -55,7 +55,7 @@ needed. Session logs record both `context.estimated_tokens` and
 provider prompt tokens.
 
 `APP_REPOSITORY_CONTEXT_INTENT_BUDGETS` can override the default by planner
-intent, for example `SEARCH:2048,TEST:3072,DEBUG:4096,EXPLAIN:8192`. Explicit
+intent, for example `SEARCH:4096,TEST:3072,DEBUG:4096,EXPLAIN:8192`. Explicit
 request metadata still wins over intent defaults.
 
 ### History Capping
