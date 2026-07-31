@@ -31,9 +31,7 @@ def test_list_content_text_view_reaches_internal_consumers() -> None:
     planning_messages = PlanningStage._extract_messages(context)
     assert planning_messages == ["debug streaming issue"]
 
-    assert RepositoryContextStage._extract_query(context) == (
-        "<task>debug streaming issue</task>"
-    )
+    assert RepositoryContextStage._extract_query(context) == "debug streaming issue"
 
     prior_as_string = [{"role": "user", "content": "first debug request"}]
     assert conversation_key(messages) == store_key(prior_as_string)

@@ -39,12 +39,11 @@ independent decision logic.
 from __future__ import annotations
 
 import logging
-import re
 
-from packages.context.content import content_to_text
 from packages.pipeline.base import PipelineStage
 from packages.pipeline.context import PipelineContext
 from packages.pipeline.result import PipelineStageResult
+from packages.pipeline.user_messages import select_task_texts, user_message_texts
 from packages.planning.intent import Intent
 from packages.planning.planner import ContextPlanner
 
@@ -204,55 +203,4 @@ class PlanningStage(PipelineStage):
             return []
 
         messages = request.get("messages", [])
-        if not messages:
-            return []
-
-        # Extract only user messages.
-        user_messages: list[str] = []
-        for message in messages:
-            if isinstance(message, dict) and message.get("role") == "user":
-                text = content_to_text(message.get("content", "")).strip()
-                if text:
-                    user_messages.append(text)
-
-        return _select_intent_messages(user_messages)
-
-
-def _select_intent_messages(messages: list[str]) -> list[str]:
-    """Select user-authored task text for intent detection.
-
-    Cline sends tool results back as user-role messages. For those
-    requests, the original ``<task>`` block is a cleaner signal than
-    read-file output, tool reminders, or other harness text.
-    """
-    filtered = [
-        message
-        for message in messages
-        if not _looks_like_tool_result_message(message)
-    ]
-
-    task_messages: list[str] = []
-    for message in filtered:
-        task_messages.extend(
-            match.strip()
-            for match in re.findall(r"<task>\s*(.*?)\s*</task>", message, re.DOTALL)
-            if match.strip()
-        )
-    if task_messages:
-        return task_messages
-
-    return filtered or messages
-
-
-def _looks_like_tool_result_message(message: str) -> bool:
-    """Return True for Cline tool-result/user-reminder messages."""
-    stripped = message.lstrip()
-    cline_tool_prefixes = (
-        "[read_file for ",
-        "[search_files for ",
-        "[list_files for ",
-        "[execute_command for ",
-        "[attempt_completion]",
-        "[ERROR] You did not use a tool",
-    )
-    return stripped.startswith(cline_tool_prefixes)
+        return select_task_texts(user_message_texts(messages))

@@ -73,7 +73,6 @@ import time
 
 from packages.context.builder import ContextBuilder
 from packages.context.composer import ContextComposer
-from packages.context.content import content_to_text
 from packages.context.context_package import ContextPackage
 from packages.context.delta import (
     SentSymbolTracker,
@@ -86,6 +85,7 @@ from packages.context.models import ContextQuery
 from packages.pipeline.base import PipelineStage
 from packages.pipeline.context import PipelineContext
 from packages.pipeline.result import PipelineStageResult
+from packages.pipeline.user_messages import select_last_task_text
 from packages.repository.index.models import RepositoryIndex
 from packages.serializers.factory import SerializerFactory
 from packages.serializers.openai import OpenAISerializer  # noqa: F401 - auto-registers
@@ -446,24 +446,7 @@ class RepositoryContextStage(PipelineStage):
         if not isinstance(request, dict):
             return ""
 
-        messages = request.get("messages", [])
-        if not messages:
-            return ""
-
-        # Find the last user message.
-        for message in reversed(messages):
-            if isinstance(message, dict) and message.get("role") == "user":
-                text = content_to_text(message.get("content", ""))
-                if text:
-                    return text.strip()
-
-        # Fallback: join all user message contents.
-        user_contents = [
-            content_to_text(msg.get("content", ""))
-            for msg in messages
-            if isinstance(msg, dict) and msg.get("role") == "user"
-        ]
-        return " ".join(user_contents).strip() if user_contents else ""
+        return select_last_task_text(request.get("messages", []))
 
     @staticmethod
     def _get_messages(context: PipelineContext) -> list[dict[str, str]]:

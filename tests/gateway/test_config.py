@@ -26,3 +26,10 @@ def test_settings_exposes_intent_budget_map() -> None:
         "SEARCH": 2048,
         "DEBUG": 4096,
     }
+
+
+def test_settings_include_tests_by_default() -> None:
+    """Repository indexing should include tests unless explicitly disabled."""
+    settings = Settings()
+
+    assert settings.repository_exclude_tests is False

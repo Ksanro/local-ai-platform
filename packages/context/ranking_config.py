@@ -37,6 +37,7 @@ Positive factors (bonuses):
 - DOCUMENTATION_BONUS: Symbol has a docstring (+10)
 - IMPLEMENTATION_SIZE_BONUS: Smaller implementations preferred (+15)
 - TOKEN_OVERLAP: Per-query-token overlap (accumulative, +10 per token)
+- MODULE_TOKEN_OVERLAP: Per-query-token module path overlap (+10 per token)
 - PUBLIC_NAME_BONUS: Name doesn't start with "_" (+5)
 
 Penalty factors:
@@ -157,9 +158,16 @@ class RankingConfig:
     Applied inversely — smaller functions get higher scores."""
 
     # Token overlap (additive, accumulates per matching token)
+    WEIGHT_TEST_TARGET_BONUS: int = 75
+    """Test file bonus when the query explicitly asks for test artifacts."""
+
     WEIGHT_TOKEN_OVERLAP: int = 10
     """Token overlap: a query token appears anywhere in the qualified
     name (case-insensitive). Accumulates per unique matching token."""
+
+    WEIGHT_MODULE_TOKEN_OVERLAP: int = 10
+    """Module token overlap: a query token appears anywhere in the module
+    path (case-insensitive). Accumulates per unique matching token."""
 
     # Name prefix bonus
     WEIGHT_PUBLIC_NAME_BONUS: int = 5

@@ -601,7 +601,7 @@ class TestConfigurationChanges:
         )
 
         # Default: test penalty enabled.
-        score1, reasons1 = score_candidate(candidate, ["test"])
+        score1, reasons1 = score_candidate(candidate, ["helper"])
         assert RankingReason.TEST_CODE in reasons1
 
     def test_max_candidates_limit(self):
@@ -719,14 +719,76 @@ class TestTestCodePenalty:
         assert RankingConfig.PENALTY_TEST_CODE < 0  # Verify penalty is negative
 
     def test_conftest_penalty(self):
-        """Conftest files should be penalized."""
+        """Conftest files should be penalized for non-test queries."""
         candidate = _make_candidate(
             qualified_name="mod.fixture",
             module="conftest.py",
         )
-        _, reasons = score_candidate(candidate, ["fixture"])
+        _, reasons = score_candidate(candidate, ["helper"])
 
         assert RankingReason.TEST_CODE in reasons
+
+    def test_test_file_boost_for_test_query(self):
+        """Test files should be boosted when query explicitly asks for tests."""
+        candidate = _make_candidate(
+            qualified_name="test_mod.test_helper",
+            module="tests/test_mod.py",
+        )
+        score, reasons = score_candidate(candidate, ["tests", "helper"])
+
+        assert RankingReason.TEST_TARGET in reasons
+        assert RankingReason.TEST_CODE not in reasons
+        assert score > 0
+
+    def test_module_token_match_is_additive(self):
+        """Module path tokens should add signal beyond symbol name matching."""
+        candidate = _make_candidate(
+            qualified_name="test_list_content_normalization.test_behavior",
+            module="tests/pipeline/test_list_content_normalization.py",
+        )
+        score, reasons = score_candidate(
+            candidate,
+            ["tests", "list", "content", "normalization"],
+        )
+
+        assert RankingReason.MODULE_TOKEN_MATCH in reasons
+        assert score >= 4 * RankingConfig.WEIGHT_MODULE_TOKEN_OVERLAP
+
+    def test_single_generic_module_token_does_not_add_signal(self):
+        """Single generic module token hits should not outrank stronger symbols."""
+        candidate = _make_candidate(
+            qualified_name="chat.ChatCompletionRequest",
+            module="chat.py",
+            symbol_type="CLASS",
+        )
+        _, reasons = score_candidate(candidate, ["chat", "streaming"])
+
+        assert RankingReason.MODULE_TOKEN_MATCH not in reasons
+
+    def test_test_query_prefers_test_file_over_production_validate_helper(self):
+        """TEST queries should rank test files above generic validate helpers."""
+        test_candidate = _make_candidate(
+            qualified_name=(
+                "test_list_content_normalization."
+                "test_list_content_text_view_reaches_internal_consumers"
+            ),
+            module="tests/pipeline/test_list_content_normalization.py",
+        )
+        production_candidate = _make_candidate(
+            qualified_name="openai.OpenAISerializer._validate_messages",
+            module="packages/serializers/openai.py",
+        )
+
+        test_score, _ = score_candidate(
+            test_candidate,
+            ["tests", "validate", "list", "content", "normalization"],
+        )
+        production_score, _ = score_candidate(
+            production_candidate,
+            ["tests", "validate", "list", "content", "normalization"],
+        )
+
+        assert test_score > production_score
 
 
 # ------------------------------------------------------------------

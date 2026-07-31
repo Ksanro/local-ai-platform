@@ -50,6 +50,12 @@ Uses the startup repository index to select ranked symbols and modules, then
 injects repository context into the provider-bound messages. Delta injection
 suppresses symbols already sent in the conversation.
 
+Test files are included in the repository index by default
+(`APP_REPOSITORY_EXCLUDE_TESTS=false`) so TEST-mode prompts can retrieve the
+actual validation files. Ranking still penalizes test files for ordinary
+non-test queries, but explicit test-seeking queries receive a test-target
+signal and additional credit for descriptive module filename tokens.
+
 `APP_REPOSITORY_CONTEXT_MAX_TOKENS` controls the token budget passed to
 repository-context ranking, relationship expansion, and final assembled
 context trimming. The builder preserves the primary symbol first, drops
@@ -166,7 +172,10 @@ Recommended live-path checks:
 - Repository context can dominate prompt size; history capping alone is not the
   full latency lever. Configurable repository-context budget enforcement now
   exists; `SEARCH` has an initial live-tuned baseline, and the next step is
-  tuning `TEST`, `DEBUG`, `REFACTOR`, and `EXPLAIN` by intent/model.
+  tuning `TEST`, `DEBUG`, `REFACTOR`, and `EXPLAIN` by intent/model. An early
+  TEST run showed that excluding test files caused hallucinated test-file
+  answers, so TEST tuning should resume only after validating the new
+  tests-in-index baseline.
 - Token estimates still use `CHARS_PER_TOKEN = 4.0`, not model-specific
   tokenizers.
 - Only vLLM is implemented as a concrete provider; true multi-provider

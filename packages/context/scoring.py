@@ -139,6 +139,8 @@ class RankingReason(Enum):
     DOCUMENTATION_BONUS = auto()
     IMPLEMENTATION_SIZE_BONUS = auto()
     TOKEN_MATCH = auto()
+    MODULE_TOKEN_MATCH = auto()
+    TEST_TARGET = auto()
     PUBLIC_NAME = auto()
 
     # Penalty reasons
@@ -343,6 +345,21 @@ def _is_test_file(module: str) -> bool:
         if pattern in module_lower:
             return True
     return False
+
+
+def _query_targets_tests(query_tokens: list[str]) -> bool:
+    """Return True when the query explicitly asks for test artifacts."""
+    test_tokens = {
+        "test",
+        "tests",
+        "testing",
+        "spec",
+        "specs",
+        "fixture",
+        "fixtures",
+        "coverage",
+    }
+    return any(token in test_tokens for token in query_tokens)
 
 
 def _is_private_symbol(qualified_name: str) -> bool:
@@ -568,6 +585,17 @@ def score_candidate_v2(
         score += token_match_count * RankingConfig.WEIGHT_TOKEN_OVERLAP
         reasons.append(RankingReason.TOKEN_MATCH)
 
+    # A query token appears anywhere in the module path. This is additive
+    # because filenames often carry the user's strongest retrieval intent.
+    module_token_match_count = 0
+    module_lower = module.lower()
+    for token in query_tokens:
+        if token in module_lower:
+            module_token_match_count += 1
+    if module_token_match_count >= 2:
+        score += module_token_match_count * RankingConfig.WEIGHT_MODULE_TOKEN_OVERLAP
+        reasons.append(RankingReason.MODULE_TOKEN_MATCH)
+
     # ================================================================
     # PHASE 3: Engineering quality factors (additive)
     # ================================================================
@@ -671,10 +699,15 @@ def score_candidate_v2(
         score += RankingConfig.PENALTY_GENERATED_CODE
         reasons.append(RankingReason.GENERATED_CODE)
 
-    # TEST_CODE: -15
+    # TEST_CODE: usually a penalty, but explicit test-seeking queries should
+    # prefer test files over similarly named production helpers.
     if RankingConfig.TEST_PENALTY_ENABLED and _is_test_file(module):
-        score += RankingConfig.PENALTY_TEST_CODE
-        reasons.append(RankingReason.TEST_CODE)
+        if _query_targets_tests(query_tokens):
+            score += RankingConfig.WEIGHT_TEST_TARGET_BONUS
+            reasons.append(RankingReason.TEST_TARGET)
+        else:
+            score += RankingConfig.PENALTY_TEST_CODE
+            reasons.append(RankingReason.TEST_CODE)
 
     # PRIVATE_SYMBOL: -10
     if _is_private_symbol(candidate.qualified_name):

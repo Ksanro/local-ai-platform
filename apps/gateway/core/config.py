@@ -41,7 +41,7 @@ class Settings(BaseSettings):
     default_model: str = "default"
     repository_context_enabled: bool = True
     repository_path: str = "."
-    repository_exclude_tests: bool = True
+    repository_exclude_tests: bool = False
     repository_exclude_globs: str = "scripts/**"  # comma-separated glob list; empty disables
     repository_context_max_tokens: int = 4096
     repository_context_intent_budgets: str = ""

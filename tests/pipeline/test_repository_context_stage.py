@@ -717,6 +717,28 @@ class TestQueryExtraction:
         assert result.success is True
         assert context.context_package is None
 
+    def test_extract_query_uses_clean_cline_task_text(self) -> None:
+        """Cline task wrappers should not leak tool guidance into retrieval."""
+        context = _make_context(
+            messages=[
+                {
+                    "role": "user",
+                    "content": (
+                        "<task>\n"
+                        "Find list content normalization tests.\n"
+                        "</task>\n"
+                        "# task_progress RECOMMENDED\n"
+                        "Include a todo list in your next tool call."
+                    ),
+                }
+            ]
+        )
+
+        assert (
+            RepositoryContextStage._extract_query(context)
+            == "Find list content normalization tests."
+        )
+
 
 # ------------------------------------------------------------------
 # No forbidden behaviour
