@@ -43,7 +43,7 @@ Positive factors (bonuses):
 Penalty factors:
 
 - GENERATED_CODE: Symbol name matches generated patterns (-20)
-- TEST_CODE: Symbol is in a test file (-15)
+- TEST_CODE: Symbol is in a test file for non-test queries (-50)
 - PRIVATE_SYMBOL: Name starts with "_" (double underscore) (-10)
 - LARGE_IMPLEMENTATION: Implementation exceeds 100 lines (-5)
 
@@ -182,8 +182,9 @@ class RankingConfig:
     """Generated code penalty: symbol name matches generated patterns
     (generated_, _gen_, _auto_, etc.)."""
 
-    PENALTY_TEST_CODE: int = -15
-    """Test code penalty: symbol is in a test file (test_*.py, *_test.py)."""
+    PENALTY_TEST_CODE: int = -50
+    """Test code penalty for non-test queries: symbol is in a test file
+    (test_*.py, *_test.py)."""
 
     PENALTY_PRIVATE_SYMBOL: int = -10
     """Private symbol penalty: name starts with "_" (single underscore)

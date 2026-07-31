@@ -67,7 +67,7 @@ Each candidate receives:
 | Rule | Weight |
 |------|-------:|
 | Generated code pattern | -20 |
-| Test code file | -15 |
+| Test code file | -50 |
 | Private symbol | -10 |
 | Large implementation (>100 lines) | -5 |
 
@@ -113,7 +113,7 @@ class RankingConfig:
     
     # Penalties
     WEIGHT_GENERATED_CODE = -20
-    WEIGHT_TEST_FILE = -15
+    WEIGHT_TEST_FILE = -50
     WEIGHT_PRIVATE_SYMBOL = -10
     WEIGHT_LARGE_IMPLEMENTATION = -5
 ```
@@ -187,7 +187,7 @@ Environment variables:
 | Call graph | Not used | Direct caller/callee, same module/class |
 | Public API | Not considered | +15 for `__init__.py` exports |
 | Generated code | Not penalised | -20 penalty |
-| Test code | Not penalised | -15 penalty |
+| Test code | Not penalised | -50 penalty |
 | Explainability | None | `RankingReason` enum |
 | Configuration | None | Weights, flags, env vars |
 | Expansion | None | Direct caller/callee expansion |
