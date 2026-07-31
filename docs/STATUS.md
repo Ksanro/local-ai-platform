@@ -65,12 +65,16 @@ needed. Session logs record both `context.estimated_tokens` and
 provider prompt tokens.
 
 `APP_REPOSITORY_CONTEXT_INTENT_BUDGETS` can override the default by planner
-intent, for example `SEARCH:2048,TEST:3072,DEBUG:4096,EXPLAIN:8192`. Explicit
+intent, for example `SEARCH:2048,TEST:2048,DEBUG:4096,EXPLAIN:8192`. Explicit
 request metadata still wins over intent defaults. The current live tuning
 baseline uses `SEARCH:2048`; in a same-prompt Cline A/B it reduced median
 repository context from about `4013` to `2047` estimated tokens and median
-prompt tokens from about `17,106` to `16,146`. Latency was inconclusive in the
-small sample, while answer quality remained acceptable.
+prompt tokens from about `17,106` to `16,146`. The TEST baseline uses `2048`;
+after enabling test indexing and clean Cline task extraction, a same-prompt
+Cline validation preserved answer quality while reducing direct repository
+context from about `2182` to `2020` estimated tokens and prompt tokens from
+about `15,397` to `15,158` on the assembled turn. Latency remained noisy in
+the small sample.
 
 ### History Capping
 
@@ -171,11 +175,8 @@ Recommended live-path checks:
   baseline or cleaned up.
 - Repository context can dominate prompt size; history capping alone is not the
   full latency lever. Configurable repository-context budget enforcement now
-  exists; `SEARCH` has an initial live-tuned baseline, and the next step is
-  tuning `TEST`, `DEBUG`, `REFACTOR`, and `EXPLAIN` by intent/model. An early
-  TEST run showed that excluding test files caused hallucinated test-file
-  answers, so TEST tuning should resume only after validating the new
-  tests-in-index baseline.
+  exists; `SEARCH` and `TEST` have initial live-tuned baselines, and the next
+  step is tuning `DEBUG`, `REFACTOR`, and `EXPLAIN` by intent/model.
 - Token estimates still use `CHARS_PER_TOKEN = 4.0`, not model-specific
   tokenizers.
 - Only vLLM is implemented as a concrete provider; true multi-provider
