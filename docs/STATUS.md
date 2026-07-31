@@ -59,8 +59,12 @@ needed. Session logs record both `context.estimated_tokens` and
 provider prompt tokens.
 
 `APP_REPOSITORY_CONTEXT_INTENT_BUDGETS` can override the default by planner
-intent, for example `SEARCH:4096,TEST:3072,DEBUG:4096,EXPLAIN:8192`. Explicit
-request metadata still wins over intent defaults.
+intent, for example `SEARCH:2048,TEST:3072,DEBUG:4096,EXPLAIN:8192`. Explicit
+request metadata still wins over intent defaults. The current live tuning
+baseline uses `SEARCH:2048`; in a same-prompt Cline A/B it reduced median
+repository context from about `4013` to `2047` estimated tokens and median
+prompt tokens from about `17,106` to `16,146`. Latency was inconclusive in the
+small sample, while answer quality remained acceptable.
 
 ### History Capping
 
@@ -161,7 +165,8 @@ Recommended live-path checks:
   baseline or cleaned up.
 - Repository context can dominate prompt size; history capping alone is not the
   full latency lever. Configurable repository-context budget enforcement now
-  exists; the next step is live tuning by intent/model.
+  exists; `SEARCH` has an initial live-tuned baseline, and the next step is
+  tuning `TEST`, `DEBUG`, `REFACTOR`, and `EXPLAIN` by intent/model.
 - Token estimates still use `CHARS_PER_TOKEN = 4.0`, not model-specific
   tokenizers.
 - Only vLLM is implemented as a concrete provider; true multi-provider
