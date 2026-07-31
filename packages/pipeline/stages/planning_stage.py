@@ -247,7 +247,12 @@ def _select_intent_messages(messages: list[str]) -> list[str]:
 def _looks_like_tool_result_message(message: str) -> bool:
     """Return True for Cline tool-result/user-reminder messages."""
     stripped = message.lstrip()
-    return (
-        stripped.startswith("[read_file for ")
-        or stripped.startswith("[ERROR] You did not use a tool")
+    cline_tool_prefixes = (
+        "[read_file for ",
+        "[search_files for ",
+        "[list_files for ",
+        "[execute_command for ",
+        "[attempt_completion]",
+        "[ERROR] You did not use a tool",
     )
+    return stripped.startswith(cline_tool_prefixes)

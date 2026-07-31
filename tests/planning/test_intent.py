@@ -154,6 +154,33 @@ class TestIntentDetect:
         messages = ["List all symbols"]
         assert Intent.detect(messages) == Intent.SEARCH
 
+    def test_search_intent_investigate_without_bug_signal(self):
+        """Ambiguous investigation wording defaults to SEARCH."""
+        messages = [
+            "Investigate where session log answer_preview is extracted",
+        ]
+        assert Intent.detect(messages) == Intent.SEARCH
+
+    def test_search_intent_inspect(self):
+        """SEARCH intent detected with ambiguous inspection wording."""
+        messages = ["Inspect the provider payload conversion path"]
+        assert Intent.detect(messages) == Intent.SEARCH
+
+    def test_strong_debug_signal_beats_ambiguous_investigate(self):
+        """Bug words keep investigation prompts in DEBUG."""
+        messages = ["Investigate the failing answer_preview extraction"]
+        assert Intent.detect(messages) == Intent.DEBUG
+
+    def test_negated_explain_keyword_does_not_override_search(self):
+        """Negative instructions should not make SEARCH look like EXPLAIN."""
+        messages = [
+            (
+                "Locate the code that converts a request into a provider payload. "
+                "Do not describe repository context serialization."
+            ),
+        ]
+        assert Intent.detect(messages) == Intent.SEARCH
+
     def test_default_intent_empty_messages(self):
         """DEFAULT returned for empty messages."""
         assert Intent.detect([]) == Intent.DEFAULT

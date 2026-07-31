@@ -87,6 +87,78 @@ def _message_token_count(message: dict[str, Any]) -> int:
     return tokens
 
 
+def _looks_like_cline_tool_result_message(message: dict[str, Any]) -> bool:
+    """Return True for Cline tool-result envelopes sent as user text."""
+    if message.get("role") != "user":
+        return False
+
+    content = content_to_text(message.get("content", ""))
+    stripped = content.lstrip()
+    prefixes = (
+        "[read_file for ",
+        "[search_files for ",
+        "[list_files for ",
+        "[execute_command for ",
+        "[attempt_completion]",
+        "[ERROR] You did not use a tool",
+    )
+    return stripped.startswith(prefixes)
+
+
+def _truncate_message_content(
+    message: dict[str, Any],
+    max_tokens: int,
+) -> dict[str, Any]:
+    """Return a shallow copy with text content truncated."""
+    if max_tokens <= 0:
+        return message
+
+    max_chars = int(max_tokens * CHARS_PER_TOKEN)
+    content = message.get("content", "")
+    text = content_to_text(content)
+    if len(text) <= max_chars:
+        return message
+
+    marker = "\n\n[... truncated by gateway history cap ...]"
+    keep_chars = max(0, max_chars - len(marker))
+    updated = dict(message)
+    updated["content"] = f"{text[:keep_chars]}{marker}"
+    return updated
+
+
+def _cap_current_tool_result(
+    messages: list[dict[str, Any]],
+    max_current_tool_result_tokens: int | None,
+) -> list[dict[str, Any]]:
+    """Cap the current Cline tool-result message without dropping it."""
+    if max_current_tool_result_tokens is None or max_current_tool_result_tokens <= 0:
+        return messages
+
+    last_user_idx: int | None = None
+    for i in range(len(messages) - 1, -1, -1):
+        if messages[i].get("role") == "user":
+            last_user_idx = i
+            break
+
+    if last_user_idx is None:
+        return messages
+
+    message = messages[last_user_idx]
+    if not _looks_like_cline_tool_result_message(message):
+        return messages
+
+    capped_message = _truncate_message_content(
+        message,
+        max_tokens=max_current_tool_result_tokens,
+    )
+    if capped_message is message:
+        return messages
+
+    capped_messages = list(messages)
+    capped_messages[last_user_idx] = capped_message
+    return capped_messages
+
+
 def _build_cap_groups(
     messages: list[dict[str, Any]],
 ) -> list[set[int]]:
@@ -177,6 +249,7 @@ def cap_history(
     messages: list[dict[str, Any]],
     max_history_tokens: int,
     estimate: Callable[[str], int] | None = None,
+    max_current_tool_result_tokens: int | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
     """Return (capped_messages, dropped_count).
 
@@ -209,6 +282,8 @@ def cap_history(
             the last user message).
         estimate: A callable that estimates token count from text.  If not
             provided, uses ``int(len(text) / CHARS_PER_TOKEN)``.
+        max_current_tool_result_tokens: Optional cap for the final user
+            message when it is a Cline-style tool-result envelope.
 
     Returns:
         A tuple of (capped_messages, dropped_count).
@@ -240,7 +315,10 @@ def cap_history(
 
     # If everything fits, return unchanged.
     if total_non_last_user_tokens <= max_history_tokens:
-        return messages, 0
+        return (
+            _cap_current_tool_result(messages, max_current_tool_result_tokens),
+            0,
+        )
 
     # --- Capping logic ---
 
@@ -263,7 +341,10 @@ def cap_history(
 
     # If no candidate groups, nothing to cap.
     if not candidate_groups:
-        return messages, 0
+        return (
+            _cap_current_tool_result(messages, max_current_tool_result_tokens),
+            0,
+        )
 
     # Sort groups by their maximum index (newest-first ordering).
     candidate_groups.sort(key=lambda g: max(g), reverse=True)
@@ -292,6 +373,7 @@ def cap_history(
 
     dropped_count = len(messages) - len(result)
 
+    result = _cap_current_tool_result(result, max_current_tool_result_tokens)
     return result, dropped_count
 
 

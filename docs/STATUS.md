@@ -3,7 +3,7 @@
 This file is the current runtime snapshot. It intentionally describes only
 what matters for the live gateway path and calls out dormant code explicitly.
 
-Last reviewed: 2026-07-28.
+Last reviewed: 2026-07-31.
 
 ## Product Shape
 
@@ -38,7 +38,11 @@ capability metadata.
 
 Extracts user text, including OpenAI list-form content used by Cline, detects
 intent deterministically, and stores a `ContextPlan` for repository-context
-selection.
+selection. Cline tool-result envelopes sent as user-role text are ignored for
+intent selection so search/read/command output does not override the original
+task. Ambiguous inspection words such as `investigate`, `inspect`, and `check`
+route conservatively to `SEARCH` unless stronger signals such as `failing`,
+`error`, or `bug` indicate `DEBUG`.
 
 ### RepositoryContextStage
 
@@ -71,6 +75,10 @@ Measured result with Cline/vLLM:
 - mean prompt tokens dropped by about 4.8k
 - mean provider wait improved by about 1.85s
 - repository context remains a major contributor to total prompt size
+- current oversized Cline tool-result envelopes are capped before provider
+  forwarding; a live `answer_preview` search-result turn dropped from about
+  `104,956` prompt tokens to a max of `20,321` prompt tokens while preserving
+  the final task answer quality
 
 ### ProviderStage
 

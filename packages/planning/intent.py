@@ -155,6 +155,10 @@ class Intent:
                 "locate",
                 "where is",
                 "where are",
+                "investigate",
+                "inspect",
+                "check",
+                "look into",
                 "list",
                 "show me",
                 "search for",
@@ -193,6 +197,15 @@ class Intent:
         # Extract all word tokens (alphanumeric + underscores).
         return {w.lower() for w in re.findall(r"\b[\w]+\b", text)}
 
+    @staticmethod
+    def _remove_negated_commands(text: str) -> str:
+        """Remove common negative command phrases before keyword matching."""
+        return re.sub(
+            r"\b(?:do\s+not|don't|dont|never)\s+\w+\b",
+            " ",
+            text,
+        )
+
     @classmethod
     def detect_match(cls, messages: list[str]) -> IntentMatch:
         """Detect intent from user messages and return match details.
@@ -215,6 +228,8 @@ class Intent:
 
         if not combined:
             return IntentMatch(cls.DEFAULT)
+
+        combined = cls._remove_negated_commands(combined)
 
         # Extract unique words for whole-word matching.
         words = cls._extract_words(combined)

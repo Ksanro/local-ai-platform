@@ -271,6 +271,7 @@ def _apply_history_cap(
         messages,
         max_history_tokens,
         estimate=lambda text: int(len(text) / CHARS_PER_TOKEN) if text else 0,
+        max_current_tool_result_tokens=max_history_tokens,
     )
 
     total_after = sum(
@@ -280,11 +281,12 @@ def _apply_history_cap(
     context.set_metadata("history_dropped_count", dropped_count)
     context.set_metadata("history_tokens_after", total_after)
 
-    if dropped_count > 0:
+    if capped_messages is not messages:
         # Create a new NormalizedRequest with capped messages.
         capped_nr = nr.with_messages(capped_messages)
         context.normalized_request = capped_nr
 
+    if dropped_count > 0 or capped_messages is not messages:
         logger.info(
             "history_cap request_id=%s dropped=%d tokens_after=%d budget=%d",
             context.request_id,

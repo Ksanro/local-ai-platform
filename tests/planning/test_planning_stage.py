@@ -402,6 +402,49 @@ class TestMessageExtraction:
         assert result.data is not None
         assert result.data.intent == "DEBUG"
 
+    def test_extract_messages_ignores_cline_execute_command_tool_results(self):
+        """Cline command output must not override the original task text."""
+        context = PipelineContext(
+            request={
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": (
+                            "<task>Find tests for list-form content normalization.</task>"
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            "[execute_command for 'python -m pytest'] Result:\n"
+                            "assert '<task>debug streaming issue</task>'"
+                        ),
+                    },
+                ]
+            }
+        )
+
+        messages = PlanningStage._extract_messages(context)
+
+        assert messages == ["Find tests for list-form content normalization."]
+
+    def test_extract_messages_ignores_common_cline_tool_results(self):
+        """Cline tool result envelopes are not treated as user intent."""
+        context = PipelineContext(
+            request={
+                "messages": [
+                    {"role": "user", "content": "Refactor-read message content helpers"},
+                    {"role": "user", "content": "[search_files for 'debug'] Result: ..."},
+                    {"role": "user", "content": "[list_files for '.'] Result: ..."},
+                    {"role": "user", "content": "[attempt_completion] Result: Done"},
+                ]
+            }
+        )
+
+        messages = PlanningStage._extract_messages(context)
+
+        assert messages == ["Refactor-read message content helpers"]
+
     def test_extract_messages_skips_non_user(self):
         """Non-user messages are skipped."""
         context = PipelineContext(

@@ -16,10 +16,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from packages.pipeline.history import cap_history
-
 import pytest
 
+from packages.pipeline.context import PipelineContext
+from packages.pipeline.engine import _apply_history_cap
+from packages.pipeline.history import cap_history
+from packages.pipeline.normalized import NormalizedRequest
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -484,12 +486,89 @@ class TestFix3LargeCurrentMessage:
 
 
 # ---------------------------------------------------------------------------
-# Fix 1: Engine integration — resolved_model typed field drives budget
+# Current Cline tool result compression
+# ---------------------------------------------------------------------------
+
+
+class TestCurrentClineToolResultCompression:
+    """Oversized Cline tool-result envelopes are capped in place."""
+
+    def test_current_cline_tool_result_is_truncated(self) -> None:
+        msgs = [
+            _msg("system", "System."),
+            _msg("user", "Original task"),
+            _msg(
+                "user",
+                "[search_files for 'answer_preview'] Result:\n" + ("X" * 1000),
+            ),
+        ]
+
+        capped, dropped = cap_history(
+            msgs,
+            max_history_tokens=1000,
+            estimate=_estimate,
+            max_current_tool_result_tokens=20,
+        )
+
+        assert dropped == 0
+        assert capped[-1]["role"] == "user"
+        assert len(capped[-1]["content"]) <= 80
+        assert "truncated by gateway history cap" in capped[-1]["content"]
+
+    def test_current_regular_user_prompt_is_not_truncated(self) -> None:
+        current = "Please inspect this deliberately long prompt: " + ("X" * 1000)
+        msgs = [
+            _msg("system", "System."),
+            _msg("user", "Original task"),
+            _msg("user", current),
+        ]
+
+        capped, dropped = cap_history(
+            msgs,
+            max_history_tokens=1000,
+            estimate=_estimate,
+            max_current_tool_result_tokens=20,
+        )
+
+        assert dropped == 0
+        assert capped[-1]["content"] == current
+
+
+# ---------------------------------------------------------------------------
+# Fix 1: Engine integration - resolved_model typed field drives budget
 # ---------------------------------------------------------------------------
 
 
 class TestFix1ResolvedModelBudget:
     """History capping engages when resolved_model context_window is set."""
+
+    def test_apply_history_cap_updates_request_when_only_current_tool_result_truncates(
+        self,
+    ) -> None:
+        """Current tool-result truncation updates the provider-bound request."""
+        context = PipelineContext(
+            request={
+                "messages": [
+                    _msg("system", "System."),
+                    _msg("user", "Original task"),
+                    _msg(
+                        "user",
+                        "[search_files for 'answer_preview'] Result:\n" + ("X" * 1000),
+                    ),
+                ],
+                "model": "qwen36",
+            }
+        )
+        context.normalized_request = NormalizedRequest.from_client(context.request)
+        context.set_metadata("history_cap_tokens", 20)
+
+        _apply_history_cap(context, resolved_model=None, max_tokens_override=None)
+
+        assert context.normalized_request is not None
+        capped = context.normalized_request.messages
+        assert len(capped) == 3
+        assert context.get_metadata("history_dropped_count") == 0
+        assert "truncated by gateway history cap" in capped[-1]["content"]
 
     def test_engine_derives_budget_from_resolved_model_context_window(self) -> None:
         """Prove that _apply_history_cap reads context.resolved_model (typed
@@ -533,7 +612,6 @@ class TestFix1ResolvedModelBudget:
         """When resolved_model is None (no resolution stage ran),
         history capping should be inert (not crash)."""
         resolved_model = None
-        history_cap_tokens = 0  # derive-from-window
 
         if resolved_model is None:
             # Capping is disabled — no derivation possible.
