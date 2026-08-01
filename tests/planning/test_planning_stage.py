@@ -201,6 +201,46 @@ class TestPlanningStageExecute:
         assert context.get_metadata("planning_matched_keyword") == "find"
         assert context.get_metadata("planning_context_intent_ignored") == "BANANA"
 
+    def test_execute_uses_context_intent_rules_before_builtins(self):
+        """Configured intent rules should win over built-in keywords."""
+        stage = PlanningStage()
+        context = PipelineContext(
+            request={
+                "messages": [
+                    {"role": "user", "content": "Inspect si modifica aceasta functie"},
+                ]
+            }
+        )
+        context.set_metadata("context_intent_rules", {"IMPLEMENT": ("inspect",)})
+
+        result = asyncio.run(stage.execute(context))
+
+        assert result.success is True
+        plan = result.data
+        assert plan.intent == "IMPLEMENT"
+        assert context.get_metadata("planning_matched_keyword") == "custom:inspect"
+
+    def test_execute_context_intent_override_beats_custom_rules(self):
+        """Explicit context_intent remains the highest-precedence control."""
+        stage = PlanningStage()
+        context = PipelineContext(
+            request={
+                "messages": [
+                    {"role": "user", "content": "Inspect si modifica aceasta functie"},
+                ]
+            }
+        )
+        context.set_metadata("context_intent", "SEARCH")
+        context.set_metadata("context_intent_rules", {"IMPLEMENT": ("inspect",)})
+
+        result = asyncio.run(stage.execute(context))
+
+        assert result.success is True
+        plan = result.data
+        assert plan.intent == "SEARCH"
+        assert context.get_metadata("planning_matched_keyword") == "context_intent"
+        assert context.get_metadata("planning_context_intent_override") == "SEARCH"
+
     def test_execute_uses_cline_task_block_for_intent_metadata(self):
         """Cline task text is used instead of noisy tool-result messages."""
         stage = PlanningStage()

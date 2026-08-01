@@ -99,6 +99,11 @@ class PipelineEngine:
                 "context_intent",
                 request.metadata.get("context_intent"),
             )
+        if "context_intent_rules" in request.metadata:
+            context.set_metadata(
+                "context_intent_rules",
+                request.metadata.get("context_intent_rules"),
+            )
         if "repository_context_max_tokens" in request.metadata:
             context.set_metadata(
                 "repository_context_max_tokens",

@@ -36,6 +36,7 @@ positives where common coding words appear in symbol names.
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 
@@ -206,7 +207,49 @@ class Intent:
         )
 
     @classmethod
-    def detect_match(cls, messages: list[str]) -> IntentMatch:
+    def _match_custom_rules(
+        cls,
+        combined: str,
+        words: set[str],
+        custom_rules: Mapping[str, Sequence[str]] | None,
+    ) -> IntentMatch | None:
+        """Return the first configured intent-rule match, if any."""
+        if not custom_rules:
+            return None
+
+        for raw_intent, patterns in custom_rules.items():
+            if not isinstance(raw_intent, str):
+                continue
+
+            intent = raw_intent.strip().upper()
+            if intent not in cls._ALL:
+                continue
+
+            if isinstance(patterns, str) or not isinstance(patterns, Sequence):
+                continue
+
+            for raw_pattern in patterns:
+                if not isinstance(raw_pattern, str):
+                    continue
+
+                pattern = raw_pattern.strip().lower()
+                if not pattern:
+                    continue
+
+                if " " in pattern:
+                    if pattern in combined:
+                        return IntentMatch(intent, f"custom:{pattern}")
+                elif pattern in words:
+                    return IntentMatch(intent, f"custom:{pattern}")
+
+        return None
+
+    @classmethod
+    def detect_match(
+        cls,
+        messages: list[str],
+        custom_rules: Mapping[str, Sequence[str]] | None = None,
+    ) -> IntentMatch:
         """Detect intent from user messages and return match details.
 
         Checks keywords in priority order. First match wins.
@@ -232,6 +275,10 @@ class Intent:
 
         # Extract unique words for whole-word matching.
         words = cls._extract_words(combined)
+
+        custom_match = cls._match_custom_rules(combined, words, custom_rules)
+        if custom_match is not None:
+            return custom_match
 
         explicit_refactor = re.search(
             r"\brefactor(?:ing)?\s+(?:investigation|plan|recommendation|analysis)\b",
@@ -260,17 +307,23 @@ class Intent:
         return IntentMatch(cls.DEFAULT)
 
     @classmethod
-    def detect(cls, messages: list[str]) -> str:
+    def detect(
+        cls,
+        messages: list[str],
+        custom_rules: Mapping[str, Sequence[str]] | None = None,
+    ) -> str:
         """Detect intent from user messages.
 
         Checks keywords in priority order. First match wins.
         Keywords are matched as whole words, not substrings.
-        If no keywords match, returns DEFAULT.
+        If no keywords match, returns DEFAULT. User-configured custom
+        rules are checked before built-in rules.
 
         Args:
             messages: List of user message strings.
+            custom_rules: Optional user-configured intent-to-phrases map.
 
         Returns:
             The detected intent string.
         """
-        return cls.detect_match(messages).intent
+        return cls.detect_match(messages, custom_rules=custom_rules).intent

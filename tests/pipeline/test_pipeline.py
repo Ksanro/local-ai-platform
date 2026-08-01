@@ -68,6 +68,7 @@ class _MetadataEchoStage(PipelineStage):
             success=True,
             data={
                 "context_intent": context.get_metadata("context_intent"),
+                "context_intent_rules": context.get_metadata("context_intent_rules"),
             },
         )
 
@@ -295,18 +296,22 @@ class TestPipelineEngine:
 
     @pytest.mark.asyncio
     async def test_context_intent_metadata_propagates_to_context(self) -> None:
-        """Explicit context_intent metadata is available to stages."""
+        """Context intent metadata is available to stages."""
         engine = PipelineEngine()
         engine.register(_MetadataEchoStage())
 
         request = PipelineRequest(
-            metadata={"context_intent": "IMPLEMENT"},
+            metadata={
+                "context_intent": "IMPLEMENT",
+                "context_intent_rules": {"SEARCH": ("cauta",)},
+            },
         )
         response = await engine.execute(request)
 
         assert response.success is True
         result = response.stage_results["metadata_echo"]
         assert result.data["context_intent"] == "IMPLEMENT"
+        assert result.data["context_intent_rules"] == {"SEARCH": ("cauta",)}
 
     @pytest.mark.asyncio
     async def test_elapsed_time_tracked(self) -> None:

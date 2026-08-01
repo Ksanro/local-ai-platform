@@ -39,6 +39,7 @@ independent decision logic.
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping, Sequence
 
 from packages.pipeline.base import PipelineStage
 from packages.pipeline.context import PipelineContext
@@ -116,10 +117,11 @@ class PlanningStage(PipelineStage):
             # Extract user messages from the request.
             messages = self._extract_messages(context)
             context_intent = self._context_intent_override(context)
+            context_intent_rules = self._context_intent_rules(context)
             intent_match = (
                 IntentMatch(context_intent, "context_intent")
                 if context_intent is not None
-                else Intent.detect_match(messages)
+                else Intent.detect_match(messages, custom_rules=context_intent_rules)
             )
             context.set_metadata("planning_user_message_count", len(messages))
             context.set_metadata(
@@ -133,7 +135,7 @@ class PlanningStage(PipelineStage):
             # Run the planner.
             plan = self._planner.build(
                 user_messages=messages,
-                intent_override=context_intent,
+                intent_override=intent_match.intent,
             )
 
             # Store in metadata for downstream stages.
@@ -225,4 +227,14 @@ class PlanningStage(PipelineStage):
             return intent
 
         context.set_metadata("planning_context_intent_ignored", raw_intent)
+        return None
+
+    @staticmethod
+    def _context_intent_rules(
+        context: PipelineContext,
+    ) -> Mapping[str, Sequence[str]] | None:
+        """Return user-configured context intent rules, if present."""
+        raw_rules = context.get_metadata("context_intent_rules", {})
+        if isinstance(raw_rules, Mapping):
+            return raw_rules
         return None

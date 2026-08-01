@@ -368,6 +368,46 @@ class TestAdversarialCollision:
         assert match.intent == Intent.SEARCH
         assert match.keyword == "locate"
 
+    def test_custom_rules_can_detect_localized_words(self):
+        """Configured rules can classify non-English wording."""
+        match = Intent.detect_match(
+            ["Te rog adauga configuratia pentru intentii"],
+            custom_rules={"IMPLEMENT": ("adauga",)},
+        )
+
+        assert match.intent == Intent.IMPLEMENT
+        assert match.keyword == "custom:adauga"
+
+    def test_custom_rules_match_multi_word_phrases(self):
+        """Configured multi-word rules use normalized phrase matching."""
+        match = Intent.detect_match(
+            ["Peux-tu lancer les tests gateway"],
+            custom_rules={"TEST": ("lancer les tests",)},
+        )
+
+        assert match.intent == Intent.TEST
+        assert match.keyword == "custom:lancer les tests"
+
+    def test_custom_rules_beat_builtin_defaults(self):
+        """User rules are allowed to override built-in keyword priority."""
+        match = Intent.detect_match(
+            ["Inspect the code and raspunde succint"],
+            custom_rules={"EXPLAIN": ("inspect",)},
+        )
+
+        assert match.intent == Intent.EXPLAIN
+        assert match.keyword == "custom:inspect"
+
+    def test_custom_single_words_do_not_match_substrings(self):
+        """Configured single-word rules keep whole-word semantics."""
+        assert (
+            Intent.detect(
+                ["The adaugare path is unrelated"],
+                custom_rules={"IMPLEMENT": ("adauga",)},
+            )
+            == Intent.DEFAULT
+        )
+
 
 class TestExtractWords:
     """Test the _extract_words helper method."""

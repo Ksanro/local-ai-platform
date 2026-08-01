@@ -4,9 +4,15 @@ Settings are loaded from environment variables (prefixed with ``APP_``)
 and can be overridden via a ``config.yaml`` file.
 """
 
+import json
 from functools import lru_cache
+from typing import Any
 
 from pydantic_settings import BaseSettings
+
+_CONTEXT_INTENTS = frozenset(
+    ["EXPLAIN", "IMPLEMENT", "REFACTOR", "DEBUG", "TEST", "SEARCH", "DEFAULT"]
+)
 
 
 def parse_intent_budget_map(value: str) -> dict[str, int]:
@@ -27,6 +33,53 @@ def parse_intent_budget_map(value: str) -> dict[str, int]:
     return budgets
 
 
+def parse_context_intent_rules(value: str) -> dict[str, tuple[str, ...]]:
+    """Parse user-configured intent rules from a JSON object setting.
+
+    Expected shape:
+    ``{"IMPLEMENT": ["adauga", "modifica"], "SEARCH": ["cauta"]}``
+
+    Invalid JSON, unknown intents, non-string patterns, and empty patterns
+    are ignored so a bad local setting cannot break request handling.
+    """
+    if not value.strip():
+        return {}
+
+    try:
+        parsed: Any = json.loads(value)
+    except json.JSONDecodeError:
+        return {}
+
+    if not isinstance(parsed, dict):
+        return {}
+
+    rules: dict[str, tuple[str, ...]] = {}
+    for raw_intent, raw_patterns in parsed.items():
+        if not isinstance(raw_intent, str):
+            continue
+
+        intent = raw_intent.strip().upper()
+        if intent not in _CONTEXT_INTENTS:
+            continue
+
+        if isinstance(raw_patterns, str):
+            patterns = [raw_patterns]
+        elif isinstance(raw_patterns, list):
+            patterns = raw_patterns
+        else:
+            continue
+
+        cleaned = tuple(
+            pattern.strip()
+            for pattern in patterns
+            if isinstance(pattern, str) and pattern.strip()
+        )
+        if cleaned:
+            rules[intent] = cleaned
+
+    return rules
+
+
 class Settings(BaseSettings):
     """Application settings.
 
@@ -45,6 +98,7 @@ class Settings(BaseSettings):
     repository_exclude_globs: str = "scripts/**"  # comma-separated glob list; empty disables
     repository_context_max_tokens: int = 4096
     repository_context_intent_budgets: str = ""
+    context_intent_rules: str = ""
     models_config: str = ""  # JSON array of model definitions; empty = single-provider fallback
     context_delta_injection: bool = True  # inject only symbols not already sent
     context_delta_cache_size: int = 256  # max conversation keys in LRU cache
@@ -59,6 +113,11 @@ class Settings(BaseSettings):
     def repository_context_intent_budget_map(self) -> dict[str, int]:
         """Return configured per-intent repository-context budgets."""
         return parse_intent_budget_map(self.repository_context_intent_budgets)
+
+    @property
+    def context_intent_rule_map(self) -> dict[str, tuple[str, ...]]:
+        """Return configured user intent-detection rules."""
+        return parse_context_intent_rules(self.context_intent_rules)
 
 
 @lru_cache(maxsize=1)

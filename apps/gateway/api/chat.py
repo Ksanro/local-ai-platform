@@ -315,6 +315,9 @@ async def chat_completions(
     context_intent = body.context_intent or request.headers.get("X-Context-Intent")
     if context_intent is not None:
         metadata["context_intent"] = context_intent
+    context_intent_rules = getattr(settings, "context_intent_rule_map", {})
+    if context_intent_rules:
+        metadata["context_intent_rules"] = context_intent_rules
 
     pipeline_request = PipelineRequest(
         provider_name=provider_name,
