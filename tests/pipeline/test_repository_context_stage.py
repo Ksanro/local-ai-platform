@@ -748,6 +748,14 @@ class TestQueryExtraction:
 class TestConstraints:
     """Tests verifying the stage respects constraints."""
 
+    def test_legacy_import_path_reexports_live_stage(self) -> None:
+        """The old flat module path should remain a compatibility alias."""
+        from packages.pipeline.repository_context import (
+            RepositoryContextStage as LegacyRepositoryContextStage,
+        )
+
+        assert LegacyRepositoryContextStage is RepositoryContextStage
+
     def test_no_provider_import(self) -> None:
         """Verify no provider implementation is imported.
 

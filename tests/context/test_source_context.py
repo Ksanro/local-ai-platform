@@ -390,6 +390,46 @@ class AuthMiddleware:
         assert len(result.candidates) == 1
         assert len(result.candidates[0].source) <= 16 * CHARS_PER_TOKEN
 
+    def test_build_reduces_primary_source_for_multi_file_queries(self):
+        """Multi-file comparisons should leave room for supporting previews."""
+        primary_source = "def primary():\n" + ("    value = 1\n" * 1000)
+        supporting_source = "def supporting():\n" + ("    value = 2\n" * 120)
+        later_source = "def later():\n" + ("    value = 3\n" * 120)
+        sym_primary = _make_symbol(
+            "pkg/primary.primary",
+            "pkg/primary",
+            symbol_type=SymbolType.FUNCTION,
+        )
+        sym_supporting = _make_symbol(
+            "pkg/supporting.supporting",
+            "pkg/supporting",
+            symbol_type=SymbolType.FUNCTION,
+        )
+        sym_later = _make_symbol(
+            "pkg/later.later",
+            "pkg/later",
+            symbol_type=SymbolType.FUNCTION,
+        )
+        index = _make_index([
+            _make_module("pkg/primary", [sym_primary], source=primary_source),
+            _make_module("pkg/supporting", [sym_supporting], source=supporting_source),
+            _make_module("pkg/later", [sym_later], source=later_source),
+        ])
+        query = ContextQuery(
+            text="Compare pkg/primary.py and pkg/supporting.py and pkg/later.py",
+            max_symbols=3,
+            max_modules=3,
+            max_tokens=4096,
+        )
+        builder = ContextBuilder(index)
+
+        result = builder.build(query)
+
+        assert result.candidates[0].qualified_name == "pkg/primary.primary"
+        assert len(result.candidates[0].source) <= 1024 * CHARS_PER_TOKEN
+        assert result.candidates[1].source_preview
+        assert result.candidates[2].source_preview
+
     def test_promotes_candidates_from_explicitly_referenced_modules(self):
         """Queries naming files should include each referenced module early."""
         candidates = [
@@ -431,10 +471,118 @@ class AuthMiddleware:
         )
 
         assert [candidate.qualified_name for candidate in promoted[:3]] == [
-            "pkg/live.RepositoryContextStage._extract_query",
             "pkg/legacy.RepositoryContextStage._extract_query",
+            "pkg/live.RepositoryContextStage._extract_query",
             "app/main.create_app",
         ]
+
+    def test_promotes_imported_helper_for_shared_helper_refactor_queries(self):
+        """Shared-helper prompts should put imported helpers before consumers."""
+        candidates = [
+            ContextCandidate(
+                symbol_id="pkg/consumer.RepositoryContextStage._extract_query",
+                qualified_name="pkg/consumer.RepositoryContextStage._extract_query",
+                module="pkg/consumer",
+            ),
+            ContextCandidate(
+                symbol_id="pkg/helper.select_last_task_text",
+                qualified_name="pkg/helper.select_last_task_text",
+                module="pkg/helper",
+            ),
+            ContextCandidate(
+                symbol_id="pkg/other.PlanningStage._extract_messages",
+                qualified_name="pkg/other.PlanningStage._extract_messages",
+                module="pkg/other",
+            ),
+        ]
+        index = _make_index([
+            _make_module(
+                "pkg/consumer",
+                [],
+                imports=["from pkg.helper import select_last_task_text"],
+            ),
+            _make_module("pkg/helper", []),
+            _make_module("pkg/other", []),
+        ])
+        builder = ContextBuilder(index)
+
+        promoted = builder._promote_shared_helper_imports(
+            candidates,
+            "Find the shared helper and which consumers use it during refactor.",
+        )
+
+        assert promoted[0].qualified_name == "pkg/helper.select_last_task_text"
+
+    def test_shared_helper_import_promotion_ignores_unrelated_queries(self):
+        """Import-helper promotion should not disturb normal ranking flows."""
+        candidates = [
+            ContextCandidate(
+                symbol_id="pkg/consumer.RepositoryContextStage._extract_query",
+                qualified_name="pkg/consumer.RepositoryContextStage._extract_query",
+                module="pkg/consumer",
+            ),
+            ContextCandidate(
+                symbol_id="pkg/helper.select_last_task_text",
+                qualified_name="pkg/helper.select_last_task_text",
+                module="pkg/helper",
+            ),
+        ]
+        index = _make_index([
+            _make_module(
+                "pkg/consumer",
+                [],
+                imports=["from pkg.helper import select_last_task_text"],
+            ),
+            _make_module("pkg/helper", []),
+        ])
+        builder = ContextBuilder(index)
+
+        promoted = builder._promote_shared_helper_imports(
+            candidates,
+            "Debug repository context query extraction.",
+        )
+
+        assert promoted == candidates
+
+    def test_shared_helper_import_promotion_ignores_explicit_file_queries(self):
+        """Explicit file references should not be displaced by import neighbors."""
+        candidates = [
+            ContextCandidate(
+                symbol_id="pkg/repository_context.RepositoryContextStage._extract_query",
+                qualified_name="pkg/repository_context.RepositoryContextStage._extract_query",
+                module="pkg/repository_context",
+            ),
+            ContextCandidate(
+                symbol_id="pkg/helper.select_last_task_text",
+                qualified_name="pkg/helper.select_last_task_text",
+                module="pkg/helper",
+            ),
+            ContextCandidate(
+                symbol_id="pkg/context_builder.ContextBuilder",
+                qualified_name="pkg/context_builder.ContextBuilder",
+                module="pkg/context_builder",
+            ),
+        ]
+        index = _make_index([
+            _make_module(
+                "pkg/repository_context",
+                [],
+                imports=[
+                    "from pkg.helper import select_last_task_text",
+                    "from pkg.context_builder import ContextBuilder",
+                ],
+            ),
+            _make_module("pkg/helper", []),
+            _make_module("pkg/context_builder", []),
+        ])
+        builder = ContextBuilder(index)
+
+        promoted = builder._promote_shared_helper_imports(
+            candidates,
+            "Refactor investigation for pkg/repository_context.py and pkg/helper.py",
+        )
+
+        assert promoted == candidates
 
     def test_build_enriches_supporting_symbols(self):
         """Supporting symbols should get signature and preview."""

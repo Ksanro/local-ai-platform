@@ -89,6 +89,19 @@ class TestIntentDetect:
         messages = ["Simplify the ranking logic"]
         assert Intent.detect(messages) == Intent.REFACTOR
 
+    def test_refactor_investigation_beats_later_what_is_question(self):
+        """Explicit refactor investigations should not be classified as EXPLAIN."""
+        messages = [
+            (
+                "Refactor investigation only. What is the safest refactor plan "
+                "for duplicate repository-context files?"
+            ),
+        ]
+        match = Intent.detect_match(messages)
+
+        assert match.intent == Intent.REFACTOR
+        assert match.keyword == "refactor"
+
     def test_debug_intent_debug(self):
         """DEBUG intent detected with 'debug' keyword."""
         messages = ["Debug the failing test"]

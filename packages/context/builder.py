@@ -73,6 +73,7 @@ from packages.context.models import (
     ContextResult,
 )
 from packages.context.ranking import RankingEngine
+from packages.context.scoring import normalise_query_text
 from packages.repository.index.models import RepositoryIndex
 from packages.repository.symbols.graph import SymbolGraphView
 from packages.repository.symbols.models import Symbol
@@ -205,6 +206,7 @@ class ContextBuilder:
         )
         candidates = engine.rank(query.text, candidates, max_tokens=query.max_tokens)
         candidates = self._promote_referenced_modules(candidates, query.text)
+        candidates = self._promote_shared_helper_imports(candidates, query.text)
 
         # Apply max_symbols limit (0 means no candidates).
         if query.max_symbols > 0:
@@ -213,7 +215,16 @@ class ContextBuilder:
             candidates = []
 
         # Enrich candidates with source data (Context Quality v2).
-        candidates = self._enrich_with_source_data(candidates, primary_symbol)
+        primary_source_max_tokens = self._primary_source_budget_for_query(query)
+        candidates = self._enrich_with_source_data(
+            candidates,
+            primary_symbol,
+            primary_source_max_tokens=primary_source_max_tokens,
+            supporting_source_max_tokens=self._supporting_source_budget_for_query(query),
+            supporting_candidate_max_tokens=(
+                self._supporting_candidate_budget_for_query(query)
+            ),
+        )
 
         # Derive selected_modules: unique, insertion order, bounded by max_modules.
         selected_modules: list[str] = []
@@ -249,20 +260,13 @@ class ContextBuilder:
         query_text: str,
     ) -> list[ContextCandidate]:
         """Ensure explicitly mentioned source files are represented early."""
-        module_refs = [
-            match.group(0)[:-3].replace("\\", "/")
-            for match in re.finditer(r"[\w./\\-]+\.py", query_text)
-        ]
+        module_refs = self._referenced_module_paths(query_text)
         if not module_refs:
             return candidates
 
         promoted: list[ContextCandidate] = []
         seen_symbols: set[str] = set()
         seen_modules: set[str] = set()
-        if candidates:
-            promoted.append(candidates[0])
-            seen_symbols.add(candidates[0].qualified_name)
-            seen_modules.add(candidates[0].module)
 
         for module_ref in module_refs:
             if module_ref in seen_modules:
@@ -312,6 +316,117 @@ class ContextBuilder:
             if any(ref in imports_text for ref in dotted_refs):
                 importers.append(module_path)
         return importers
+
+    def _promote_shared_helper_imports(
+        self,
+        candidates: list[ContextCandidate],
+        query_text: str,
+    ) -> list[ContextCandidate]:
+        """Promote imported helper modules for shared-helper refactor queries."""
+        if not self._query_targets_shared_helpers(query_text):
+            return candidates
+        if self._referenced_module_paths(query_text):
+            return candidates
+
+        query_tokens = {
+            token
+            for token in normalise_query_text(query_text)
+            if len(token) > 2
+        }
+        imported_modules: list[str] = []
+        for candidate in candidates[:8]:
+            module = self._index.modules.get(candidate.module)
+            if module is None:
+                continue
+            for import_text in module.imports:
+                for imported in self._imported_module_refs(import_text):
+                    if (
+                        imported in self._index.modules
+                        and imported not in imported_modules
+                        and self._module_matches_query_terms(imported, query_tokens)
+                    ):
+                        imported_modules.append(imported)
+
+        if not imported_modules:
+            return candidates
+
+        neighbor_modules = list(imported_modules)
+        for importer_module in self._find_importers_of_modules(imported_modules):
+            if importer_module not in neighbor_modules:
+                neighbor_modules.append(importer_module)
+
+        promoted: list[ContextCandidate] = []
+        seen_symbols: set[str] = set()
+
+        for imported_module in neighbor_modules:
+            for candidate in candidates:
+                if (
+                    candidate.module == imported_module
+                    and candidate.qualified_name not in seen_symbols
+                ):
+                    promoted.append(candidate)
+                    seen_symbols.add(candidate.qualified_name)
+                    break
+
+        promoted.extend(
+            candidate
+            for candidate in candidates
+            if candidate.qualified_name not in seen_symbols
+        )
+        return promoted
+
+    @staticmethod
+    def _referenced_module_paths(query_text: str) -> list[str]:
+        """Return explicit Python module paths mentioned in query text."""
+        return [
+            match.group(0)[:-3].replace("\\", "/")
+            for match in re.finditer(r"[\w./\\-]+\.py", query_text)
+        ]
+
+    @staticmethod
+    def _query_targets_shared_helpers(query_text: str) -> bool:
+        """Return True for prompts asking to trace shared helper consumers."""
+        lowered = query_text.lower()
+        if "shared helper" in lowered:
+            return True
+        return (
+            "shared" in lowered
+            and "helper" in lowered
+            and (
+                "consumer" in lowered
+                or "consume" in lowered
+                or "centralize" in lowered
+                or "centralise" in lowered
+            )
+        )
+
+    @staticmethod
+    def _imported_module_refs(import_text: str) -> list[str]:
+        """Extract repository module paths from simple Python import text."""
+        match = re.match(r"\s*from\s+([\w.]+)\s+import\b", import_text)
+        if match:
+            return [match.group(1).replace(".", "/")]
+
+        match = re.match(r"\s*import\s+(.+)", import_text)
+        if not match:
+            return []
+
+        refs: list[str] = []
+        for part in match.group(1).split(","):
+            module_name = part.strip().split(" as ", 1)[0].strip()
+            if module_name:
+                refs.append(module_name.replace(".", "/"))
+        return refs
+
+    @staticmethod
+    def _module_matches_query_terms(module_ref: str, query_tokens: set[str]) -> bool:
+        """Return True when an imported module path is specifically requested."""
+        module_terms = {
+            term
+            for term in re.split(r"[^a-zA-Z0-9]+|_", module_ref.lower())
+            if term
+        }
+        return len(module_terms & query_tokens) >= 2 or "helper" in module_terms
 
     def _enforce_budget(
         self,
@@ -387,6 +502,9 @@ class ContextBuilder:
         self,
         candidates: list[ContextCandidate],
         primary_symbol: ContextCandidate | None,
+        primary_source_max_tokens: int | None = None,
+        supporting_source_max_tokens: int | None = None,
+        supporting_candidate_max_tokens: int | None = None,
     ) -> list[ContextCandidate]:
         """Enrich candidates with source data from the RepositoryIndex.
 
@@ -414,9 +532,18 @@ class ContextBuilder:
             primary_qualified_name = primary_symbol.qualified_name
         elif candidates:
             primary_qualified_name = candidates[0].qualified_name
+        primary_source_max_tokens = (
+            primary_source_max_tokens
+            if primary_source_max_tokens is not None
+            else self._primary_symbol_max_tokens
+        )
 
         # Track remaining budget for supporting symbols.
-        remaining_support_tokens = self._supporting_symbol_max_tokens
+        remaining_support_tokens = (
+            supporting_source_max_tokens
+            if supporting_source_max_tokens is not None
+            else self._supporting_symbol_max_tokens
+        )
 
         for i, candidate in enumerate(candidates):
             is_primary = candidate.qualified_name == primary_qualified_name
@@ -450,7 +577,7 @@ class ContextBuilder:
                 candidate.signature = signature or ""
                 candidate.docstring = docstring or ""
                 candidate.decorators = decorators or []
-                max_source_chars = max(0, self._primary_symbol_max_tokens * 4)
+                max_source_chars = max(0, primary_source_max_tokens * 4)
                 candidate.source = (
                     source[:max_source_chars]
                     if source and len(source) > max_source_chars
@@ -468,9 +595,15 @@ class ContextBuilder:
 
                 # Source preview within remaining budget.
                 if source and remaining_support_tokens > 0:
+                    preview_tokens = remaining_support_tokens
+                    if supporting_candidate_max_tokens is not None:
+                        preview_tokens = min(
+                            preview_tokens,
+                            supporting_candidate_max_tokens,
+                        )
                     preview = self._index.get_symbol_source_excerpts(
                         candidate.qualified_name,
-                        max_tokens=remaining_support_tokens,
+                        max_tokens=preview_tokens,
                     )
                     if preview:
                         candidate.source_preview = preview
@@ -487,6 +620,30 @@ class ContextBuilder:
                     candidate.source_lines = len(source.splitlines()) if source else 0
 
         return candidates
+
+    def _primary_source_budget_for_query(self, query: ContextQuery) -> int:
+        """Reserve more room for supporting files in explicit comparisons."""
+        if len(self._referenced_module_paths(query.text)) < 2:
+            return self._primary_symbol_max_tokens
+        return min(
+            self._primary_symbol_max_tokens,
+            max(512, query.max_tokens // 4),
+        )
+
+    def _supporting_source_budget_for_query(self, query: ContextQuery) -> int:
+        """Allow several named files to contribute source previews."""
+        if len(self._referenced_module_paths(query.text)) < 2:
+            return self._supporting_symbol_max_tokens
+        return max(
+            self._supporting_symbol_max_tokens,
+            query.max_tokens // 2,
+        )
+
+    def _supporting_candidate_budget_for_query(self, query: ContextQuery) -> int | None:
+        """Limit each support preview so explicit comparisons keep breadth."""
+        if len(self._referenced_module_paths(query.text)) < 2:
+            return None
+        return 512
 
     def _estimate_candidate_tokens_for_ranking(
         self,

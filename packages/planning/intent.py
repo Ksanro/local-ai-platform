@@ -234,6 +234,13 @@ class Intent:
         # Extract unique words for whole-word matching.
         words = cls._extract_words(combined)
 
+        explicit_refactor = re.search(
+            r"\brefactor(?:ing)?\s+(?:investigation|plan|recommendation|analysis)\b",
+            combined,
+        )
+        if explicit_refactor:
+            return IntentMatch(cls.REFACTOR, "refactor")
+
         for intent, keywords in cls._KEYWORD_PATTERNS:
             for keyword in keywords:
                 # Multi-word keywords: check as literal substring.
