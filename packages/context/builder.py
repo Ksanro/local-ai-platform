@@ -205,6 +205,7 @@ class ContextBuilder:
             token_estimator=self._estimate_candidate_tokens_for_ranking,
         )
         candidates = engine.rank(query.text, candidates, max_tokens=query.max_tokens)
+        candidates = self._promote_request_path_symbols(candidates, query.text)
         candidates = self._promote_referenced_modules(candidates, query.text)
         candidates = self._promote_shared_helper_imports(candidates, query.text)
 
@@ -294,6 +295,46 @@ class ContextBuilder:
                     seen_symbols.add(candidate.qualified_name)
                     seen_modules.add(candidate.module)
                     break
+
+        promoted.extend(
+            candidate
+            for candidate in candidates
+            if candidate.qualified_name not in seen_symbols
+        )
+        return promoted
+
+    def _promote_request_path_symbols(
+        self,
+        candidates: list[ContextCandidate],
+        query_text: str,
+    ) -> list[ContextCandidate]:
+        """Promote live gateway request-path symbols for architecture explains."""
+        if not self._query_targets_request_path(query_text):
+            return candidates
+
+        ordered_targets = (
+            "apps/gateway/main.lifespan",
+            "apps/gateway/main.create_app",
+            "apps/gateway/api/chat.chat_completions",
+            "packages/pipeline/engine.PipelineEngine.execute",
+            "packages/pipeline/stages/repository_context.RepositoryContextStage._serialize",
+            "packages/pipeline/stages/stages.ProviderStage.execute",
+            "packages/providers/vllm.VLLMProvider.chat",
+        )
+
+        by_name = {candidate.qualified_name: candidate for candidate in candidates}
+        promoted: list[ContextCandidate] = []
+        seen_symbols: set[str] = set()
+
+        for target in ordered_targets:
+            candidate = by_name.get(target)
+            if candidate is None:
+                continue
+            promoted.append(candidate)
+            seen_symbols.add(candidate.qualified_name)
+
+        if not promoted:
+            return candidates
 
         promoted.extend(
             candidate
@@ -398,6 +439,22 @@ class ContextBuilder:
                 or "centralize" in lowered
                 or "centralise" in lowered
             )
+        )
+
+    @staticmethod
+    def _query_targets_request_path(query_text: str) -> bool:
+        """Return True for prompts asking for the gateway-to-provider flow."""
+        lowered = query_text.lower()
+        if "request path" in lowered and "provider" in lowered:
+            return True
+        if "incoming" in lowered and "provider call" in lowered:
+            return True
+        if "pipeline stages" in lowered and "provider" in lowered:
+            return True
+        return (
+            "normalizedrequest" in lowered
+            and "provider" in lowered
+            and ("payload" in lowered or "serialize" in lowered)
         )
 
     @staticmethod

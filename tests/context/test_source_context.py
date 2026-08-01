@@ -584,6 +584,79 @@ class AuthMiddleware:
 
         assert promoted == candidates
 
+    def test_promotes_live_request_path_for_explain_queries(self):
+        """Request-path explanations should lead with live architecture symbols."""
+        candidates = [
+            ContextCandidate(
+                symbol_id="apps/gateway/api/chat.ChatCompletionRequest",
+                qualified_name="apps/gateway/api/chat.ChatCompletionRequest",
+                module="apps/gateway/api/chat",
+            ),
+            ContextCandidate(
+                symbol_id="packages/pipeline/stages/stages.ProviderStage.execute",
+                qualified_name="packages/pipeline/stages/stages.ProviderStage.execute",
+                module="packages/pipeline/stages/stages",
+            ),
+            ContextCandidate(
+                symbol_id="packages/pipeline/engine.PipelineEngine.execute",
+                qualified_name="packages/pipeline/engine.PipelineEngine.execute",
+                module="packages/pipeline/engine",
+            ),
+            ContextCandidate(
+                symbol_id="packages/pipeline/stages/repository_context.RepositoryContextStage._serialize",
+                qualified_name=(
+                    "packages/pipeline/stages/repository_context."
+                    "RepositoryContextStage._serialize"
+                ),
+                module="packages/pipeline/stages/repository_context",
+            ),
+            ContextCandidate(
+                symbol_id="apps/gateway/main.create_app",
+                qualified_name="apps/gateway/main.create_app",
+                module="apps/gateway/main",
+            ),
+            ContextCandidate(
+                symbol_id="apps/gateway/main.lifespan",
+                qualified_name="apps/gateway/main.lifespan",
+                module="apps/gateway/main",
+            ),
+            ContextCandidate(
+                symbol_id="packages/providers/vllm.VLLMProvider.chat",
+                qualified_name="packages/providers/vllm.VLLMProvider.chat",
+                module="packages/providers/vllm",
+            ),
+        ]
+        index = _make_index([
+            _make_module("apps/gateway/api/chat", []),
+            _make_module("apps/gateway/main", []),
+            _make_module("packages/pipeline/engine", []),
+            _make_module("packages/pipeline/stages/repository_context", []),
+            _make_module("packages/pipeline/stages/stages", []),
+            _make_module("packages/providers/vllm", []),
+        ])
+        builder = ContextBuilder(index)
+
+        promoted = builder._promote_request_path_symbols(
+            candidates,
+            (
+                "Explain the live request path from incoming "
+                "OpenAI-compatible chat request to provider call."
+            ),
+        )
+
+        assert [candidate.qualified_name for candidate in promoted[:6]] == [
+            "apps/gateway/main.lifespan",
+            "apps/gateway/main.create_app",
+            "packages/pipeline/engine.PipelineEngine.execute",
+            (
+                "packages/pipeline/stages/repository_context."
+                "RepositoryContextStage._serialize"
+            ),
+            "packages/pipeline/stages/stages.ProviderStage.execute",
+            "packages/providers/vllm.VLLMProvider.chat",
+        ]
+        assert promoted[-1].qualified_name == "apps/gateway/api/chat.ChatCompletionRequest"
+
     def test_build_enriches_supporting_symbols(self):
         """Supporting symbols should get signature and preview."""
         source = '''def helper():
