@@ -357,18 +357,25 @@ BUILTIN_INTENT_RULES: tuple[EngineeringIntentRule, ...] = (
         priority=10,
     ),
 
-    # --- Implementation queries (priority 15) ---
-    # Only matches when no more specific profile matched.
-    # Uses specific implementation keywords, NOT generic phrases.
+    # --- Implementation queries (priority 4) ---
+    # Implementation verbs should win before broad subsystem nouns such as
+    # "feature", "workflow", or "provider". Otherwise "implement feature"
+    # is routed to CAPABILITY retrieval, which is too narrow for code changes.
     EngineeringIntentRule(
         trigger_patterns=(
             "implement",
+            "add",
+            "create",
+            "build",
+            "write",
+            "develop",
             "implementation",
             "locate",
         ),
         retrieval_profile="IMPLEMENTATION",
         preferred_symbol_types=("CLASS", "FUNCTION"),
-        priority=15,
+        relationship_preferences=("CALLS", "DEFINES"),
+        priority=4,
     ),
 
     # --- Architecture queries (priority 15) ---

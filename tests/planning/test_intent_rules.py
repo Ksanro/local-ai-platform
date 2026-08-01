@@ -125,6 +125,18 @@ class TestIntentRuleEngine:
         rule = engine.match("implement authentication")
         assert rule.retrieval_profile == "IMPLEMENTATION"
 
+    def test_match_implementation_feature_verbs_before_capability(self):
+        """Implementation verbs should not be displaced by broad feature nouns."""
+        engine = IntentRuleEngine()
+
+        for query in (
+            "implement a new feature",
+            "add a provider health retry feature",
+            "create a workflow summary endpoint",
+        ):
+            rule = engine.match(query)
+            assert rule.retrieval_profile == "IMPLEMENTATION"
+
     def test_match_implementation_locate(self):
         """'locate X' should match IMPLEMENTATION profile."""
         engine = IntentRuleEngine()
@@ -516,6 +528,16 @@ class TestContextPlannerIntegration:
 
         planner = ContextPlanner()
         plan = planner.build(["implement", "authentication service"])
+        assert plan.retrieval_profile == "IMPLEMENTATION"
+
+    def test_integration_implement_feature_uses_implementation_profile(self):
+        """IMPLEMENT prompts with feature wording should stay implementation-oriented."""
+        from packages.planning import ContextPlanner
+
+        planner = ContextPlanner()
+        plan = planner.build(["implement a new feature that explains the flow"])
+
+        assert plan.intent == "IMPLEMENT"
         assert plan.retrieval_profile == "IMPLEMENTATION"
 
 
