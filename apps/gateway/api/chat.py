@@ -65,6 +65,10 @@ class ChatCompletionRequest(BaseModel):
         default=None,
         description="Optional explicit repository-context intent override.",
     )
+    repository_context_enabled: bool | None = Field(
+        default=None,
+        description="Optional per-request repository-context enablement override.",
+    )
 
 
 def _status_for_exception(exc: Exception | None) -> int:
@@ -307,7 +311,11 @@ async def chat_completions(
     # History cap settings are passed through to the engine in metadata.
     metadata: dict[str, Any] = {
         "request_id": request_id,
-        "context_enabled": settings.repository_context_enabled,
+        "context_enabled": (
+            body.repository_context_enabled
+            if body.repository_context_enabled is not None
+            else settings.repository_context_enabled
+        ),
         "history_cap_enabled": settings.history_cap_enabled,
         "history_cap_tokens": settings.history_cap_tokens,
         "max_tokens_override": body.max_tokens,

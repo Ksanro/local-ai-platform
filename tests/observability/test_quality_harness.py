@@ -5,9 +5,11 @@ from __future__ import annotations
 from scripts.quality_harness import (
     PROBES,
     QualityProbe,
+    QualityResult,
     build_payload,
     extract_answer,
     fact,
+    print_comparison_table,
     score_answer,
 )
 
@@ -87,11 +89,13 @@ def test_build_payload_can_include_intent_override() -> None:
         model="qwen36",
         max_tokens=50,
         use_intent_overrides=True,
+        context_enabled=True,
     )
 
     assert payload["model"] == "qwen36"
     assert payload["max_tokens"] == 50
     assert payload["context_intent"] == "SEARCH"
+    assert payload["repository_context_enabled"] is True
     assert payload["messages"][0]["role"] == "system"
     assert payload["messages"][1]["content"] == "Find the thing"
 
@@ -105,9 +109,11 @@ def test_build_payload_can_omit_intent_override() -> None:
         model="qwen36",
         max_tokens=50,
         use_intent_overrides=False,
+        context_enabled=False,
     )
 
     assert "context_intent" not in payload
+    assert payload["repository_context_enabled"] is False
 
 
 def test_probe_set_covers_live_intents() -> None:
@@ -115,3 +121,34 @@ def test_probe_set_covers_live_intents() -> None:
     intents = {probe.intent for probe in PROBES}
 
     assert intents == {"SEARCH", "DEBUG", "TEST", "EXPLAIN", "REFACTOR", "IMPLEMENT"}
+
+
+def test_print_comparison_table_shows_context_delta(capsys) -> None:
+    """Comparison output should show context-vs-raw score deltas."""
+    context_results = [
+        QualityResult(
+            id="p1",
+            intent="SEARCH",
+            prompt_tokens=100,
+            seconds=1.0,
+            hits=("a", "b"),
+            misses=(),
+        )
+    ]
+    no_context_results = [
+        QualityResult(
+            id="p1",
+            intent="SEARCH",
+            prompt_tokens=20,
+            seconds=0.5,
+            hits=("a",),
+            misses=("b",),
+        )
+    ]
+
+    print_comparison_table(context_results, no_context_results)
+
+    output = capsys.readouterr().out
+    assert "dscore" in output
+    assert "TOTAL" in output
+    assert "   1" in output

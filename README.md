@@ -113,7 +113,9 @@ Run the live gateway quality smoke test after starting the gateway:
 The harness sends fixed low-token prompts for the live intents and scores
 answers by expected repository facts. By default it sends `context_intent`
 overrides so retrieval quality can be measured independently from intent
-detection. Use `--no-intent-overrides` to test detector behavior too.
+detection. Use `--no-context` to disable repository-context injection for
+one run, `--compare-context` to compare context-on versus context-off, and
+`--no-intent-overrides` to test detector behavior too.
 
 ## Focused Gates
 

@@ -10,6 +10,8 @@ Usage
 
     .\uv.exe run python scripts\quality_harness.py
     .\uv.exe run python scripts\quality_harness.py --verbose
+    .\uv.exe run python scripts\quality_harness.py --no-context
+    .\uv.exe run python scripts\quality_harness.py --compare-context
     .\uv.exe run python scripts\quality_harness.py --no-intent-overrides
 """
 
@@ -222,6 +224,7 @@ def build_payload(
     model: str,
     max_tokens: int,
     use_intent_overrides: bool,
+    context_enabled: bool,
 ) -> dict[str, Any]:
     """Build an OpenAI-compatible chat completion payload for a probe."""
     payload: dict[str, Any] = {
@@ -233,6 +236,7 @@ def build_payload(
         "stream": False,
         "temperature": 0.0,
         "max_tokens": max_tokens,
+        "repository_context_enabled": context_enabled,
     }
     if use_intent_overrides:
         payload["context_intent"] = probe.intent
@@ -263,6 +267,7 @@ def run_probe(
     max_tokens: int,
     timeout: float,
     use_intent_overrides: bool,
+    context_enabled: bool,
 ) -> QualityResult:
     """Run one quality probe against the live gateway."""
     result = QualityResult(id=probe.id, intent=probe.intent)
@@ -271,6 +276,7 @@ def run_probe(
         model=model,
         max_tokens=max_tokens,
         use_intent_overrides=use_intent_overrides,
+        context_enabled=context_enabled,
     )
     url = f"{base_url.rstrip('/')}/chat/completions"
     start = time.perf_counter()
@@ -317,6 +323,40 @@ def print_table(results: list[QualityResult]) -> None:
     print("=" * 100)
 
 
+def print_comparison_table(
+    context_results: list[QualityResult],
+    no_context_results: list[QualityResult],
+) -> None:
+    """Print a side-by-side context-on/context-off quality table."""
+    print("\n" + "=" * 110)
+    print(
+        f"{'id':<28}{'intent':<11}{'ctx':>8}{'raw':>8}"
+        f"{'dscore':>8}{'ptok ctx':>10}{'ptok raw':>10}{'sec ctx':>9}{'sec raw':>9}"
+    )
+    print("-" * 110)
+
+    total_ctx = 0
+    total_raw = 0
+    total_max = 0
+    for ctx, raw in zip(context_results, no_context_results, strict=True):
+        total_ctx += ctx.score
+        total_raw += raw.score
+        total_max += ctx.maximum
+        print(
+            f"{ctx.id:<28}{ctx.intent:<11}{ctx.score:>4}/{ctx.maximum:<3}"
+            f"{raw.score:>4}/{raw.maximum:<3}{ctx.score - raw.score:>8}"
+            f"{ctx.prompt_tokens:>10}{raw.prompt_tokens:>10}"
+            f"{ctx.seconds:>9.1f}{raw.seconds:>9.1f}"
+        )
+
+    print("-" * 110)
+    print(
+        f"{'TOTAL':<39}{total_ctx:>4}/{total_max:<3}"
+        f"{total_raw:>4}/{total_max:<3}{total_ctx - total_raw:>8}"
+    )
+    print("=" * 110)
+
+
 def print_verbose(results: list[QualityResult]) -> None:
     """Print answer previews for inspection."""
     for result in results:
@@ -348,6 +388,16 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--json", action="store_true", help="emit machine-readable JSON")
     parser.add_argument("--verbose", action="store_true", help="print answer previews")
     parser.add_argument(
+        "--no-context",
+        action="store_true",
+        help="disable repository context injection for this run",
+    )
+    parser.add_argument(
+        "--compare-context",
+        action="store_true",
+        help="run each probe with repository context on and off",
+    )
+    parser.add_argument(
         "--no-intent-overrides",
         action="store_true",
         help="let the gateway detect intent instead of sending context_intent",
@@ -358,6 +408,61 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 def main(argv: list[str]) -> int:
     """Run all quality probes."""
     args = parse_args(argv)
+    if args.compare_context and args.no_context:
+        print("ERROR: --compare-context and --no-context are mutually exclusive", file=sys.stderr)
+        return 2
+
+    use_intent_overrides = not args.no_intent_overrides
+    context_enabled = not args.no_context
+
+    if args.compare_context:
+        context_results = [
+            run_probe(
+                probe,
+                base_url=args.base_url,
+                model=args.model,
+                max_tokens=args.max_tokens,
+                timeout=args.timeout,
+                use_intent_overrides=use_intent_overrides,
+                context_enabled=True,
+            )
+            for probe in PROBES
+        ]
+        no_context_results = [
+            run_probe(
+                probe,
+                base_url=args.base_url,
+                model=args.model,
+                max_tokens=args.max_tokens,
+                timeout=args.timeout,
+                use_intent_overrides=use_intent_overrides,
+                context_enabled=False,
+            )
+            for probe in PROBES
+        ]
+
+        if args.json:
+            print(json.dumps({
+                "context": [result.__dict__ for result in context_results],
+                "no_context": [result.__dict__ for result in no_context_results],
+            }, indent=2))
+        else:
+            print_comparison_table(context_results, no_context_results)
+            if args.verbose:
+                print("\nWITH CONTEXT")
+                print_verbose(context_results)
+                print("\nWITHOUT CONTEXT")
+                print_verbose(no_context_results)
+
+        all_results = context_results + no_context_results
+        if any(result.error for result in all_results):
+            return 1
+        if args.fail_under:
+            total_score = sum(result.score for result in context_results)
+            if total_score < args.fail_under:
+                return 1
+        return 0
+
     results = [
         run_probe(
             probe,
@@ -365,7 +470,8 @@ def main(argv: list[str]) -> int:
             model=args.model,
             max_tokens=args.max_tokens,
             timeout=args.timeout,
-            use_intent_overrides=not args.no_intent_overrides,
+            use_intent_overrides=use_intent_overrides,
+            context_enabled=context_enabled,
         )
         for probe in PROBES
     ]

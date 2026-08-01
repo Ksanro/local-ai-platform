@@ -332,6 +332,43 @@ def test_chat_completions_forwards_context_intent_rules() -> None:
     assert pipeline_request.metadata["context_intent_rules"] == {"IMPLEMENT": ("adauga",)}
 
 
+def test_chat_completions_forwards_repository_context_enabled_override() -> None:
+    """Verify per-request repository context enablement overrides settings."""
+    payload = {
+        "messages": [{"role": "user", "content": "Find this symbol."}],
+        "model": "qwen36",
+        "repository_context_enabled": False,
+    }
+    mock_engine = AsyncMock()
+    resp = PipelineResponse(
+        success=True,
+        data={"choices": [{"message": {"role": "assistant", "content": "ok"}}]},
+    )
+    mock_engine.execute = AsyncMock(return_value=resp)
+
+    with patch(
+        "apps.gateway.api.chat.get_settings",
+        return_value=type(
+            "FakeSettings",
+            (),
+            {
+                "default_provider": "vllm",
+                "repository_context_enabled": True,
+                "history_cap_enabled": False,
+                "history_cap_tokens": 0,
+            },
+        )(),
+    ):
+        app = _make_app()
+        app.state.pipeline = mock_engine
+        client = TestClient(app)
+        response = client.post("/v1/chat/completions", json=payload)
+
+    assert response.status_code == 200
+    pipeline_request = mock_engine.execute.call_args.args[0]
+    assert pipeline_request.metadata["context_enabled"] is False
+
+
 def test_chat_completions_provider_connection_error_returns_503() -> None:
     """Verify ProviderConnectionError surfaces as HTTP 503."""
     payload = {
