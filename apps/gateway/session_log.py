@@ -344,6 +344,10 @@ class SessionLoggerMiddleware:
             ),
             "matched_keyword": scope.get("session_planning_matched_keyword", ""),
         }
+        if override := scope.get("session_planning_context_intent_override", ""):
+            planning["context_intent_override"] = override
+        if ignored := scope.get("session_planning_context_intent_ignored", ""):
+            planning["context_intent_ignored"] = ignored
 
         # Backend model.
         backend_model = scope.get("session_backend_model", model)
@@ -364,9 +368,7 @@ class SessionLoggerMiddleware:
                                 chunk = json.loads(data_str)
                                 if "usage" in chunk:
                                     usage = {
-                                        "prompt_tokens": chunk["usage"].get(
-                                            "prompt_tokens"
-                                        ),
+                                        "prompt_tokens": chunk["usage"].get("prompt_tokens"),
                                         "completion_tokens": chunk["usage"].get(
                                             "completion_tokens"
                                         ),
@@ -379,12 +381,8 @@ class SessionLoggerMiddleware:
                             parsed = json.loads(line)
                             if "usage" in parsed:
                                 usage = {
-                                    "prompt_tokens": parsed["usage"].get(
-                                        "prompt_tokens"
-                                    ),
-                                    "completion_tokens": parsed["usage"].get(
-                                        "completion_tokens"
-                                    ),
+                                    "prompt_tokens": parsed["usage"].get("prompt_tokens"),
+                                    "completion_tokens": parsed["usage"].get("completion_tokens"),
                                 }
                                 break
                         except json.JSONDecodeError:

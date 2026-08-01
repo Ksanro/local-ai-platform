@@ -13,7 +13,7 @@ import uuid
 from typing import Any, cast
 
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from starlette.responses import StreamingResponse
 
 from apps.gateway.core.config import get_settings
@@ -39,6 +39,8 @@ class ChatCompletionRequest(BaseModel):
     Mirrors the OpenAI Chat Completion API shape for compatibility.
     """
 
+    model_config = ConfigDict(extra="allow")
+
     messages: list[dict[str, Any]] = Field(
         ...,
         description="List of message objects with role and content.",
@@ -58,6 +60,10 @@ class ChatCompletionRequest(BaseModel):
     max_tokens: int | None = Field(
         default=None,
         description="Maximum number of tokens to generate.",
+    )
+    context_intent: str | None = Field(
+        default=None,
+        description="Optional explicit repository-context intent override.",
     )
 
 
@@ -147,6 +153,14 @@ def _surface_session_metadata(
         "planning_matched_keyword",
         "",
     )
+    scope["session_planning_context_intent_override"] = resp_meta.get(
+        "planning_context_intent_override",
+        "",
+    )
+    scope["session_planning_context_intent_ignored"] = resp_meta.get(
+        "planning_context_intent_ignored",
+        "",
+    )
 
     # --- Repository context metadata ---
     repo_result = stage_results.get("repository_context")
@@ -183,9 +197,9 @@ def _surface_session_metadata(
                 # Empty or no_new_symbols path.
                 symbols_new = pkg.get("symbols_new", 0)
                 symbols_suppressed = pkg.get("symbols_suppressed", 0)
-                scope["session_context_status"] = "no_new_symbols" if (
-                    symbols_new == 0 and symbols_suppressed > 0
-                ) else "empty"
+                scope["session_context_status"] = (
+                    "no_new_symbols" if (symbols_new == 0 and symbols_suppressed > 0) else "empty"
+                )
                 scope["session_symbols_selected"] = pkg.get("symbols_selected", 0)
                 scope["session_symbols_new"] = symbols_new
                 scope["session_symbols_suppressed"] = symbols_suppressed
@@ -218,9 +232,7 @@ def _surface_session_metadata(
     provider_result = stage_results.get("provider")
     if provider_result is not None and provider_result.data is not None:
         data = provider_result.data
-        backend_model = (
-            data.get("backend_model") if isinstance(data, dict) else None
-        )
+        backend_model = data.get("backend_model") if isinstance(data, dict) else None
         if backend_model:
             scope["session_backend_model"] = backend_model
 
@@ -240,9 +252,7 @@ def _surface_session_metadata(
     # Keys now have _ms suffix (e.g. "provider_ms").
     provider_ms = stage_durations_ms.get("provider_ms", 0.0)
     # Subtract provider_ms from the total to get non-provider stages.
-    pipeline_ms = sum(
-        d for k, d in stage_durations_ms.items() if k != "provider_ms"
-    )
+    pipeline_ms = sum(d for k, d in stage_durations_ms.items() if k != "provider_ms")
     scope["session_pipeline_ms"] = round(pipeline_ms, 1)
     scope["session_provider_wait_ms"] = round(provider_ms, 1)
 
@@ -294,20 +304,25 @@ async def chat_completions(
     if body.max_tokens is not None:
         kwargs["max_tokens"] = body.max_tokens
 
+    # History cap settings are passed through to the engine in metadata.
+    metadata: dict[str, Any] = {
+        "request_id": request_id,
+        "context_enabled": settings.repository_context_enabled,
+        "history_cap_enabled": settings.history_cap_enabled,
+        "history_cap_tokens": settings.history_cap_tokens,
+        "max_tokens_override": body.max_tokens,
+    }
+    context_intent = body.context_intent or request.headers.get("X-Context-Intent")
+    if context_intent is not None:
+        metadata["context_intent"] = context_intent
+
     pipeline_request = PipelineRequest(
         provider_name=provider_name,
         model=body.model,
         messages=body.messages,
         stream=body.stream,
         kwargs=kwargs,
-        metadata={
-            "request_id": request_id,
-            "context_enabled": settings.repository_context_enabled,
-            # History cap settings — passed through to the engine.
-            "history_cap_enabled": settings.history_cap_enabled,
-            "history_cap_tokens": settings.history_cap_tokens,
-            "max_tokens_override": body.max_tokens,
-        },
+        metadata=metadata,
     )
 
     try:
@@ -346,8 +361,7 @@ async def chat_completions(
         if generator_fn is None:
             # Unexpected shape -- fall through to JSON.
             logger.warning(
-                "provider=%s model=%s request_id=%s "
-                "stream=true but no generator in result",
+                "provider=%s model=%s request_id=%s stream=true but no generator in result",
                 provider_name,
                 model,
                 request_id,
@@ -366,8 +380,7 @@ async def chat_completions(
     except PipelineError as exc:
         elapsed = time.perf_counter() - start_time
         logger.error(
-            "provider=%s model=%s duration=%.3fs status=error request_id=%s "
-            "error=%s",
+            "provider=%s model=%s duration=%.3fs status=error request_id=%s error=%s",
             provider_name,
             model,
             elapsed,
@@ -408,6 +421,7 @@ def _wrap_stream_duration(
         An async generator that yields the same events and logs
         duration after the last event.
     """
+
     async def _wrapped() -> Any:
         status = "stream_ok"
         ttft: float | None = None

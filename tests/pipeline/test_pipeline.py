@@ -55,6 +55,23 @@ class _TrackingStage(PipelineStage):
         self.call_order.append("after")
 
 
+class _MetadataEchoStage(PipelineStage):
+    """A test stage that returns selected context metadata."""
+
+    @property
+    def name(self) -> str:
+        return "metadata_echo"
+
+    async def execute(self, context: PipelineContext) -> PipelineStageResult:
+        return PipelineStageResult(
+            stage_name=self.name,
+            success=True,
+            data={
+                "context_intent": context.get_metadata("context_intent"),
+            },
+        )
+
+
 class _ShortCircuitStage(PipelineStage):
     """A stage that short-circuits via before()."""
 
@@ -104,9 +121,7 @@ class _FailingStage(PipelineStage):
         pass
 
 
-def _make_resolved_model(
-    provider: AsyncMock, model_name: str = "test"
-) -> ResolvedModel:
+def _make_resolved_model(provider: AsyncMock, model_name: str = "test") -> ResolvedModel:
     """Create a ResolvedModel with a mock provider for testing."""
     definition = ModelDefinition(
         model=model_name,
@@ -170,9 +185,7 @@ class TestPipelineEngine:
                     stage_name=self.name,
                     success=True,
                     data={
-                        "budget": context.get_metadata(
-                            "repository_context_max_tokens"
-                        ),
+                        "budget": context.get_metadata("repository_context_max_tokens"),
                     },
                 )
 
@@ -281,6 +294,21 @@ class TestPipelineEngine:
         assert response.success is True
 
     @pytest.mark.asyncio
+    async def test_context_intent_metadata_propagates_to_context(self) -> None:
+        """Explicit context_intent metadata is available to stages."""
+        engine = PipelineEngine()
+        engine.register(_MetadataEchoStage())
+
+        request = PipelineRequest(
+            metadata={"context_intent": "IMPLEMENT"},
+        )
+        response = await engine.execute(request)
+
+        assert response.success is True
+        result = response.stage_results["metadata_echo"]
+        assert result.data["context_intent"] == "IMPLEMENT"
+
+    @pytest.mark.asyncio
     async def test_elapsed_time_tracked(self) -> None:
         """Verify elapsed time is tracked in response."""
         engine = PipelineEngine()
@@ -352,9 +380,7 @@ class TestProviderStage:
         from packages.providers.exceptions import ProviderConnectionError
 
         mock_provider = AsyncMock()
-        mock_provider.chat = AsyncMock(
-            side_effect=ProviderConnectionError("unreachable")
-        )
+        mock_provider.chat = AsyncMock(side_effect=ProviderConnectionError("unreachable"))
         stage = ProviderStage()
 
         resolved = _make_resolved_model(mock_provider, "test-model")
@@ -403,9 +429,7 @@ class TestProviderStage:
     async def test_provider_stage_full_pipeline(self) -> None:
         """Verify ProviderStage works end-to-end in a pipeline."""
         mock_provider = AsyncMock()
-        mock_provider.chat = AsyncMock(
-            return_value={"choices": [{"message": {"content": "Hi"}}]}
-        )
+        mock_provider.chat = AsyncMock(return_value={"choices": [{"message": {"content": "Hi"}}]})
         engine = PipelineEngine()
 
         # Create a test stage that sets resolved_model before ProviderStage.

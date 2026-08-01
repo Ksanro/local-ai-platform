@@ -92,12 +92,13 @@ class PipelineEngine:
         context.set_metadata(
             "history_cap_enabled", request.metadata.get("history_cap_enabled", False)
         )
-        context.set_metadata(
-            "history_cap_tokens", request.metadata.get("history_cap_tokens", 0)
-        )
-        context.set_metadata(
-            "max_tokens_override", request.metadata.get("max_tokens_override")
-        )
+        context.set_metadata("history_cap_tokens", request.metadata.get("history_cap_tokens", 0))
+        context.set_metadata("max_tokens_override", request.metadata.get("max_tokens_override"))
+        if "context_intent" in request.metadata:
+            context.set_metadata(
+                "context_intent",
+                request.metadata.get("context_intent"),
+            )
         if "repository_context_max_tokens" in request.metadata:
             context.set_metadata(
                 "repository_context_max_tokens",
@@ -275,8 +276,7 @@ def _apply_history_cap(
     )
 
     total_after = sum(
-        int(len(content_to_text(m.get("content", ""))) / CHARS_PER_TOKEN)
-        for m in capped_messages
+        int(len(content_to_text(m.get("content", ""))) / CHARS_PER_TOKEN) for m in capped_messages
     )
     context.set_metadata("history_dropped_count", dropped_count)
     context.set_metadata("history_tokens_after", total_after)

@@ -67,11 +67,7 @@ def _make_app(pipeline: PipelineEngine | None = None) -> FastAPI:
                         "media_type": "text/event-stream",
                     }
                 else:
-                    data = {
-                        "choices": [
-                            {"message": {"role": "assistant", "content": "ok"}}
-                        ]
-                    }
+                    data = {"choices": [{"message": {"role": "assistant", "content": "ok"}}]}
                 return PipelineStageResult(
                     stage_name="stub",
                     success=True,
@@ -119,9 +115,7 @@ def test_chat_completions_provider_not_found() -> None:
                 stage_name="provider",
                 success=False,
                 error="Provider 'nonexistent' is not registered",
-                exception=UnknownProviderError(
-                    "Provider 'nonexistent' is not registered"
-                ),
+                exception=UnknownProviderError("Provider 'nonexistent' is not registered"),
             )
         }
         mock_engine.execute = AsyncMock(return_value=resp)
@@ -141,9 +135,7 @@ def test_chat_completions_no_providers_registered() -> None:
         "model": "test-model",
     }
     mock_engine = AsyncMock()
-    mock_engine.execute = AsyncMock(
-        side_effect=PipelineError("No stages registered")
-    )
+    mock_engine.execute = AsyncMock(side_effect=PipelineError("No stages registered"))
     app = _make_app()
     app.state.pipeline = mock_engine
     client = TestClient(app)
@@ -159,9 +151,7 @@ def test_chat_completions_streaming_error_on_provider_failure() -> None:
         "stream": True,
     }
     mock_engine = AsyncMock()
-    mock_engine.execute = AsyncMock(
-        side_effect=PipelineError("vLLM unreachable")
-    )
+    mock_engine.execute = AsyncMock(side_effect=PipelineError("vLLM unreachable"))
     app = _make_app()
     app.state.pipeline = mock_engine
     client = TestClient(app)
@@ -184,12 +174,8 @@ def test_streaming_response_returns_multiple_chunks() -> None:
     assert response.status_code == 200
     assert response.headers.get("content-type", "").startswith("text/event-stream")
     # Count SSE data lines (each "data: ..." line is one chunk).
-    data_lines = [
-        line for line in response.text.splitlines() if line.startswith("data: ")
-    ]
-    assert len(data_lines) >= 2, (
-        f"Expected at least 2 SSE data lines, got {len(data_lines)}"
-    )
+    data_lines = [line for line in response.text.splitlines() if line.startswith("data: ")]
+    assert len(data_lines) >= 2, f"Expected at least 2 SSE data lines, got {len(data_lines)}"
 
 
 def test_chat_completions_streaming_has_done_token() -> None:
@@ -223,6 +209,90 @@ def test_chat_completions_non_streaming() -> None:
     assert "choices" in data
     assert len(data["choices"]) > 0
     assert data["choices"][0]["message"]["role"] == "assistant"
+
+
+def test_chat_completions_forwards_context_intent_metadata() -> None:
+    """Verify explicit context_intent is forwarded to the pipeline."""
+    payload = {
+        "messages": [
+            {
+                "role": "user",
+                "content": "Add a feature and update focused tests.",
+            }
+        ],
+        "model": "qwen36",
+        "context_intent": "IMPLEMENT",
+    }
+    mock_engine = AsyncMock()
+    resp = PipelineResponse(
+        success=True,
+        data={"choices": [{"message": {"role": "assistant", "content": "ok"}}]},
+    )
+    mock_engine.execute = AsyncMock(return_value=resp)
+
+    app = _make_app()
+    app.state.pipeline = mock_engine
+    client = TestClient(app)
+    response = client.post("/v1/chat/completions", json=payload)
+
+    assert response.status_code == 200
+    pipeline_request = mock_engine.execute.call_args.args[0]
+    assert pipeline_request.metadata["context_intent"] == "IMPLEMENT"
+
+
+def test_chat_completions_forwards_context_intent_header() -> None:
+    """Verify X-Context-Intent is forwarded to the pipeline."""
+    payload = {
+        "messages": [{"role": "user", "content": "Add tests for this feature."}],
+        "model": "qwen36",
+    }
+    mock_engine = AsyncMock()
+    resp = PipelineResponse(
+        success=True,
+        data={"choices": [{"message": {"role": "assistant", "content": "ok"}}]},
+    )
+    mock_engine.execute = AsyncMock(return_value=resp)
+
+    app = _make_app()
+    app.state.pipeline = mock_engine
+    client = TestClient(app)
+    response = client.post(
+        "/v1/chat/completions",
+        json=payload,
+        headers={"X-Context-Intent": "IMPLEMENT"},
+    )
+
+    assert response.status_code == 200
+    pipeline_request = mock_engine.execute.call_args.args[0]
+    assert pipeline_request.metadata["context_intent"] == "IMPLEMENT"
+
+
+def test_chat_completions_context_intent_body_wins_over_header() -> None:
+    """Verify body context_intent takes precedence over header value."""
+    payload = {
+        "messages": [{"role": "user", "content": "Find this symbol."}],
+        "model": "qwen36",
+        "context_intent": "SEARCH",
+    }
+    mock_engine = AsyncMock()
+    resp = PipelineResponse(
+        success=True,
+        data={"choices": [{"message": {"role": "assistant", "content": "ok"}}]},
+    )
+    mock_engine.execute = AsyncMock(return_value=resp)
+
+    app = _make_app()
+    app.state.pipeline = mock_engine
+    client = TestClient(app)
+    response = client.post(
+        "/v1/chat/completions",
+        json=payload,
+        headers={"X-Context-Intent": "IMPLEMENT"},
+    )
+
+    assert response.status_code == 200
+    pipeline_request = mock_engine.execute.call_args.args[0]
+    assert pipeline_request.metadata["context_intent"] == "SEARCH"
 
 
 def test_chat_completions_provider_connection_error_returns_503() -> None:
@@ -464,9 +534,7 @@ def test_request_id_generated_when_no_header() -> None:
             },
         )(),
     ):
-        mock_engine = _make_engine_for_exception(
-            ProviderConnectionError("connection failed")
-        )
+        mock_engine = _make_engine_for_exception(ProviderConnectionError("connection failed"))
         app = _make_app()
         app.state.pipeline = mock_engine
         app.add_middleware(RequestMiddleware)
@@ -499,9 +567,7 @@ def test_request_id_passed_when_header_supplied() -> None:
             },
         )(),
     ):
-        mock_engine = _make_engine_for_exception(
-            ProviderConnectionError("connection failed")
-        )
+        mock_engine = _make_engine_for_exception(ProviderConnectionError("connection failed"))
         app = _make_app()
         app.state.pipeline = mock_engine
         app.add_middleware(RequestMiddleware)
@@ -542,9 +608,7 @@ def test_concurrent_requests_get_different_request_ids() -> None:
             },
         )(),
     ):
-        mock_engine = _make_engine_for_exception(
-            ProviderConnectionError("connection failed")
-        )
+        mock_engine = _make_engine_for_exception(ProviderConnectionError("connection failed"))
 
         def _client() -> TestClient:
             app = _make_app()
@@ -576,24 +640,15 @@ def test_stage_duration_keys_have_ms_suffix() -> None:
     """Verify the _surface_session_metadata function writes stage durations
     with _ms suffix keys (e.g. repository_context_ms, provider_ms) so the
     session logger can find them."""
-    from fastapi.datastructures import State
     from starlette.datastructures import Headers
-    from apps.gateway.api.chat import _surface_session_metadata  # noqa: F401
 
-    payload = {
-        "messages": [{"role": "user", "content": "Hello"}],
-        "model": "test-model",
-    }
+    from apps.gateway.api.chat import _surface_session_metadata
     mock_engine = AsyncMock()
 
     # Build a realistic response with stage_results that have duration.
     resp = PipelineResponse(
         success=True,
-        data={
-            "choices": [
-                {"message": {"role": "assistant", "content": "ok"}}
-            ]
-        },
+        data={"choices": [{"message": {"role": "assistant", "content": "ok"}}]},
     )
     resp.stage_results = {
         "model_resolution": PipelineStageResult(
@@ -631,6 +686,7 @@ def test_stage_duration_keys_have_ms_suffix() -> None:
         "headers": [],
         "request_id": "test-req-1",
     }
+
     # Build a mock request with a mutable scope dict.
     class _MockRequest:
         pass

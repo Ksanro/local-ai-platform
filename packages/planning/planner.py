@@ -82,6 +82,7 @@ class ContextPlanner:
         self,
         user_messages: list[str],
         repository_index: RepositoryIndex | None = None,
+        intent_override: str | None = None,
     ) -> ContextPlan:
         """Build a ContextPlan from user messages.
 
@@ -95,6 +96,7 @@ class ContextPlanner:
         Args:
             user_messages: List of user message strings.
             repository_index: Optional RepositoryIndex (not used).
+            intent_override: Optional validated high-level intent override.
 
         Returns:
             An immutable ContextPlan with retrieval hints.
@@ -102,8 +104,13 @@ class ContextPlanner:
         # Combine messages for intent detection and engineering resolution.
         combined = " ".join(m for m in user_messages if m and m.strip())
 
-        # Step 1: Detect high-level intent from user messages.
-        intent = Intent.detect(user_messages)
+        # Step 1: Detect high-level intent from user messages, unless the
+        # caller supplied a validated explicit override.
+        intent = (
+            intent_override
+            if intent_override in Intent._ALL
+            else Intent.detect(user_messages)
+        )
 
         # Step 2: Resolve engineering intent (retrieval profile + hints).
         engineering_plan = self._intent_rule_engine.resolve(combined, intent)

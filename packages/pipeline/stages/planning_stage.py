@@ -44,7 +44,7 @@ from packages.pipeline.base import PipelineStage
 from packages.pipeline.context import PipelineContext
 from packages.pipeline.result import PipelineStageResult
 from packages.pipeline.user_messages import select_task_texts, user_message_texts
-from packages.planning.intent import Intent
+from packages.planning.intent import Intent, IntentMatch
 from packages.planning.planner import ContextPlanner
 
 logger = logging.getLogger(__name__)
@@ -115,17 +115,25 @@ class PlanningStage(PipelineStage):
         try:
             # Extract user messages from the request.
             messages = self._extract_messages(context)
-            intent_match = Intent.detect_match(messages)
+            context_intent = self._context_intent_override(context)
+            intent_match = (
+                IntentMatch(context_intent, "context_intent")
+                if context_intent is not None
+                else Intent.detect_match(messages)
+            )
             context.set_metadata("planning_user_message_count", len(messages))
             context.set_metadata(
                 "planning_last_user_message",
                 messages[-1] if messages else "",
             )
             context.set_metadata("planning_matched_keyword", intent_match.keyword)
+            if context_intent is not None:
+                context.set_metadata("planning_context_intent_override", context_intent)
 
             # Run the planner.
             plan = self._planner.build(
                 user_messages=messages,
+                intent_override=context_intent,
             )
 
             # Store in metadata for downstream stages.
@@ -204,3 +212,17 @@ class PlanningStage(PipelineStage):
 
         messages = request.get("messages", [])
         return select_task_texts(user_message_texts(messages))
+
+    @staticmethod
+    def _context_intent_override(context: PipelineContext) -> str | None:
+        """Return a validated explicit context-intent override, if present."""
+        raw_intent = context.get_metadata("context_intent")
+        if not isinstance(raw_intent, str):
+            return None
+
+        intent = raw_intent.strip().upper()
+        if intent in Intent._ALL:
+            return intent
+
+        context.set_metadata("planning_context_intent_ignored", raw_intent)
+        return None

@@ -155,10 +155,51 @@ class TestPlanningStageExecute:
         asyncio.run(stage.execute(context))
 
         assert context.get_metadata("planning_user_message_count") == 2
-        assert context.get_metadata("planning_last_user_message") == (
-            "Locate cap metadata"
-        )
+        assert context.get_metadata("planning_last_user_message") == ("Locate cap metadata")
         assert context.get_metadata("planning_matched_keyword") == "find"
+
+    def test_execute_honors_valid_context_intent_override(self):
+        """Explicit context_intent should win over keyword detection."""
+        stage = PlanningStage()
+        context = PipelineContext(
+            request={
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": "Add a feature and update focused tests.",
+                    },
+                ]
+            }
+        )
+        context.set_metadata("context_intent", "IMPLEMENT")
+
+        result = asyncio.run(stage.execute(context))
+
+        assert result.success is True
+        plan = result.data
+        assert plan.intent == "IMPLEMENT"
+        assert context.get_metadata("planning_matched_keyword") == "context_intent"
+        assert context.get_metadata("planning_context_intent_override") == "IMPLEMENT"
+
+    def test_execute_ignores_invalid_context_intent_override(self):
+        """Unknown context_intent values should fall back to detection."""
+        stage = PlanningStage()
+        context = PipelineContext(
+            request={
+                "messages": [
+                    {"role": "user", "content": "Find session logging"},
+                ]
+            }
+        )
+        context.set_metadata("context_intent", "BANANA")
+
+        result = asyncio.run(stage.execute(context))
+
+        assert result.success is True
+        plan = result.data
+        assert plan.intent == "SEARCH"
+        assert context.get_metadata("planning_matched_keyword") == "find"
+        assert context.get_metadata("planning_context_intent_ignored") == "BANANA"
 
     def test_execute_uses_cline_task_block_for_intent_metadata(self):
         """Cline task text is used instead of noisy tool-result messages."""
@@ -190,9 +231,7 @@ class TestPlanningStageExecute:
         plan = context.get_metadata("context_plan")
         assert plan.intent == "SEARCH"
         assert context.get_metadata("planning_user_message_count") == 1
-        assert context.get_metadata("planning_last_user_message") == (
-            "Locate session logging"
-        )
+        assert context.get_metadata("planning_last_user_message") == ("Locate session logging")
         assert context.get_metadata("planning_matched_keyword") == "locate"
 
     def test_execute_ignores_task_blocks_inside_tool_results(self):
@@ -409,9 +448,7 @@ class TestMessageExtraction:
                 "messages": [
                     {
                         "role": "user",
-                        "content": (
-                            "<task>Find tests for list-form content normalization.</task>"
-                        ),
+                        "content": ("<task>Find tests for list-form content normalization.</task>"),
                     },
                     {
                         "role": "user",
@@ -593,9 +630,7 @@ class TestPlanningStageNoDuplicateLog:
         asyncio.run(stage.after(context, result))
 
         # Count log records containing "intent=" — should be exactly 1
-        intent_lines = [
-            record for record in caplog.records if "intent=" in record.getMessage()
-        ]
+        intent_lines = [record for record in caplog.records if "intent=" in record.getMessage()]
         assert len(intent_lines) == 1, (
             f"Expected exactly 1 log line with 'intent=', got {len(intent_lines)}: "
             + [r.getMessage() for r in intent_lines]
