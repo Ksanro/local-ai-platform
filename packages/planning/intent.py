@@ -125,7 +125,6 @@ class Intent:
                 "exception",
                 "throw",
                 "fault",
-                "resolve",
                 "diagnose",
             ),
         ),

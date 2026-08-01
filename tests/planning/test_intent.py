@@ -199,6 +199,20 @@ class TestIntentDetect:
         messages = ["Inspect the provider payload conversion path"]
         assert Intent.detect(messages) == Intent.SEARCH
 
+    def test_validation_prompt_resolve_word_does_not_force_debug(self):
+        """Neutral 'resolve to' wording should not be treated as DEBUG."""
+        messages = [
+            (
+                "Implementation validation only. Do not modify files. "
+                "Inspect the current code and answer which intent this "
+                "kind of prompt should resolve to."
+            )
+        ]
+        match = Intent.detect_match(messages)
+
+        assert match.intent == Intent.SEARCH
+        assert match.keyword == "inspect"
+
     def test_strong_debug_signal_beats_ambiguous_investigate(self):
         """Bug words keep investigation prompts in DEBUG."""
         messages = ["Investigate the failing answer_preview extraction"]
