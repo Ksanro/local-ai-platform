@@ -60,6 +60,7 @@ APP_REPOSITORY_PATH=.
 APP_REPOSITORY_CONTEXT_ENABLED=true
 APP_REPOSITORY_CONTEXT_MAX_TOKENS=4096
 APP_REPOSITORY_CONTEXT_INTENT_BUDGETS=SEARCH:2048,TEST:2048,DEBUG:2048,REFACTOR:4096,IMPLEMENT:4096,EXPLAIN:8192
+APP_CONTEXT_INTENT_RULES={}
 APP_SESSION_LOG_ENABLED=true
 APP_HISTORY_CAP_ENABLED=true
 APP_HISTORY_CAP_TOKENS=10000
@@ -100,6 +101,19 @@ Analyze them with:
 
 The analyzer reports prompt tokens, latency, provider wait time, context
 status, intent distribution, and history-capping behavior.
+
+## Quality Harness
+
+Run the live gateway quality smoke test after starting the gateway:
+
+```powershell
+.\uv run python scripts\quality_harness.py
+```
+
+The harness sends fixed low-token prompts for the live intents and scores
+answers by expected repository facts. By default it sends `context_intent`
+overrides so retrieval quality can be measured independently from intent
+detection. Use `--no-intent-overrides` to test detector behavior too.
 
 ## Focused Gates
 

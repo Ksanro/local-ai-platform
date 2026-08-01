@@ -44,6 +44,12 @@ task. Ambiguous inspection words such as `investigate`, `inspect`, and `check`
 route conservatively to `SEARCH` unless stronger signals such as `failing`,
 `error`, or `bug` indicate `DEBUG`.
 
+Clients can force repository-context planning with `context_intent` in the
+request body or `X-Context-Intent` in headers. Local deployments can also add
+deterministic custom intent phrases with `APP_CONTEXT_INTENT_RULES`, a JSON
+object such as `{"IMPLEMENT":["adauga"],"SEARCH":["cauta"]}`. Precedence is:
+explicit request override, custom rules, then built-in defaults.
+
 ### RepositoryContextStage
 
 Uses the startup repository index to select ranked symbols and modules, then
@@ -119,6 +125,7 @@ Builds the provider payload from `NormalizedRequest`, swaps `model` to
 - history capping
 - session JSONL logging
 - session log analyzer
+- live gateway quality harness
 - live Cline/vLLM A/B measurement protocol
 
 ## What Exists But Is Dormant
@@ -171,6 +178,7 @@ Recommended live-path checks:
 .\uv run python -m pytest tests\pipeline tests\gateway tests\providers tests\planning tests\context tests\repository -q
 .\uv run python -m ruff check apps\gateway packages\pipeline packages\providers packages\planning packages\context packages\repository scripts
 .\uv run python -m mypy packages\providers packages\pipeline apps\gateway
+.\uv run python scripts\quality_harness.py
 ```
 
 ## Current Open Issues
