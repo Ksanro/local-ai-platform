@@ -70,12 +70,14 @@ def _make_module(
     path: str,
     symbols: list[Symbol],
     source: str = "",
+    imports: list[str] | None = None,
 ) -> Module:
     """Helper to create a Module."""
     return Module(
         path=path,
         symbols=symbols,
         source=source,
+        imports=imports or [],
     )
 
 
@@ -361,6 +363,78 @@ class AuthMiddleware:
         assert primary.signature != ""
         assert primary.source != ""
         assert "class AuthMiddleware" in primary.source
+
+    def test_build_caps_primary_source_to_reserved_budget(self):
+        """Primary source should respect primary_symbol_max_tokens."""
+        source = "def large():\n" + ("    value = 1\n" * 200)
+        sym_large = _make_symbol(
+            "mod.large",
+            "mod.py",
+            lineno=1,
+            symbol_type=SymbolType.FUNCTION,
+            source="mod.py",
+        )
+        mod = _make_module("mod.py", [sym_large], source=source)
+        index = _make_index([mod])
+
+        query = ContextQuery(
+            text="large",
+            max_symbols=1,
+            max_modules=1,
+            max_tokens=4096,
+        )
+
+        builder = ContextBuilder(index=index, primary_symbol_max_tokens=16)
+        result = builder.build(query)
+
+        assert len(result.candidates) == 1
+        assert len(result.candidates[0].source) <= 16 * CHARS_PER_TOKEN
+
+    def test_promotes_candidates_from_explicitly_referenced_modules(self):
+        """Queries naming files should include each referenced module early."""
+        candidates = [
+            ContextCandidate(
+                symbol_id="pkg/live.RepositoryContextStage._extract_query",
+                qualified_name="pkg/live.RepositoryContextStage._extract_query",
+                module="pkg/live",
+            ),
+            ContextCandidate(
+                symbol_id="pkg/live.RepositoryContextStage",
+                qualified_name="pkg/live.RepositoryContextStage",
+                module="pkg/live",
+            ),
+            ContextCandidate(
+                symbol_id="pkg/legacy.RepositoryContextStage._extract_query",
+                qualified_name="pkg/legacy.RepositoryContextStage._extract_query",
+                module="pkg/legacy",
+            ),
+            ContextCandidate(
+                symbol_id="app/main.create_app",
+                qualified_name="app/main.create_app",
+                module="app/main",
+            ),
+        ]
+        index = _make_index([
+            _make_module("pkg/live", []),
+            _make_module("pkg/legacy", []),
+            _make_module(
+                "app/main",
+                [],
+                imports=["from pkg.live import RepositoryContextStage"],
+            ),
+        ])
+        builder = ContextBuilder(index)
+
+        promoted = builder._promote_referenced_modules(
+            candidates,
+            "Compare pkg/legacy.py and pkg/live.py before refactoring.",
+        )
+
+        assert [candidate.qualified_name for candidate in promoted[:3]] == [
+            "pkg/live.RepositoryContextStage._extract_query",
+            "pkg/legacy.RepositoryContextStage._extract_query",
+            "app/main.create_app",
+        ]
 
     def test_build_enriches_supporting_symbols(self):
         """Supporting symbols should get signature and preview."""

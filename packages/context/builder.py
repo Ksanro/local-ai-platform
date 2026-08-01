@@ -63,6 +63,7 @@ API.
 from __future__ import annotations
 
 import os
+import re
 
 from packages.context.budget import CHARS_PER_TOKEN, ContextBudget
 from packages.context.models import (
@@ -203,6 +204,7 @@ class ContextBuilder:
             token_estimator=self._estimate_candidate_tokens_for_ranking,
         )
         candidates = engine.rank(query.text, candidates, max_tokens=query.max_tokens)
+        candidates = self._promote_referenced_modules(candidates, query.text)
 
         # Apply max_symbols limit (0 means no candidates).
         if query.max_symbols > 0:
@@ -240,6 +242,76 @@ class ContextBuilder:
             selected_modules=selected_modules,
             budget=budget,
         )
+
+    def _promote_referenced_modules(
+        self,
+        candidates: list[ContextCandidate],
+        query_text: str,
+    ) -> list[ContextCandidate]:
+        """Ensure explicitly mentioned source files are represented early."""
+        module_refs = [
+            match.group(0)[:-3].replace("\\", "/")
+            for match in re.finditer(r"[\w./\\-]+\.py", query_text)
+        ]
+        if not module_refs:
+            return candidates
+
+        promoted: list[ContextCandidate] = []
+        seen_symbols: set[str] = set()
+        seen_modules: set[str] = set()
+        if candidates:
+            promoted.append(candidates[0])
+            seen_symbols.add(candidates[0].qualified_name)
+            seen_modules.add(candidates[0].module)
+
+        for module_ref in module_refs:
+            if module_ref in seen_modules:
+                continue
+            for candidate in candidates:
+                if (
+                    candidate.module == module_ref
+                    and candidate.qualified_name not in seen_symbols
+                ):
+                    promoted.append(candidate)
+                    seen_symbols.add(candidate.qualified_name)
+                    seen_modules.add(candidate.module)
+                    break
+
+        importer_modules = self._find_importers_of_modules(module_refs)
+        for importer_module in importer_modules:
+            if importer_module in seen_modules:
+                continue
+            for candidate in candidates:
+                if (
+                    candidate.module == importer_module
+                    and candidate.qualified_name not in seen_symbols
+                ):
+                    promoted.append(candidate)
+                    seen_symbols.add(candidate.qualified_name)
+                    seen_modules.add(candidate.module)
+                    break
+
+        promoted.extend(
+            candidate
+            for candidate in candidates
+            if candidate.qualified_name not in seen_symbols
+        )
+        return promoted
+
+    def _find_importers_of_modules(self, module_refs: list[str]) -> list[str]:
+        """Return modules importing any explicitly referenced module."""
+        dotted_refs = {
+            module_ref.replace("/", ".").replace("\\", ".")
+            for module_ref in module_refs
+        }
+        importers: list[str] = []
+        for module_path, module in self._index.modules.items():
+            if module_path in module_refs:
+                continue
+            imports_text = "\n".join(module.imports)
+            if any(ref in imports_text for ref in dotted_refs):
+                importers.append(module_path)
+        return importers
 
     def _enforce_budget(
         self,
@@ -374,11 +446,16 @@ class ContextBuilder:
             source = raw_source if isinstance(raw_source, str) else ""
 
             if is_primary:
-                # PRIMARY: complete source body (within budget).
+                # PRIMARY: source body capped to its reserved budget.
                 candidate.signature = signature or ""
                 candidate.docstring = docstring or ""
                 candidate.decorators = decorators or []
-                candidate.source = source or ""
+                max_source_chars = max(0, self._primary_symbol_max_tokens * 4)
+                candidate.source = (
+                    source[:max_source_chars]
+                    if source and len(source) > max_source_chars
+                    else source or ""
+                )
                 candidate.location = location if isinstance(location, tuple) else None
                 # Count source lines for implementation size scoring.
                 candidate.source_lines = len(source.splitlines()) if source else 0
@@ -434,7 +511,7 @@ class ContextBuilder:
 
         if is_primary:
             if isinstance(source, str):
-                total_chars += len(source)
+                total_chars += min(len(source), self._primary_symbol_max_tokens * 4)
         else:
             preview = self._index.get_symbol_source_excerpts(
                 candidate.qualified_name,

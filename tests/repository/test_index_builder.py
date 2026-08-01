@@ -11,11 +11,8 @@ from __future__ import annotations
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-import pytest
-
 from packages.repository.index.builder import RepositoryIndexBuilder
 from packages.repository.symbols.python_ast import PythonAstExtractor
-
 
 # ------------------------------------------------------------------
 # Fixtures
@@ -178,6 +175,32 @@ def test_something():
             builder.build(p)
 
             assert builder.excluded_test_count == 0
+
+
+class TestModulePaths:
+    """Test module path handling during directory indexing."""
+
+    def test_duplicate_filenames_in_different_directories_are_distinct(self):
+        """Directory indexing should not collapse files with the same basename."""
+        with TemporaryDirectory() as tmp:
+            p = Path(tmp)
+            _write_py_file(
+                p,
+                "packages/pipeline/repository_context.py",
+                "class RepositoryContextStage:\n    pass\n",
+            )
+            _write_py_file(
+                p,
+                "packages/pipeline/stages/repository_context.py",
+                "class RepositoryContextStage:\n    pass\n",
+            )
+
+            builder = RepositoryIndexBuilder(exclude_tests=False)
+            index = builder.build(p)
+
+            assert "packages/pipeline/repository_context" in index.modules
+            assert "packages/pipeline/stages/repository_context" in index.modules
+            assert len(index.find("RepositoryContextStage")) == 2
 
 
 class TestPythonAstExtractorExcludedCount:

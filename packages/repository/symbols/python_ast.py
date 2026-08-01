@@ -84,7 +84,7 @@ class PythonAstExtractor(SymbolExtractor):
     # File / directory extraction
     # ------------------------------------------------------------------
 
-    def _extract_file(self, path: Path) -> SymbolGraph:
+    def _extract_file(self, path: Path, module_path: str | None = None) -> SymbolGraph:
         """Parse a single Python file and return its ``SymbolGraph``.
 
         Args:
@@ -96,9 +96,10 @@ class PythonAstExtractor(SymbolExtractor):
         source = path.read_text(encoding="utf-8")
         tree = ast.parse(source, filename=str(path))
 
-        # Module path is relative to the scan root.
-        # For a single file the path is just the stem (e.g. "main").
-        module_path = path.stem
+        # For direct single-file extraction the path is just the stem
+        # (e.g. "main"). Directory extraction passes a root-relative path
+        # so duplicate filenames in different directories remain distinct.
+        module_path = module_path or path.stem
 
         symbols: list[Symbol] = []
         relationships: list[Relationship] = []
@@ -170,7 +171,8 @@ class PythonAstExtractor(SymbolExtractor):
                     self.excluded_glob_count += 1
                     break
             else:
-                graph = self._extract_file(py_file)
+                module_path = str(rel.with_suffix("")).replace("\\", "/")
+                graph = self._extract_file(py_file, module_path=module_path)
                 all_modules.update(graph.modules)
                 continue
 

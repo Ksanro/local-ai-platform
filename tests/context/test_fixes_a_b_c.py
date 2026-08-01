@@ -174,7 +174,7 @@ class TestExcludeGlobs:
 
             index = build_index(root, exclude_tests=False, exclude_globs="")
             modules = list(index.modules.keys())
-            assert "tool" in modules
+            assert "scripts/tool" in modules
             assert "main" in modules
 
     def test_excluded_glob_count(self) -> None:
@@ -299,4 +299,3 @@ class TestQueryNormalisation:
         assert "what" not in tokens
         assert "does" not in tokens
         assert "return" not in tokens
-
