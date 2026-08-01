@@ -1,44 +1,37 @@
 """Pipeline stages.
 
-Contains concrete stage implementations. The built-in stages are:
+Contains concrete stage implementations.
 
-**Existing stages:**
+Live gateway stages registered by ``apps.gateway.main``:
 
-- ``PlanningStage`` — runs context planning (intent detection, rule matching).
-- ``RepositoryContextStage`` — assembles repository context before
-  provider execution.
-- ``ProviderStage`` — resolves a provider and calls its ``chat()`` method.
+- ``ModelResolutionStage`` - resolves model and provider before context
+  assembly, because ``context_window`` is needed for token budgeting.
+- ``PlanningStage`` - runs context planning and intent detection.
+- ``RepositoryContextStage`` - assembles repository context before provider
+  execution.
+- ``ProviderStage`` - resolves a provider and calls its ``chat()`` method.
 
-**Integration Milestone v1 stages:**
+Dormant/future stages:
 
-- ``WorkflowStage`` — selects and executes a workflow, producing a
+- ``WorkflowStage`` - selects and executes a workflow, producing a
   ``WorkflowPlan``.
-- ``ExecutionStage`` — executes a ``WorkflowPlan`` through the
+- ``ExecutionStage`` - executes a ``WorkflowPlan`` through the
   ``ExecutionEngine``, producing an ``ExecutionReport``.
-- ``VerificationStage`` — performs self-verification after execution,
+- ``VerificationStage`` - performs self-verification after execution,
   producing a ``VerificationReport``.
-- ``EvaluationStage`` — evaluates execution results after verification,
+- ``EvaluationStage`` - evaluates execution results after verification,
   producing an ``EvaluationReport``.
 
-**Model routing stages:**
-
-- ``ModelResolutionStage`` — resolves model → provider before context
-  assembly, because ``context_window`` is needed for token-budgeting.
-
-**Execution pipeline order:**
+Live gateway execution order:
 
     Request
-      → ModelResolutionStage
-      → PlanningStage
-      → RepositoryContextStage
-      → WorkflowStage
-      → ExecutionStage
-      → VerificationStage
-      → EvaluationStage
-      → ProviderStage
+      -> ModelResolutionStage
+      -> PlanningStage
+      -> RepositoryContextStage
+      -> ProviderStage
 
-Future stages will include authentication, memory, prompt optimization,
-and metrics.
+The dormant stages remain importable for tests and future work, but they are
+not part of the live gateway path until explicitly registered.
 """
 
 from __future__ import annotations
@@ -66,15 +59,14 @@ def __getattr__(name: str):
 
 
 __all__ = [
-    # Existing stages
+    # Live gateway stages
+    "ModelResolutionStage",
     "PlanningStage",
     "ProviderStage",
     "RepositoryContextStage",
-    # Integration Milestone v1 stages
+    # Dormant/future stages
     "WorkflowStage",
     "ExecutionStage",
     "VerificationStage",
     "EvaluationStage",
-    # Model routing
-    "ModelResolutionStage",
 ]

@@ -29,9 +29,11 @@ Cline task, same files, same order. If two things change, the comparison is mean
 - Relevant flags:
   - `APP_SESSION_LOG_ENABLED` (default false) — must be `true` to capture anything to analyze.
   - `APP_SESSION_LOG_PATH` (default `logs/sessions.jsonl`).
-  - `APP_HISTORY_CAP_ENABLED` (default **true** — verify current default in `config.py`).
+  - `APP_HISTORY_CAP_ENABLED` (default **true** - verify current default in `config.py`).
   - `APP_HISTORY_CAP_TOKENS` (default 0 = derive from context window; set a number to force a budget).
   - `APP_REPOSITORY_CONTEXT_ENABLED` (default true).
+- Per request, `/v1/chat/completions` accepts `repository_context_enabled` to override repository
+  context for that call. The quality harness uses this for context-on/context-off comparison.
 
 ## Log hygiene — always
 
@@ -51,6 +53,7 @@ Use these to confirm code is correct before any live run. Fast, repeatable, no n
 .\uv run python -m mypy packages\pipeline apps\gateway
 .\uv run python scripts\check_fixes.py
 .\uv run python scripts\bench_context.py
+.\uv run python scripts\quality_harness.py
 ```
 
 Baseline: the full suite has a known failure count (all in unreachable dead-code packages). A clean
@@ -76,6 +79,17 @@ Drive traffic, then analyze:
 ```powershell
 .\uv run python scripts\analyze_sessions.py logs\sessions.jsonl
 ```
+
+Run deterministic answer-quality probes:
+
+```powershell
+.\uv run python scripts\quality_harness.py
+.\uv run python scripts\quality_harness.py --compare-context
+```
+
+Read the `TOTAL` line. `--compare-context` changes exactly one variable per
+probe: repository context on versus off through the same gateway/provider path.
+Recent baselines were `14-15/15` with context and `2/15` without context.
 
 ## A/B measurement recipe (the standard shape)
 

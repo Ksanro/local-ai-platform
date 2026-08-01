@@ -2,7 +2,7 @@
 
 This roadmap is based on the current live gateway, not on dormant scaffolding.
 
-Last reviewed: 2026-07-28.
+Last reviewed: 2026-08-01.
 
 ## Done Enough For Now
 
@@ -23,34 +23,43 @@ Last reviewed: 2026-07-28.
 - session analyzer
 - history capping
 - measured Cline/vLLM A/B flow proving capping can reduce latency
+- explicit per-request context intent override
+- configurable custom context intent rules
+- live quality harness with context-on/context-off comparison
 
 ## Immediate Goals
 
-### 1. Documentation Realignment
+### 1. Dormant-Code Inventory And Activation
 
-Make docs match the runtime:
+Use the dormant packages as a backlog, not as assumed runtime behavior. For
+each candidate, decide whether it should be wired into the live gateway,
+adapted as a script/tool, or left dormant.
 
-- keep `CLAUDE.md` as agent/contributor operational truth
-- keep `README.md` as the human quick start
-- keep `docs/STATUS.md` as current runtime snapshot
-- keep `TESTING.md` as measurement protocol
-- label dormant/future docs visibly
+First candidates:
 
-### 2. Live Intent Validation
+- `packages.evaluation` - score quality-harness and session-log runs
+- `packages.engineering_memory` - persist deterministic run summaries
+- `packages.observability` - reuse selectively if it improves session analysis
 
-The planning stage now handles list-form Cline content. Run a fresh live Cline
-session and verify session logs no longer show `100% DEFAULT` for prompts that
-clearly contain explain/debug/test/search/refactor intent.
+### 2. Quality Harness Expansion
 
-### 3. Repository Context Budgeting
+The fixed probe set now proves repository context adds answer-quality signal
+(`15/15` with context versus `2/15` without context in the latest run).
+Next improvements:
+
+- add a style/compliance metric for unwanted reasoning preambles
+- add more probes for multi-turn Cline-like history
+- record compare runs to a small JSON/JSONL artifact for trend tracking
+
+### 3. Repository Context Budgeting And Ranking
 
 History capping works, but repository context often dominates total prompt
 tokens. Next performance work should:
 
-- log repository-context token contribution separately from history
-- apply configurable and then model-aware repository-context budgets
-- tune selected symbols/modules by intent
-- measure prompt-token and latency impact with live Cline traffic
+- continue tuning selected symbols/modules by intent
+- compare `REFACTOR` and `EXPLAIN` budgets with the quality harness
+- add tokenizer-aware estimates when the current character estimate becomes a
+  practical blocker
 
 ### 4. CI Realignment
 

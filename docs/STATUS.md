@@ -3,7 +3,7 @@
 This file is the current runtime snapshot. It intentionally describes only
 what matters for the live gateway path and calls out dormant code explicitly.
 
-Last reviewed: 2026-07-31.
+Last reviewed: 2026-08-01.
 
 ## Product Shape
 
@@ -154,6 +154,18 @@ later:
 They may contain tests and useful designs, but they should not be treated as
 runtime behavior.
 
+Approximate dormant-package footprint as of 2026-08-01:
+
+| Area | Package files | Test files | Approx. lines | Backlog posture |
+|---|---:|---:|---:|---|
+| `packages.evaluation` | 6 | 6 | 1.6k | First activation candidate: score quality-harness/session results. |
+| `packages.engineering_memory` | 4 | 4 | 1.1k | Useful after evaluation: persist run summaries and failures. |
+| `packages.observability` | 7 | 9 | 2.1k | Useful selectively; avoid replacing current session logs too early. |
+| `packages.capabilities` | 12 | 11 | 3.1k | Useful design source, but overlaps current planning/context path. |
+| `packages.tasks` / `workflows` | 27 | 17 | 4.8k | Keep dormant until an execution loop is product-proven. |
+| Controller/execution/verification stack | 29 | 28 | 7.0k | Large future stack; not on the gateway hot path. |
+| Modification/patches/session/bootstrap/autonomous/advisors/architecture/benchmark | 49 | 46 | 12.5k | Inventory before wiring; use only with a concrete measured need. |
+
 ## Configuration Notes
 
 There are two configuration systems:
@@ -179,6 +191,7 @@ Recommended live-path checks:
 .\uv run python -m ruff check apps\gateway packages\pipeline packages\providers packages\planning packages\context packages\repository scripts
 .\uv run python -m mypy packages\providers packages\pipeline apps\gateway
 .\uv run python scripts\quality_harness.py
+.\uv run python scripts\quality_harness.py --compare-context
 ```
 
 ## Current Open Issues
@@ -186,10 +199,12 @@ Recommended live-path checks:
 - CI still runs broad repo checks and should be realigned to the documented
   baseline or cleaned up.
 - Repository context can dominate prompt size; history capping alone is not the
-  full latency lever. Configurable repository-context budget enforcement now
-  exists; `SEARCH`, `TEST`, and `DEBUG` have initial live-tuned baselines, and
-  the next step is tuning `REFACTOR` and `EXPLAIN` by intent/model.
+  full latency lever. Configurable repository-context budget enforcement and
+  targeted retrieval promotions now exist; recent quality-harness runs show
+  `14-15/15` with context versus `2/15` without context on the fixed probe set.
 - Token estimates still use `CHARS_PER_TOKEN = 4.0`, not model-specific
   tokenizers.
+- The model often includes reasoning/preamble despite terse system prompts; the
+  quality harness scores required facts, not style compliance.
 - Only vLLM is implemented as a concrete provider; true multi-provider
   operation is not product-proven.

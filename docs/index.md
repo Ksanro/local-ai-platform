@@ -10,6 +10,7 @@ documents. When files disagree, prefer the runtime docs below.
 - [TESTING](../TESTING.md) - live measurement and test protocol
 - [Current Status](STATUS.md) - current live gateway snapshot
 - [Roadmap](roadmap.md) - current goals and deferred work
+- [Dormant Code Backlog](dormant-code-backlog.md) - inventory and activation order
 - [Execution Flow](execution-flow.mmd) - live gateway pipeline diagram
 
 ## Live Gateway Internals
