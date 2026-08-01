@@ -76,9 +76,9 @@ class Intent:
     # A keyword matches only when it appears as a complete word, not as
     # a substring of another word (e.g., "work" matches "work" but not
     # "framework" or "workspace").
-    # Priority order: EXPLAIN -> REFACTOR -> DEBUG -> TEST -> SEARCH -> IMPLEMENT
-    # REFACTOR and TEST come before IMPLEMENT to avoid false positives
-    # where words like "build" or "write" appear in symbol names.
+    # Priority order: EXPLAIN -> REFACTOR -> DEBUG -> TEST -> SEARCH -> IMPLEMENT.
+    # Explicit task markers below can override this order for prompts that
+    # contain validation requirements such as "add tests".
     _KEYWORD_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
         (
             EXPLAIN,
@@ -240,6 +240,13 @@ class Intent:
         )
         if explicit_refactor:
             return IntentMatch(cls.REFACTOR, "refactor")
+
+        explicit_implementation = re.search(
+            r"\bimplementation\s+task\b|\bmodify\s+files\b",
+            combined,
+        )
+        if explicit_implementation:
+            return IntentMatch(cls.IMPLEMENT, "implement")
 
         for intent, keywords in cls._KEYWORD_PATTERNS:
             for keyword in keywords:

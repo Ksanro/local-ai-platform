@@ -69,6 +69,26 @@ class TestIntentDetect:
         messages = ["Build a feature for authentication"]
         assert Intent.detect(messages) == Intent.IMPLEMENT
 
+    def test_explicit_implementation_task_beats_test_requirements(self):
+        """Implementation task markers should not be stolen by test requirements."""
+        messages = [
+            (
+                "Implementation task. Modify files if needed. "
+                "Add a gateway health field and add focused tests."
+            )
+        ]
+        match = Intent.detect_match(messages)
+
+        assert match.intent == Intent.IMPLEMENT
+        assert match.keyword == "implement"
+
+    def test_negated_modify_files_does_not_force_implementation(self):
+        """Do-not-modify instructions should remain available for other intents."""
+        messages = [
+            "Explain investigation only. Do not modify files. Add tests later.",
+        ]
+        assert Intent.detect(messages) == Intent.EXPLAIN
+
     def test_refactor_intent_refactor(self):
         """REFACTOR intent detected with 'refactor' keyword."""
         messages = ["Refactor the ContextBuilder"]
