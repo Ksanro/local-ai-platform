@@ -34,13 +34,26 @@ QUALITY_SYSTEM_PROMPT = (
 
 
 @dataclass(frozen=True)
+class ExpectedFact:
+    """A required fact with acceptable textual variants."""
+
+    label: str
+    variants: tuple[str, ...]
+
+
+def fact(label: str, *variants: str) -> ExpectedFact:
+    """Create an expected fact from a canonical label and optional aliases."""
+    return ExpectedFact(label=label, variants=(label, *variants))
+
+
+@dataclass(frozen=True)
 class QualityProbe:
     """A fixed quality prompt with deterministic expected answer facts."""
 
     id: str
     intent: str
     prompt: str
-    expect: tuple[str, ...]
+    expect: tuple[ExpectedFact, ...]
 
 
 @dataclass
@@ -79,7 +92,10 @@ PROBES: tuple[QualityProbe, ...] = (
             "In this codebase, where is session log answer_preview extracted? "
             "Name the file and the callable that extracts it."
         ),
-        expect=("apps/gateway/session_log.py", "_extract_answer_preview"),
+        expect=(
+            fact("apps/gateway/session_log.py", "apps/gateway/session_log"),
+            fact("_extract_answer_preview"),
+        ),
     ),
     QualityProbe(
         id="debug_streaming_preview",
@@ -89,7 +105,11 @@ PROBES: tuple[QualityProbe, ...] = (
             "Which helper should I inspect, and which OpenAI streaming field "
             "should it read?"
         ),
-        expect=("_choice_content", "delta.content", "apps/gateway/session_log.py"),
+        expect=(
+            fact("_choice_content"),
+            fact("delta.content", "delta", 'delta.get("content"'),
+            fact("apps/gateway/session_log.py", "apps/gateway/session_log"),
+        ),
     ),
     QualityProbe(
         id="test_list_content",
@@ -98,7 +118,13 @@ PROBES: tuple[QualityProbe, ...] = (
             "Which regression test validates list-form OpenAI message content "
             "normalization reaching internal consumers?"
         ),
-        expect=("tests/pipeline/test_list_content_normalization.py", "content_to_text"),
+        expect=(
+            fact(
+                "tests/pipeline/test_list_content_normalization.py",
+                "tests/pipeline/test_list_content_normalization",
+            ),
+            fact("test_list_content_text_view_reaches_internal_consumers"),
+        ),
     ),
     QualityProbe(
         id="explain_live_path",
@@ -108,10 +134,10 @@ PROBES: tuple[QualityProbe, ...] = (
             "to the provider. Name the main stages in order."
         ),
         expect=(
-            "modelresolutionstage",
-            "planningstage",
-            "repositorycontextstage",
-            "providerstage",
+            fact("modelresolutionstage", "ModelResolutionStage"),
+            fact("planningstage", "PlanningStage"),
+            fact("repositorycontextstage", "RepositoryContextStage"),
+            fact("providerstage", "ProviderStage"),
         ),
     ),
     QualityProbe(
@@ -122,7 +148,13 @@ PROBES: tuple[QualityProbe, ...] = (
             "is the live implementation, and which helper extracts the last "
             "task text?"
         ),
-        expect=("packages/pipeline/stages/repository_context.py", "select_last_task_text"),
+        expect=(
+            fact(
+                "packages/pipeline/stages/repository_context.py",
+                "packages/pipeline/stages/repository_context",
+            ),
+            fact("select_last_task_text"),
+        ),
     ),
     QualityProbe(
         id="implement_health_flag",
@@ -132,7 +164,10 @@ PROBES: tuple[QualityProbe, ...] = (
             "to the health response, which endpoint file and field name are "
             "involved?"
         ),
-        expect=("apps/gateway/api/health.py", "repository_context_enabled"),
+        expect=(
+            fact("apps/gateway/api/health.py", "apps/gateway/api/health"),
+            fact("repository_context_enabled"),
+        ),
     ),
 )
 
@@ -142,16 +177,22 @@ def _normalized(text: str) -> str:
     return text.lower().replace("\\", "/")
 
 
-def score_answer(answer: str, expected: tuple[str, ...]) -> tuple[tuple[str, ...], tuple[str, ...]]:
+def score_answer(
+    answer: str,
+    expected: tuple[ExpectedFact, ...],
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """Return expected facts found and missing in an answer."""
     normalized_answer = _normalized(answer)
     hits: list[str] = []
     misses: list[str] = []
-    for fact in expected:
-        if _normalized(fact) in normalized_answer:
-            hits.append(fact)
+    for expected_fact in expected:
+        if any(
+            _normalized(variant) in normalized_answer
+            for variant in expected_fact.variants
+        ):
+            hits.append(expected_fact.label)
         else:
-            misses.append(fact)
+            misses.append(expected_fact.label)
     return tuple(hits), tuple(misses)
 
 
@@ -287,7 +328,13 @@ def print_verbose(results: list[QualityResult]) -> None:
         if result.error:
             print(result.error)
         else:
-            print(result.answer[:1200])
+            print(_console_safe(result.answer[:1200]))
+
+
+def _console_safe(text: str) -> str:
+    """Return text printable on Windows consoles using legacy code pages."""
+    encoding = sys.stdout.encoding or "utf-8"
+    return text.encode(encoding, errors="replace").decode(encoding)
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:

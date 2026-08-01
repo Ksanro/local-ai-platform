@@ -657,6 +657,108 @@ class AuthMiddleware:
         ]
         assert promoted[-1].qualified_name == "apps/gateway/api/chat.ChatCompletionRequest"
 
+    def test_promotes_session_log_preview_helpers(self):
+        """Answer-preview prompts should lead with session logging helpers."""
+        candidates = [
+            ContextCandidate(
+                symbol_id="packages/serializers/openai.OpenAISerializer",
+                qualified_name="packages/serializers/openai.OpenAISerializer",
+                module="packages/serializers/openai",
+            ),
+            ContextCandidate(
+                symbol_id="apps/gateway/session_log._choice_content",
+                qualified_name="apps/gateway/session_log._choice_content",
+                module="apps/gateway/session_log",
+            ),
+            ContextCandidate(
+                symbol_id="apps/gateway/session_log._extract_answer_preview",
+                qualified_name="apps/gateway/session_log._extract_answer_preview",
+                module="apps/gateway/session_log",
+            ),
+        ]
+        builder = ContextBuilder(_make_index([]))
+
+        promoted = builder._promote_session_log_preview_symbols(
+            candidates,
+            "A streamed chat response is logged with an empty answer_preview.",
+        )
+
+        assert [candidate.qualified_name for candidate in promoted[:2]] == [
+            "apps/gateway/session_log._extract_answer_preview",
+            "apps/gateway/session_log._choice_content",
+        ]
+
+    def test_promotes_repository_context_stage_and_task_helper(self):
+        """Repository-context stage prompts should lead with live stage symbols."""
+        candidates = [
+            ContextCandidate(
+                symbol_id="packages/context/builder.ContextBuilder",
+                qualified_name="packages/context/builder.ContextBuilder",
+                module="packages/context/builder",
+            ),
+            ContextCandidate(
+                symbol_id=(
+                    "packages/pipeline/stages/repository_context."
+                    "RepositoryContextStage"
+                ),
+                qualified_name=(
+                    "packages/pipeline/stages/repository_context."
+                    "RepositoryContextStage"
+                ),
+                module="packages/pipeline/stages/repository_context",
+            ),
+            ContextCandidate(
+                symbol_id="packages/pipeline/user_messages.select_last_task_text",
+                qualified_name="packages/pipeline/user_messages.select_last_task_text",
+                module="packages/pipeline/user_messages",
+            ),
+        ]
+        builder = ContextBuilder(_make_index([]))
+
+        promoted = builder._promote_repository_context_stage_symbols(
+            candidates,
+            (
+                "Which repository context stage file is the live implementation, "
+                "and which helper extracts the last task text?"
+            ),
+        )
+
+        assert [candidate.qualified_name for candidate in promoted[:2]] == [
+            "packages/pipeline/stages/repository_context.RepositoryContextStage",
+            "packages/pipeline/user_messages.select_last_task_text",
+        ]
+
+    def test_promotes_health_endpoint_for_repository_context_enabled_field(self):
+        """Health-response prompts should lead with the health endpoint."""
+        candidates = [
+            ContextCandidate(
+                symbol_id="packages/pipeline/stages/repository_context.RepositoryContextStage",
+                qualified_name="packages/pipeline/stages/repository_context.RepositoryContextStage",
+                module="packages/pipeline/stages/repository_context",
+            ),
+            ContextCandidate(
+                symbol_id="apps/gateway/api/health.health_check",
+                qualified_name="apps/gateway/api/health.health_check",
+                module="apps/gateway/api/health",
+            ),
+            ContextCandidate(
+                symbol_id="apps/gateway/core/config.Settings",
+                qualified_name="apps/gateway/core/config.Settings",
+                module="apps/gateway/core/config",
+            ),
+        ]
+        builder = ContextBuilder(_make_index([]))
+
+        promoted = builder._promote_health_endpoint_symbols(
+            candidates,
+            "Add repository_context_enabled to the health response.",
+        )
+
+        assert [candidate.qualified_name for candidate in promoted[:2]] == [
+            "apps/gateway/api/health.health_check",
+            "apps/gateway/core/config.Settings",
+        ]
+
     def test_build_enriches_supporting_symbols(self):
         """Supporting symbols should get signature and preview."""
         source = '''def helper():

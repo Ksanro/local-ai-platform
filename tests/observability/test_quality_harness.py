@@ -7,6 +7,7 @@ from scripts.quality_harness import (
     QualityProbe,
     build_payload,
     extract_answer,
+    fact,
     score_answer,
 )
 
@@ -15,7 +16,13 @@ def test_score_answer_matches_paths_with_backslashes() -> None:
     """Expected POSIX paths should match Windows-style answer paths."""
     answer = r"The file is apps\gateway\session_log.py."
 
-    hits, misses = score_answer(answer, ("apps/gateway/session_log.py", "_missing"))
+    hits, misses = score_answer(
+        answer,
+        (
+            fact("apps/gateway/session_log.py"),
+            fact("_missing"),
+        ),
+    )
 
     assert hits == ("apps/gateway/session_log.py",)
     assert misses == ("_missing",)
@@ -25,9 +32,28 @@ def test_score_answer_is_case_insensitive() -> None:
     """Expected facts should match regardless of answer casing."""
     answer = "Inspect _EXTRACT_ANSWER_PREVIEW for DELTA.CONTENT chunks."
 
-    hits, misses = score_answer(answer, ("_extract_answer_preview", "delta.content"))
+    hits, misses = score_answer(
+        answer,
+        (
+            fact("_extract_answer_preview"),
+            fact("delta.content"),
+        ),
+    )
 
     assert hits == ("_extract_answer_preview", "delta.content")
+    assert misses == ()
+
+
+def test_score_answer_accepts_fact_aliases() -> None:
+    """Expected facts can define acceptable textual aliases."""
+    answer = "The module is apps/gateway/session_log."
+
+    hits, misses = score_answer(
+        answer,
+        (fact("apps/gateway/session_log.py", "apps/gateway/session_log"),),
+    )
+
+    assert hits == ("apps/gateway/session_log.py",)
     assert misses == ()
 
 
@@ -54,7 +80,7 @@ def test_extract_answer_reads_openai_shape() -> None:
 
 def test_build_payload_can_include_intent_override() -> None:
     """Harness can force one context intent per probe."""
-    probe = QualityProbe("p1", "SEARCH", "Find the thing", ("thing",))
+    probe = QualityProbe("p1", "SEARCH", "Find the thing", (fact("thing"),))
 
     payload = build_payload(
         probe,
@@ -72,7 +98,7 @@ def test_build_payload_can_include_intent_override() -> None:
 
 def test_build_payload_can_omit_intent_override() -> None:
     """Harness can exercise detector behavior directly."""
-    probe = QualityProbe("p1", "SEARCH", "Find the thing", ("thing",))
+    probe = QualityProbe("p1", "SEARCH", "Find the thing", (fact("thing"),))
 
     payload = build_payload(
         probe,

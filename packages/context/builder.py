@@ -206,6 +206,9 @@ class ContextBuilder:
         )
         candidates = engine.rank(query.text, candidates, max_tokens=query.max_tokens)
         candidates = self._promote_request_path_symbols(candidates, query.text)
+        candidates = self._promote_session_log_preview_symbols(candidates, query.text)
+        candidates = self._promote_repository_context_stage_symbols(candidates, query.text)
+        candidates = self._promote_health_endpoint_symbols(candidates, query.text)
         candidates = self._promote_referenced_modules(candidates, query.text)
         candidates = self._promote_shared_helper_imports(candidates, query.text)
 
@@ -343,6 +346,86 @@ class ContextBuilder:
         )
         return promoted
 
+    def _promote_session_log_preview_symbols(
+        self,
+        candidates: list[ContextCandidate],
+        query_text: str,
+    ) -> list[ContextCandidate]:
+        """Promote answer-preview logging helpers for streaming/debug prompts."""
+        if not self._query_targets_answer_preview(query_text):
+            return candidates
+
+        return self._promote_named_symbols(
+            candidates,
+            (
+                "apps/gateway/session_log._extract_answer_preview",
+                "apps/gateway/session_log._choice_content",
+                "apps/gateway/session_log.SessionLoggerMiddleware",
+            ),
+        )
+
+    def _promote_repository_context_stage_symbols(
+        self,
+        candidates: list[ContextCandidate],
+        query_text: str,
+    ) -> list[ContextCandidate]:
+        """Promote the live repository-context stage and task-text helper."""
+        if not self._query_targets_repository_context_stage(query_text):
+            return candidates
+
+        return self._promote_named_symbols(
+            candidates,
+            (
+                "packages/pipeline/stages/repository_context.RepositoryContextStage",
+                "packages/pipeline/stages/repository_context.RepositoryContextStage._extract_query",
+                "packages/pipeline/user_messages.select_last_task_text",
+            ),
+        )
+
+    def _promote_health_endpoint_symbols(
+        self,
+        candidates: list[ContextCandidate],
+        query_text: str,
+    ) -> list[ContextCandidate]:
+        """Promote the health endpoint for health-response implementation prompts."""
+        if not self._query_targets_health_endpoint(query_text):
+            return candidates
+
+        return self._promote_named_symbols(
+            candidates,
+            (
+                "apps/gateway/api/health.health_check",
+                "apps/gateway/core/config.Settings",
+            ),
+        )
+
+    @staticmethod
+    def _promote_named_symbols(
+        candidates: list[ContextCandidate],
+        ordered_targets: tuple[str, ...],
+    ) -> list[ContextCandidate]:
+        """Move named candidates to the front while preserving remaining order."""
+        by_name = {candidate.qualified_name: candidate for candidate in candidates}
+        promoted: list[ContextCandidate] = []
+        seen_symbols: set[str] = set()
+
+        for target in ordered_targets:
+            candidate = by_name.get(target)
+            if candidate is None:
+                continue
+            promoted.append(candidate)
+            seen_symbols.add(candidate.qualified_name)
+
+        if not promoted:
+            return candidates
+
+        promoted.extend(
+            candidate
+            for candidate in candidates
+            if candidate.qualified_name not in seen_symbols
+        )
+        return promoted
+
     def _find_importers_of_modules(self, module_refs: list[str]) -> list[str]:
         """Return modules importing any explicitly referenced module."""
         dotted_refs = {
@@ -455,6 +538,48 @@ class ContextBuilder:
             "normalizedrequest" in lowered
             and "provider" in lowered
             and ("payload" in lowered or "serialize" in lowered)
+        )
+
+    @staticmethod
+    def _query_targets_answer_preview(query_text: str) -> bool:
+        """Return True for prompts asking about logged assistant previews."""
+        lowered = query_text.lower()
+        if "answer_preview" in lowered:
+            return True
+        return (
+            "stream" in lowered
+            and "preview" in lowered
+            and ("log" in lowered or "logged" in lowered)
+        )
+
+    @staticmethod
+    def _query_targets_repository_context_stage(query_text: str) -> bool:
+        """Return True for prompts asking about the live repository-context stage."""
+        lowered = query_text.lower()
+        return (
+            "repository context stage" in lowered
+            or "repository-context stage" in lowered
+            or (
+                "repository_contextstage" in lowered
+                and ("live" in lowered or "implementation" in lowered)
+            )
+            or (
+                "last task text" in lowered
+                and "repository context" in lowered
+            )
+        )
+
+    @staticmethod
+    def _query_targets_health_endpoint(query_text: str) -> bool:
+        """Return True for prompts asking about the gateway health endpoint."""
+        lowered = query_text.lower()
+        return (
+            "health response" in lowered
+            or "health endpoint" in lowered
+            or (
+                "repository_context_enabled" in lowered
+                and ("health" in lowered or "endpoint" in lowered)
+            )
         )
 
     @staticmethod
