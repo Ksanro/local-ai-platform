@@ -248,3 +248,92 @@ class TestPersist:
         main([run_path])
 
         assert not storage_path.exists()
+
+
+class TestQualityRun:
+    def test_single_run_prints_quality_run_json_to_stdout(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        payload = [_result("a", hits=["f1"], misses=["f2"], prompt_tokens=100)]
+        run_path = _write(tmp_path, "run.json", payload)
+
+        exit_code = main([run_path, "--quality-run", "--model", "qwen36"])
+
+        out = json.loads(capsys.readouterr().out)
+        assert exit_code == 0
+        assert out["mode"] == "single"
+        assert out["model"] == "qwen36"
+        assert out["total_score"] == 1
+        assert out["probes"][0]["missing_facts"] == ["f2"]
+        assert out["probes"][0]["context_score_delta"] is None
+
+    def test_comparison_run_includes_context_delta(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        payload = {
+            "context": [_result("a", hits=["f1", "f2"], prompt_tokens=150)],
+            "no_context": [_result("a", hits=["f1"], misses=["f2"], prompt_tokens=50)],
+        }
+        run_path = _write(tmp_path, "cmp.json", payload)
+
+        exit_code = main([run_path, "--quality-run", "--model", "qwen36"])
+
+        out = json.loads(capsys.readouterr().out)
+        assert exit_code == 0
+        assert out["mode"] == "compare_context"
+        assert out["probes"][0]["context_score_delta"] == 1
+        assert out["probes"][0]["context_prompt_token_delta"] == 100
+
+    def test_quality_run_path_writes_file_instead_of_stdout(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        payload = [_result("a", hits=["f1"])]
+        run_path = _write(tmp_path, "run.json", payload)
+        out_path = tmp_path / "summary.json"
+
+        exit_code = main(
+            [
+                run_path,
+                "--quality-run",
+                "--model",
+                "qwen36",
+                "--quality-run-path",
+                str(out_path),
+            ]
+        )
+
+        assert exit_code == 0
+        assert capsys.readouterr().out == ""
+        written = json.loads(out_path.read_text(encoding="utf-8"))
+        assert written["total_score"] == 1
+        assert written["model"] == "qwen36"
+
+    def test_quality_run_path_creates_parent_directories(
+        self, tmp_path: Path
+    ) -> None:
+        payload = [_result("a", hits=["f1"])]
+        run_path = _write(tmp_path, "run.json", payload)
+        out_path = tmp_path / "nested" / "summaries" / "summary.json"
+
+        exit_code = main(
+            [
+                run_path,
+                "--quality-run",
+                "--model",
+                "qwen36",
+                "--quality-run-path",
+                str(out_path),
+            ]
+        )
+
+        assert exit_code == 0
+        assert out_path.exists()
+
+    def test_quality_run_does_not_persist_by_itself(self, tmp_path: Path) -> None:
+        payload = [_result("a", hits=["f1"])]
+        run_path = _write(tmp_path, "run.json", payload)
+        storage_path = tmp_path / "memory.json"
+
+        main([run_path, "--quality-run", "--model", "qwen36"])
+
+        assert not storage_path.exists()

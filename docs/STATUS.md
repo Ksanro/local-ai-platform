@@ -137,6 +137,12 @@ Builds the provider payload from `NormalizedRequest`, swaps `model` to
   evaluations as deterministic `EngineeringSessionRecord`s (model, gateway
   commit, config snapshot, score, token cost, notes) through the existing
   `EngineeringMemory`/`MemoryStorage` layer
+- `packages.evaluation.quality_run` (`QualityRun`, `build_quality_run`,
+  `build_quality_run_from_comparison`) via
+  `scripts/evaluate_quality_harness.py --quality-run [--quality-run-path]` —
+  a flat, storage-agnostic run summary (run_id, model, mode, totals, per-probe
+  rows with context-delta fields when in `--compare-context` mode). Optional;
+  does not replace `EngineeringMemory` and has no persistence of its own.
 
 ## What Exists But Is Dormant
 

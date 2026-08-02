@@ -71,6 +71,12 @@ from packages.evaluation.quality_harness_report import (
     evaluate_comparison,
     evaluate_results,
 )
+from packages.evaluation.quality_run import (
+    ProbeRun,
+    QualityRun,
+    build_quality_run,
+    build_quality_run_from_comparison,
+)
 from packages.evaluation.registry import (
     register_category,
     register_metric,
@@ -90,6 +96,11 @@ __all__ = [
     "QualityHarnessReport",
     "evaluate_comparison",
     "evaluate_results",
+    # Quality run summary
+    "ProbeRun",
+    "QualityRun",
+    "build_quality_run",
+    "build_quality_run_from_comparison",
     # Registry
     "register_category",
     "register_metric",

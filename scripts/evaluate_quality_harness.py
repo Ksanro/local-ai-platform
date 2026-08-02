@@ -23,6 +23,9 @@ Usage
 
     .\uv.exe run python scripts\evaluate_quality_harness.py run.json ^
         --persist --model qwen36 --notes "post history-cap tuning"
+
+    .\uv.exe run python scripts\evaluate_quality_harness.py run.json ^
+        --quality-run --model qwen36 --quality-run-path run_summary.json
 """
 
 from __future__ import annotations
@@ -48,6 +51,11 @@ from packages.evaluation.quality_harness_report import (  # noqa: E402
     QualityHarnessReport,
     evaluate_comparison,
     evaluate_results,
+)
+from packages.evaluation.quality_run import (  # noqa: E402
+    QualityRun,
+    build_quality_run,
+    build_quality_run_from_comparison,
 )
 
 
@@ -100,6 +108,18 @@ def _print_comparison_report(comparison: ComparisonReport) -> None:
     _print_single_report(comparison.without_context)
 
 
+def _emit_quality_run(run: QualityRun, *, path: str | None) -> None:
+    """Print a QualityRun as JSON, or write it to `path` when given."""
+    content = json.dumps(dataclasses.asdict(run), indent=2)
+    if path:
+        output_path = Path(path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(content, encoding="utf-8")
+        print(f"\nWrote QualityRun {run.run_id} to {path}", file=sys.stderr)
+    else:
+        print(content)
+
+
 def _persist(record: EngineeringSessionRecord, *, storage_path: str | None) -> None:
     """Store an EngineeringSessionRecord and print a confirmation."""
     memory = EngineeringMemory(storage_path=storage_path)
@@ -142,6 +162,19 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         default=None,
         help="override the engineering-memory storage file path",
     )
+    parser.add_argument(
+        "--quality-run",
+        action="store_true",
+        help=(
+            "emit a QualityRun summary (JSON) instead of the raw evaluation "
+            "report"
+        ),
+    )
+    parser.add_argument(
+        "--quality-run-path",
+        default=None,
+        help="write the QualityRun JSON to this file instead of stdout",
+    )
     return parser.parse_args(argv)
 
 
@@ -153,7 +186,12 @@ def main(argv: list[str]) -> int:
     has_error: bool
     if isinstance(payload, dict) and "context" in payload and "no_context" in payload:
         comparison = evaluate_comparison(payload)
-        if args.json:
+        if args.quality_run:
+            run = build_quality_run_from_comparison(
+                comparison, model=args.model, gateway_commit=args.gateway_commit
+            )
+            _emit_quality_run(run, path=args.quality_run_path)
+        elif args.json:
             print(json.dumps(dataclasses.asdict(comparison), indent=2))
         else:
             _print_comparison_report(comparison)
@@ -171,7 +209,12 @@ def main(argv: list[str]) -> int:
             _persist(record, storage_path=args.storage_path)
     elif isinstance(payload, list):
         report = evaluate_results(payload)
-        if args.json:
+        if args.quality_run:
+            run = build_quality_run(
+                report, model=args.model, gateway_commit=args.gateway_commit
+            )
+            _emit_quality_run(run, path=args.quality_run_path)
+        elif args.json:
             print(json.dumps(dataclasses.asdict(report), indent=2))
         else:
             _print_single_report(report)

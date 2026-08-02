@@ -113,6 +113,15 @@ store the evaluation as a deterministic `EngineeringSessionRecord` via
 Records land in `data/engineering_memory/memory_v1.json` by default (override
 with `--storage-path`).
 
+Add `--quality-run [--quality-run-path <file>]` instead to get a flat
+`QualityRun` summary (run_id, model, mode, totals, per-probe rows with
+context-delta fields when in `--compare-context` mode) printed as JSON or
+written to a file — no dashboard, no `EngineeringMemory` involvement:
+
+```powershell
+.\uv run python scripts\quality_harness.py --json | .\uv run python scripts\evaluate_quality_harness.py - --quality-run --model qwen36
+```
+
 ## A/B measurement recipe (the standard shape)
 
 To measure the effect of one setting, run the identical Cline task twice, changing only that setting,
