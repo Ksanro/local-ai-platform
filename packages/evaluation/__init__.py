@@ -63,6 +63,14 @@ from packages.evaluation.models import (
     EvaluationReport,
     EvaluationScore,
 )
+from packages.evaluation.quality_harness_report import (
+    ComparisonReport,
+    ContextDelta,
+    ProbeEvaluation,
+    QualityHarnessReport,
+    evaluate_comparison,
+    evaluate_results,
+)
 from packages.evaluation.registry import (
     register_category,
     register_metric,
@@ -75,6 +83,13 @@ __all__ = [
     "EvaluationScore",
     # Evaluator
     "WorkflowEvaluator",
+    # Quality harness report
+    "ComparisonReport",
+    "ContextDelta",
+    "ProbeEvaluation",
+    "QualityHarnessReport",
+    "evaluate_comparison",
+    "evaluate_results",
     # Registry
     "register_category",
     "register_metric",

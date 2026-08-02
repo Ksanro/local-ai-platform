@@ -34,7 +34,7 @@ Approximate footprint:
 | `packages.controller` | 9 | 10 | 3.8k | Engineering controller / decision layer. |
 | `packages.execution` | 8 | 6 | 1.4k | Execution planning/runtime layer. |
 | `packages.verification` | 6 | 6 | 1.7k | Self-verification scaffolding. |
-| `packages.evaluation` | 6 | 6 | 1.6k | Evaluation metrics and reports. |
+| `packages.evaluation` | 6 (+1 new) | 6 (+2 new) | 1.6k | `quality_harness_report.py` slice activated; `evaluator.py`/`registry.py` still dormant. |
 | `packages.session` | 6 | 6 | 1.1k | Engineering session lifecycle/registry. |
 | `packages.engineering_memory` | 4 | 4 | 1.1k | Persistent engineering-session summaries. |
 | `packages.observability` | 7 | 9 | 2.1k | Telemetry/event/tracing models. |
@@ -58,22 +58,25 @@ Before moving dormant code into the live product, require all of:
 
 ## Recommended Order
 
-### 1. Evaluation
+### 1. Evaluation — DONE (first slice)
 
-Best first activation candidate.
+First useful slice activated:
 
-Why:
-
-- It matches the current need: quality harness and session-log scoring.
-- It can be adapted as a script/library without wiring the dormant workflow
-  stack.
-- It produces a concrete artifact: an evaluation summary.
-
-First useful slice:
-
-- Add a small evaluator for `scripts/quality_harness.py --json` output.
-- Report score, missing facts, prompt-token cost, latency, and context delta.
-- Do not depend on `packages.workflows` or `packages.execution` initially.
+- `packages/evaluation/quality_harness_report.py` — `evaluate_results` and
+  `evaluate_comparison`, consuming the plain JSON shape emitted by
+  `scripts/quality_harness.py --json` (not `QualityResult` objects, so this
+  module has no import dependency on `scripts/`). Reports score, missing
+  facts (`misses`), prompt-token cost, latency, and — for
+  `--compare-context --json` — per-probe context delta matched by id.
+- `scripts/evaluate_quality_harness.py` — CLI that reads harness `--json`
+  output from a file or stdin and prints/emits the evaluation.
+- Reachable via a documented script (`TESTING.md`), covered by
+  `tests/evaluation/test_quality_harness_report.py` and
+  `tests/scripts/test_evaluate_quality_harness.py`, and documented in
+  `docs/STATUS.md`.
+- `evaluator.py` (`WorkflowEvaluator`) and `registry.py` were **not** reused —
+  they're bound to the dormant `WorkflowPlan`/`ExecutionReport`/
+  `CapabilityResult` shapes and remain dormant.
 
 ### 2. Engineering Memory
 

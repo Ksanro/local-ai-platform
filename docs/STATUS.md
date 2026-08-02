@@ -127,6 +127,10 @@ Builds the provider payload from `NormalizedRequest`, swaps `model` to
 - session log analyzer
 - live gateway quality harness
 - live Cline/vLLM A/B measurement protocol
+- `packages.evaluation.quality_harness_report` (`evaluate_results`,
+  `evaluate_comparison`) via `scripts/evaluate_quality_harness.py` — scores
+  quality-harness `--json` output (score, missing facts, prompt tokens,
+  latency, context delta)
 
 ## What Exists But Is Dormant
 
@@ -144,7 +148,9 @@ later:
 - `packages.session`
 - `packages.bootstrap`
 - `packages.controller`
-- `packages.evaluation`
+- `packages.evaluation` — except `quality_harness_report.py`, activated for
+  the quality harness; `evaluator.py`/`registry.py`/`WorkflowEvaluator` remain
+  dormant, still bound to the unactivated workflow stack
 - `packages.execution`
 - `packages.observability`
 - `packages.architecture`
@@ -158,7 +164,7 @@ Approximate dormant-package footprint as of 2026-08-01:
 
 | Area | Package files | Test files | Approx. lines | Backlog posture |
 |---|---:|---:|---:|---|
-| `packages.evaluation` | 6 | 6 | 1.6k | First activation candidate: score quality-harness/session results. |
+| `packages.evaluation` | 6 | 6 | 1.6k | `quality_harness_report.py` slice activated; `evaluator.py`/`registry.py` still dormant. |
 | `packages.engineering_memory` | 4 | 4 | 1.1k | Useful after evaluation: persist run summaries and failures. |
 | `packages.observability` | 7 | 9 | 2.1k | Useful selectively; avoid replacing current session logs too early. |
 | `packages.capabilities` | 12 | 11 | 3.1k | Useful design source, but overlaps current planning/context path. |
@@ -192,6 +198,7 @@ Recommended live-path checks:
 .\uv run python -m mypy packages\providers packages\pipeline apps\gateway
 .\uv run python scripts\quality_harness.py
 .\uv run python scripts\quality_harness.py --compare-context
+.\uv run python scripts\quality_harness.py --json | .\uv run python scripts\evaluate_quality_harness.py -
 ```
 
 ## Current Open Issues

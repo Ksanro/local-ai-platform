@@ -54,6 +54,7 @@ Use these to confirm code is correct before any live run. Fast, repeatable, no n
 .\uv run python scripts\check_fixes.py
 .\uv run python scripts\bench_context.py
 .\uv run python scripts\quality_harness.py
+.\uv run python -m pytest tests\evaluation tests\scripts -q
 ```
 
 Baseline: the full suite has a known failure count (all in unreachable dead-code packages). A clean
@@ -90,6 +91,16 @@ Run deterministic answer-quality probes:
 Read the `TOTAL` line. `--compare-context` changes exactly one variable per
 probe: repository context on versus off through the same gateway/provider path.
 Recent baselines were `14-15/15` with context and `2/15` without context.
+
+Optionally, pipe `--json` output through `scripts\evaluate_quality_harness.py`
+to get a structured evaluation (score, missing facts, prompt-token cost,
+latency, and — in `--compare-context` mode — per-probe context delta) via
+`packages.evaluation.quality_harness_report`:
+
+```powershell
+.\uv run python scripts\quality_harness.py --json | .\uv run python scripts\evaluate_quality_harness.py -
+.\uv run python scripts\quality_harness.py --compare-context --json | .\uv run python scripts\evaluate_quality_harness.py -
+```
 
 ## A/B measurement recipe (the standard shape)
 
