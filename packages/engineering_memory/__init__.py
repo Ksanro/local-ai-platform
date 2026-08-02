@@ -78,6 +78,10 @@ from packages.engineering_memory.models import (
     EngineeringSessionRecord,
     MemoryStatistics,
 )
+from packages.engineering_memory.quality_harness_records import (
+    build_quality_harness_comparison_record,
+    build_quality_harness_record,
+)
 
 __all__ = [
     # Service
@@ -85,6 +89,9 @@ __all__ = [
     # Models
     "EngineeringSessionRecord",
     "MemoryStatistics",
+    # Quality harness records
+    "build_quality_harness_comparison_record",
+    "build_quality_harness_record",
     # Version
 ]
 

@@ -54,7 +54,7 @@ Use these to confirm code is correct before any live run. Fast, repeatable, no n
 .\uv run python scripts\check_fixes.py
 .\uv run python scripts\bench_context.py
 .\uv run python scripts\quality_harness.py
-.\uv run python -m pytest tests\evaluation tests\scripts -q
+.\uv run python -m pytest tests\evaluation tests\scripts tests\engineering_memory -q
 ```
 
 Baseline: the full suite has a known failure count (all in unreachable dead-code packages). A clean
@@ -101,6 +101,17 @@ latency, and — in `--compare-context` mode — per-probe context delta) via
 .\uv run python scripts\quality_harness.py --json | .\uv run python scripts\evaluate_quality_harness.py -
 .\uv run python scripts\quality_harness.py --compare-context --json | .\uv run python scripts\evaluate_quality_harness.py -
 ```
+
+Add `--persist --model <name> [--gateway-commit <sha>] [--notes "..."]` to
+store the evaluation as a deterministic `EngineeringSessionRecord` via
+`packages.engineering_memory.quality_harness_records`, e.g.:
+
+```powershell
+.\uv run python scripts\quality_harness.py --json | .\uv run python scripts\evaluate_quality_harness.py - --persist --model qwen36 --notes "post history-cap tuning"
+```
+
+Records land in `data/engineering_memory/memory_v1.json` by default (override
+with `--storage-path`).
 
 ## A/B measurement recipe (the standard shape)
 

@@ -65,6 +65,7 @@ execution-flow.mmd
 
 logs/
 *.jsonl
+data/engineering_memory/
 
 # Claude Code local settings (tool permissions, etc.)
 .claude/settings.local.json

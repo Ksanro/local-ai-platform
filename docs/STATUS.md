@@ -131,6 +131,12 @@ Builds the provider payload from `NormalizedRequest`, swaps `model` to
   `evaluate_comparison`) via `scripts/evaluate_quality_harness.py` — scores
   quality-harness `--json` output (score, missing facts, prompt tokens,
   latency, context delta)
+- `packages.engineering_memory.quality_harness_records`
+  (`build_quality_harness_record`, `build_quality_harness_comparison_record`)
+  via `scripts/evaluate_quality_harness.py --persist` — stores quality-harness
+  evaluations as deterministic `EngineeringSessionRecord`s (model, gateway
+  commit, config snapshot, score, token cost, notes) through the existing
+  `EngineeringMemory`/`MemoryStorage` layer
 
 ## What Exists But Is Dormant
 
@@ -155,7 +161,9 @@ later:
 - `packages.observability`
 - `packages.architecture`
 - `packages.benchmark`
-- `packages.engineering_memory`
+- `packages.engineering_memory` — except `quality_harness_records.py`,
+  activated to persist quality-harness evaluations; the rest of the package's
+  session-lifecycle-oriented surface remains dormant
 
 They may contain tests and useful designs, but they should not be treated as
 runtime behavior.
@@ -165,7 +173,7 @@ Approximate dormant-package footprint as of 2026-08-01:
 | Area | Package files | Test files | Approx. lines | Backlog posture |
 |---|---:|---:|---:|---|
 | `packages.evaluation` | 6 | 6 | 1.6k | `quality_harness_report.py` slice activated; `evaluator.py`/`registry.py` still dormant. |
-| `packages.engineering_memory` | 4 | 4 | 1.1k | Useful after evaluation: persist run summaries and failures. |
+| `packages.engineering_memory` | 4 | 4 | 1.1k | `quality_harness_records.py` slice activated; the rest still dormant. |
 | `packages.observability` | 7 | 9 | 2.1k | Useful selectively; avoid replacing current session logs too early. |
 | `packages.capabilities` | 12 | 11 | 3.1k | Useful design source, but overlaps current planning/context path. |
 | `packages.tasks` / `workflows` | 27 | 17 | 4.8k | Keep dormant until an execution loop is product-proven. |

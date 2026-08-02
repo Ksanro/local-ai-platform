@@ -36,7 +36,7 @@ Approximate footprint:
 | `packages.verification` | 6 | 6 | 1.7k | Self-verification scaffolding. |
 | `packages.evaluation` | 6 (+1 new) | 6 (+2 new) | 1.6k | `quality_harness_report.py` slice activated; `evaluator.py`/`registry.py` still dormant. |
 | `packages.session` | 6 | 6 | 1.1k | Engineering session lifecycle/registry. |
-| `packages.engineering_memory` | 4 | 4 | 1.1k | Persistent engineering-session summaries. |
+| `packages.engineering_memory` | 4 (+1 new) | 4 (+1 new) | 1.1k | `quality_harness_records.py` slice activated for quality-harness/comparison persistence. |
 | `packages.observability` | 7 | 9 | 2.1k | Telemetry/event/tracing models. |
 | `packages.modification` | 6 | 6 | 1.5k | Code modification engine. |
 | `packages.patches` | 5 | 5 | 1.5k | Patch model/generation scaffolding. |
@@ -78,15 +78,31 @@ First useful slice activated:
   they're bound to the dormant `WorkflowPlan`/`ExecutionReport`/
   `CapabilityResult` shapes and remain dormant.
 
-### 2. Engineering Memory
+### 2. Engineering Memory — DONE (first slice)
 
-Useful after evaluation produces stable summaries.
+First useful slice activated:
 
-First useful slice:
+- `packages/engineering_memory/quality_harness_records.py` —
+  `build_quality_harness_record` and `build_quality_harness_comparison_record`,
+  turning a `QualityHarnessReport`/`ComparisonReport` (from the evaluation
+  slice above) directly into an `EngineeringSessionRecord`. Stores model,
+  gateway commit, config snapshot, and notes in `metadata`; the full
+  score/missing-facts/token/latency/delta data in `evaluation_report`.
+  `controller_decision` is always `"COMPLETE"` — there is no controller
+  driving these records, so retry/fail semantics don't apply.
+- `scripts/evaluate_quality_harness.py --persist [--model][--gateway-commit]
+  [--notes][--storage-path]` — stores the record via `EngineeringMemory`
+  (existing `packages/engineering_memory/memory.py` and `persistence.py`,
+  unchanged) once evaluation has run.
+- Semantic memory, querying by module, and any `packages.session`/
+  `packages.controller` wiring were **not** added — only direct record
+  construction and storage, per the "avoid semantic memory until the
+  deterministic history is useful" guidance below.
+- Covered by `tests/engineering_memory/test_quality_harness_records.py` and
+  the `TestPersist` cases in `tests/scripts/test_evaluate_quality_harness.py`;
+  documented in `docs/STATUS.md`.
 
-- Persist quality-harness/session-analysis runs as deterministic records.
-- Store model, gateway commit, config snapshot, score, token cost, and notes.
-- Avoid semantic memory until the deterministic history is useful.
+Avoid semantic memory until the deterministic history is useful.
 
 ### 3. Observability
 

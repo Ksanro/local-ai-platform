@@ -20,6 +20,9 @@ Usage
         .\uv.exe run python scripts\evaluate_quality_harness.py -
 
     .\uv.exe run python scripts\evaluate_quality_harness.py run.json --json
+
+    .\uv.exe run python scripts\evaluate_quality_harness.py run.json ^
+        --persist --model qwen36 --notes "post history-cap tuning"
 """
 
 from __future__ import annotations
@@ -34,6 +37,12 @@ from pathlib import Path
 # without the repo root already on sys.path.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from packages.engineering_memory.memory import EngineeringMemory  # noqa: E402
+from packages.engineering_memory.models import EngineeringSessionRecord  # noqa: E402
+from packages.engineering_memory.quality_harness_records import (  # noqa: E402
+    build_quality_harness_comparison_record,
+    build_quality_harness_record,
+)
 from packages.evaluation.quality_harness_report import (  # noqa: E402
     ComparisonReport,
     QualityHarnessReport,
@@ -91,6 +100,17 @@ def _print_comparison_report(comparison: ComparisonReport) -> None:
     _print_single_report(comparison.without_context)
 
 
+def _persist(record: EngineeringSessionRecord, *, storage_path: str | None) -> None:
+    """Store an EngineeringSessionRecord and print a confirmation."""
+    memory = EngineeringMemory(storage_path=storage_path)
+    memory.reload()
+    memory.store(record)
+    print(
+        f"\nPersisted session {record.session_id} to {memory.storage_path}",
+        file=sys.stderr,
+    )
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     """Parse CLI arguments."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -100,6 +120,27 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     parser.add_argument(
         "--json", action="store_true", help="emit the evaluation as JSON"
+    )
+    parser.add_argument(
+        "--persist",
+        action="store_true",
+        help="store the evaluation as a deterministic engineering-memory record",
+    )
+    parser.add_argument(
+        "--model", default="", help="model name tag for the persisted record"
+    )
+    parser.add_argument(
+        "--gateway-commit",
+        default="",
+        help="gateway git commit/version tag for the persisted record",
+    )
+    parser.add_argument(
+        "--notes", default="", help="free-form notes for the persisted record"
+    )
+    parser.add_argument(
+        "--storage-path",
+        default=None,
+        help="override the engineering-memory storage file path",
     )
     return parser.parse_args(argv)
 
@@ -120,6 +161,14 @@ def main(argv: list[str]) -> int:
             probe.error
             for probe in comparison.with_context.probes + comparison.without_context.probes
         )
+        if args.persist:
+            record = build_quality_harness_comparison_record(
+                comparison,
+                model=args.model,
+                gateway_commit=args.gateway_commit,
+                notes=args.notes,
+            )
+            _persist(record, storage_path=args.storage_path)
     elif isinstance(payload, list):
         report = evaluate_results(payload)
         if args.json:
@@ -127,6 +176,14 @@ def main(argv: list[str]) -> int:
         else:
             _print_single_report(report)
         has_error = any(probe.error for probe in report.probes)
+        if args.persist:
+            record = build_quality_harness_record(
+                report,
+                model=args.model,
+                gateway_commit=args.gateway_commit,
+                notes=args.notes,
+            )
+            _persist(record, storage_path=args.storage_path)
     else:
         print(
             "ERROR: input must be a quality-harness JSON array or "

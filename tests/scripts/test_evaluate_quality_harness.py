@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from packages.engineering_memory.memory import EngineeringMemory
 from scripts.evaluate_quality_harness import main
 
 
@@ -163,3 +164,87 @@ def test_invalid_payload_shape_returns_error_exit_code(tmp_path: Path) -> None:
     exit_code = main([path])
 
     assert exit_code == 2
+
+
+class TestPersist:
+    def test_persist_stores_single_run_record(self, tmp_path: Path) -> None:
+        payload = [_result("a", hits=["f1"], misses=["f2"], prompt_tokens=100)]
+        run_path = _write(tmp_path, "run.json", payload)
+        storage_path = str(tmp_path / "memory.json")
+
+        exit_code = main(
+            [
+                run_path,
+                "--persist",
+                "--model",
+                "qwen36",
+                "--notes",
+                "unit test",
+                "--storage-path",
+                storage_path,
+            ]
+        )
+
+        assert exit_code == 0
+        memory = EngineeringMemory(storage_path=storage_path)
+        memory.reload()
+        sessions = memory.list_sessions()
+        assert len(sessions) == 1
+        assert sessions[0].workflow_name == "quality_harness"
+        assert sessions[0].evaluation_report["total_score"] == 1
+        assert sessions[0].metadata["model"] == "qwen36"
+        assert sessions[0].metadata["notes"] == "unit test"
+
+    def test_persist_stores_comparison_record(self, tmp_path: Path) -> None:
+        payload = {
+            "context": [_result("a", hits=["f1", "f2"], prompt_tokens=150)],
+            "no_context": [_result("a", hits=["f1"], misses=["f2"], prompt_tokens=50)],
+        }
+        run_path = _write(tmp_path, "cmp.json", payload)
+        storage_path = str(tmp_path / "memory.json")
+
+        exit_code = main(
+            [run_path, "--persist", "--model", "qwen36", "--storage-path", storage_path]
+        )
+
+        assert exit_code == 0
+        memory = EngineeringMemory(storage_path=storage_path)
+        memory.reload()
+        sessions = memory.list_sessions()
+        assert len(sessions) == 1
+        assert sessions[0].workflow_name == "quality_harness_compare"
+        assert sessions[0].evaluation_report["total_score_delta"] == 1
+
+    def test_persist_preserves_existing_records(self, tmp_path: Path) -> None:
+        storage_path = str(tmp_path / "memory.json")
+        first_payload = [_result("first", hits=["f1"])]
+        second_payload = [_result("second", hits=["f2"])]
+        first_path = _write(tmp_path, "first.json", first_payload)
+        second_path = _write(tmp_path, "second.json", second_payload)
+
+        first_exit = main(
+            [first_path, "--persist", "--model", "qwen36", "--storage-path", storage_path]
+        )
+        second_exit = main(
+            [second_path, "--persist", "--model", "qwen36", "--storage-path", storage_path]
+        )
+
+        assert first_exit == 0
+        assert second_exit == 0
+        memory = EngineeringMemory(storage_path=storage_path)
+        memory.reload()
+        sessions = memory.list_sessions()
+        assert len(sessions) == 2
+        assert [session.evaluation_report["probes"][0]["id"] for session in sessions] == [
+            "first",
+            "second",
+        ]
+
+    def test_without_persist_flag_nothing_is_stored(self, tmp_path: Path) -> None:
+        payload = [_result("a", hits=["f1"])]
+        run_path = _write(tmp_path, "run.json", payload)
+        storage_path = tmp_path / "memory.json"
+
+        main([run_path])
+
+        assert not storage_path.exists()
