@@ -91,6 +91,13 @@ from packages.observability.models import (
     VerificationTelemetry,
     WorkflowTelemetry,
 )
+from packages.observability.quality_history import (
+    QualityHistorySummary,
+    RecentMissingFacts,
+    WorkflowQualitySummary,
+    load_quality_history,
+    summarize_quality_history,
+)
 from packages.observability.registry import (
     EventRegistry,
     MetricRegistry,
@@ -117,6 +124,12 @@ __all__ = [
     # Metrics
     "MetricAggregator",
     "MetricRecord",
+    # Quality history
+    "QualityHistorySummary",
+    "RecentMissingFacts",
+    "WorkflowQualitySummary",
+    "load_quality_history",
+    "summarize_quality_history",
     # Registry
     "EventRegistry",
     "MetricRegistry",

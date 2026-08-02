@@ -37,7 +37,7 @@ Approximate footprint:
 | `packages.evaluation` | 6 (+1 new) | 6 (+2 new) | 1.6k | `quality_harness_report.py` slice activated; `evaluator.py`/`registry.py` still dormant. |
 | `packages.session` | 6 | 6 | 1.1k | Engineering session lifecycle/registry. |
 | `packages.engineering_memory` | 4 (+1 new) | 4 (+1 new) | 1.1k | `quality_harness_records.py` slice activated for quality-harness/comparison persistence. |
-| `packages.observability` | 7 | 9 | 2.1k | Telemetry/event/tracing models. |
+| `packages.observability` | 7 (+1 new) | 9 (+1 new) | 2.1k | `quality_history.py` slice activated; telemetry/event/tracing stack remains dormant. |
 | `packages.modification` | 6 | 6 | 1.5k | Code modification engine. |
 | `packages.patches` | 5 | 5 | 1.5k | Patch model/generation scaffolding. |
 | `packages.bootstrap` | 6 | 6 | 2.6k | Dependency container/platform bootstrap. |
@@ -104,14 +104,20 @@ First useful slice activated:
 
 Avoid semantic memory until the deterministic history is useful.
 
-### 3. Observability
+### 3. Observability — DONE (first slice)
 
-Potentially useful, but only selectively.
+First useful slice activated:
 
-First useful slice:
+- `packages/observability/quality_history.py` — read-only summaries of
+  persisted quality-harness `EngineeringMemory` records. Reports run counts,
+  latest run per workflow, best/worst/average score ratio, average prompt
+  tokens, latest context score delta, and recent missing facts by probe id.
+- `scripts/quality_history.py` — optional CLI for table or JSON output.
+- Does not add a dashboard, external dependency, gateway runtime hook, or
+  replacement for existing session JSONL logs.
 
-- Reuse event/metric models if they improve session analysis.
-- Do not replace JSONL session logs yet; they are simple and already live.
+Keep the broader telemetry/event/tracing stack dormant until the stored
+quality summaries prove useful.
 
 ## Hold For Later
 

@@ -54,7 +54,7 @@ Use these to confirm code is correct before any live run. Fast, repeatable, no n
 .\uv run python scripts\check_fixes.py
 .\uv run python scripts\bench_context.py
 .\uv run python scripts\quality_harness.py
-.\uv run python -m pytest tests\evaluation tests\scripts tests\engineering_memory -q
+.\uv run python -m pytest tests\evaluation tests\scripts tests\engineering_memory tests\observability\test_quality_harness.py tests\observability\test_quality_history.py -q
 ```
 
 Baseline: the full suite has a known failure count (all in unreachable dead-code packages). A clean
@@ -112,6 +112,13 @@ store the evaluation as a deterministic `EngineeringSessionRecord` via
 
 Records land in `data/engineering_memory/memory_v1.json` by default (override
 with `--storage-path`).
+
+Read persisted quality-harness history with:
+
+```powershell
+.\uv run python scripts\quality_history.py
+.\uv run python scripts\quality_history.py --json
+```
 
 Add `--quality-run [--quality-run-path <file>]` instead to get a flat
 `QualityRun` summary (run_id, model, mode, totals, per-probe rows with

@@ -143,6 +143,11 @@ Builds the provider payload from `NormalizedRequest`, swaps `model` to
   a flat, storage-agnostic run summary (run_id, model, mode, totals, per-probe
   rows with context-delta fields when in `--compare-context` mode). Optional;
   does not replace `EngineeringMemory` and has no persistence of its own.
+- `packages.observability.quality_history` (`summarize_quality_history`,
+  `load_quality_history`) via `scripts/quality_history.py` — read-only summary
+  of persisted quality-harness `EngineeringMemory` records: run counts,
+  workflow aggregates, latest context score delta, prompt-token averages, and
+  recent missing facts.
 
 ## What Exists But Is Dormant
 
@@ -164,7 +169,9 @@ later:
   the quality harness; `evaluator.py`/`registry.py`/`WorkflowEvaluator` remain
   dormant, still bound to the unactivated workflow stack
 - `packages.execution`
-- `packages.observability`
+- `packages.observability` — except `quality_history.py`, activated as a
+  read-only quality-harness history summary; the telemetry/event/tracing stack
+  remains dormant
 - `packages.architecture`
 - `packages.benchmark`
 - `packages.engineering_memory` — except `quality_harness_records.py`,
@@ -180,7 +187,7 @@ Approximate dormant-package footprint as of 2026-08-01:
 |---|---:|---:|---:|---|
 | `packages.evaluation` | 6 | 6 | 1.6k | `quality_harness_report.py` slice activated; `evaluator.py`/`registry.py` still dormant. |
 | `packages.engineering_memory` | 4 | 4 | 1.1k | `quality_harness_records.py` slice activated; the rest still dormant. |
-| `packages.observability` | 7 | 9 | 2.1k | Useful selectively; avoid replacing current session logs too early. |
+| `packages.observability` | 7 | 9 | 2.1k | `quality_history.py` slice activated; telemetry/tracing stack still dormant. |
 | `packages.capabilities` | 12 | 11 | 3.1k | Useful design source, but overlaps current planning/context path. |
 | `packages.tasks` / `workflows` | 27 | 17 | 4.8k | Keep dormant until an execution loop is product-proven. |
 | Controller/execution/verification stack | 29 | 28 | 7.0k | Large future stack; not on the gateway hot path. |
