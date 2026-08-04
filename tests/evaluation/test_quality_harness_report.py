@@ -28,6 +28,7 @@ def _result(
     misses: tuple[str, ...] = (),
     prompt_tokens: int = 0,
     seconds: float = 0.0,
+    style_violations: tuple[str, ...] = (),
     error: str = "",
 ) -> dict:
     """Build a dict matching scripts/quality_harness.py's QualityResult.__dict__."""
@@ -42,6 +43,7 @@ def _result(
         "seconds": seconds,
         "hits": list(hits),
         "misses": list(misses),
+        "style_violations": list(style_violations),
         "error": error,
         "metadata": {},
     }
@@ -71,6 +73,29 @@ class TestEvaluateResults:
         assert report.probes[0].prompt_tokens == 321
         assert report.probes[0].seconds == 4.5
 
+    def test_style_violations_pass_through_and_are_counted(self) -> None:
+        results = [
+            _result("a", style_violations=("reasoning_preamble",)),
+            _result("b"),
+        ]
+
+        report = evaluate_results(results)
+
+        assert report.probes[0].style_violations == ("reasoning_preamble",)
+        assert report.probes[0].style_ok is False
+        assert report.probes[1].style_ok is True
+        assert report.style_ok_count == 1
+        assert report.total_style_violations == 1
+
+    def test_missing_style_violations_field_is_backwards_compatible(self) -> None:
+        result = _result("a")
+        del result["style_violations"]
+
+        report = evaluate_results([result])
+
+        assert report.probes[0].style_violations == ()
+        assert report.style_ok_count == 1
+
     def test_error_result_has_zero_score_and_carries_error(self) -> None:
         results = [_result("a", error="TimeoutError: boom")]
 
@@ -92,6 +117,8 @@ class TestEvaluateResults:
         assert report.total_maximum == 4
         assert report.total_prompt_tokens == 150
         assert report.total_seconds == 3.5
+        assert report.style_ok_count == 2
+        assert report.total_style_violations == 0
 
     def test_empty_input_produces_zeroed_report(self) -> None:
         report = evaluate_results([])
@@ -178,6 +205,7 @@ class TestImmutability:
             score=1,
             maximum=2,
             missing_facts=("f2",),
+            style_violations=(),
             prompt_tokens=10,
             seconds=1.0,
             error="",

@@ -7,6 +7,7 @@ from scripts.quality_harness import (
     QualityProbe,
     QualityResult,
     build_payload,
+    detect_style_violations,
     extract_answer,
     fact,
     print_comparison_table,
@@ -57,6 +58,27 @@ def test_score_answer_accepts_fact_aliases() -> None:
 
     assert hits == ("apps/gateway/session_log.py",)
     assert misses == ()
+
+
+def test_detect_style_violations_finds_reasoning_preamble() -> None:
+    """Answers that start with internal reasoning should be flagged."""
+    answer = "I need to inspect the code. The file is apps/gateway/session_log.py."
+
+    assert detect_style_violations(answer) == ("reasoning_preamble",)
+
+
+def test_detect_style_violations_finds_tool_chatter() -> None:
+    """Tool/thinking markers should be flagged anywhere in the answer."""
+    answer = "The answer is below.\n<thinking>I should inspect files.</thinking>"
+
+    assert detect_style_violations(answer) == ("tool_chatter",)
+
+
+def test_detect_style_violations_ignores_clean_fact_answer() -> None:
+    """A concise repository-fact answer should not be penalized."""
+    answer = "apps/gateway/session_log.py, _extract_answer_preview"
+
+    assert detect_style_violations(answer) == ()
 
 
 def test_extract_answer_reads_openai_shape() -> None:

@@ -57,6 +57,8 @@ class ProbeEvaluation:
         score: Number of expected facts found (`len(hits)`).
         maximum: Total number of expected facts (`len(hits) + len(misses)`).
         missing_facts: Expected fact labels not found in the answer.
+        style_violations: Deterministic answer-style violations detected by
+            the harness, such as reasoning preambles or tool chatter.
         prompt_tokens: Prompt token cost reported by the gateway.
         seconds: Wall-clock latency of the probe request.
         error: Non-empty if the probe request failed.
@@ -67,9 +69,15 @@ class ProbeEvaluation:
     score: int
     maximum: int
     missing_facts: tuple[str, ...]
+    style_violations: tuple[str, ...]
     prompt_tokens: int
     seconds: float
     error: str
+
+    @property
+    def style_ok(self) -> bool:
+        """Return whether this probe has no style violations."""
+        return not self.style_violations
 
 
 # ---------------------------------------------------------------------------
@@ -87,6 +95,8 @@ class QualityHarnessReport:
         total_maximum: Sum of `ProbeEvaluation.maximum` across all probes.
         total_prompt_tokens: Sum of `ProbeEvaluation.prompt_tokens`.
         total_seconds: Sum of `ProbeEvaluation.seconds`.
+        style_ok_count: Number of probes without style violations.
+        total_style_violations: Total style-violation count across probes.
     """
 
     probes: tuple[ProbeEvaluation, ...]
@@ -94,6 +104,8 @@ class QualityHarnessReport:
     total_maximum: int
     total_prompt_tokens: int
     total_seconds: float
+    style_ok_count: int
+    total_style_violations: int
 
 
 # ---------------------------------------------------------------------------
@@ -139,12 +151,14 @@ def _evaluate_probe(result: dict[str, Any]) -> ProbeEvaluation:
     """Evaluate one quality-harness result dict."""
     hits = result.get("hits") or ()
     misses = result.get("misses") or ()
+    style_violations = result.get("style_violations") or ()
     return ProbeEvaluation(
         id=result["id"],
         intent=result.get("intent", ""),
         score=len(hits),
         maximum=len(hits) + len(misses),
         missing_facts=tuple(misses),
+        style_violations=tuple(style_violations),
         prompt_tokens=int(result.get("prompt_tokens", 0) or 0),
         seconds=float(result.get("seconds", 0.0) or 0.0),
         error=result.get("error", ""),
@@ -168,6 +182,8 @@ def evaluate_results(results: list[dict[str, Any]]) -> QualityHarnessReport:
         total_maximum=sum(probe.maximum for probe in probes),
         total_prompt_tokens=sum(probe.prompt_tokens for probe in probes),
         total_seconds=sum(probe.seconds for probe in probes),
+        style_ok_count=sum(1 for probe in probes if probe.style_ok),
+        total_style_violations=sum(len(probe.style_violations) for probe in probes),
     )
 
 

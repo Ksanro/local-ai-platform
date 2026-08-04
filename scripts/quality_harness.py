@@ -33,6 +33,25 @@ QUALITY_SYSTEM_PROMPT = (
     "Answer only with the requested repository facts. "
     "Do not include reasoning, analysis, or step-by-step text."
 )
+REASONING_PREAMBLE_PREFIXES: tuple[str, ...] = (
+    "i need to",
+    "i will",
+    "i'll",
+    "let me",
+    "i'm going to",
+    "the user",
+    "we need to",
+    "first,",
+)
+TOOL_CHATTER_MARKERS: tuple[str, ...] = (
+    "<thinking>",
+    "</thinking>",
+    "<read_file>",
+    "<search_files>",
+    "<list_files>",
+    "<execute_command>",
+    "<attempt_completion>",
+)
 
 
 @dataclass(frozen=True)
@@ -72,6 +91,7 @@ class QualityResult:
     seconds: float = 0.0
     hits: tuple[str, ...] = ()
     misses: tuple[str, ...] = ()
+    style_violations: tuple[str, ...] = ()
     error: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -84,6 +104,11 @@ class QualityResult:
     def maximum(self) -> int:
         """Return maximum possible score for this result."""
         return len(self.hits) + len(self.misses)
+
+    @property
+    def style_ok(self) -> bool:
+        """Return whether the answer avoided known reasoning/tool preambles."""
+        return not self.style_violations
 
 
 PROBES: tuple[QualityProbe, ...] = (
@@ -198,6 +223,25 @@ def score_answer(
     return tuple(hits), tuple(misses)
 
 
+def detect_style_violations(answer: str) -> tuple[str, ...]:
+    """Detect deterministic answer-style violations.
+
+    This intentionally checks only high-confidence cases: reasoning preambles
+    at the start of the answer, and explicit tool/thinking markers anywhere in
+    the answer. It is not a language model and does not try to grade prose.
+    """
+    normalized_answer = answer.strip().lower()
+    violations: list[str] = []
+    if any(
+        normalized_answer.startswith(prefix)
+        for prefix in REASONING_PREAMBLE_PREFIXES
+    ):
+        violations.append("reasoning_preamble")
+    if any(marker in normalized_answer for marker in TOOL_CHATTER_MARKERS):
+        violations.append("tool_chatter")
+    return tuple(violations)
+
+
 def extract_answer(payload: dict[str, Any]) -> tuple[str, dict[str, int]]:
     """Extract assistant text and usage counts from an OpenAI-shaped response."""
     text = ""
@@ -294,6 +338,7 @@ def run_probe(
     result.completion_tokens = usage["completion_tokens"]
     result.total_tokens = usage["total_tokens"]
     result.hits, result.misses = score_answer(result.answer, probe.expect)
+    result.style_violations = detect_style_violations(result.answer)
     return result
 
 
@@ -301,7 +346,7 @@ def print_table(results: list[QualityResult]) -> None:
     """Print a compact quality table."""
     print("\n" + "=" * 100)
     print(
-        f"{'id':<28}{'intent':<11}{'score':>8}{'ptok':>9}"
+        f"{'id':<28}{'intent':<11}{'score':>8}{'style':>8}{'ptok':>9}"
         f"{'ctok':>8}{'sec':>8}  misses"
     )
     print("-" * 100)
@@ -311,12 +356,14 @@ def print_table(results: list[QualityResult]) -> None:
         total_score += result.score
         total_max += result.maximum
         score = f"{result.score}/{result.maximum}"
+        style = "ok" if result.style_ok else "bad"
         misses = ", ".join(result.misses) if result.misses else "-"
         if result.error:
             misses = result.error
         print(
-            f"{result.id:<28}{result.intent:<11}{score:>8}{result.prompt_tokens:>9}"
-            f"{result.completion_tokens:>8}{result.seconds:>8.1f}  {misses[:40]}"
+            f"{result.id:<28}{result.intent:<11}{score:>8}{style:>8}"
+            f"{result.prompt_tokens:>9}{result.completion_tokens:>8}"
+            f"{result.seconds:>8.1f}  {misses[:40]}"
         )
     print("-" * 100)
     print(f"{'TOTAL':<39}{f'{total_score}/{total_max}':>8}")

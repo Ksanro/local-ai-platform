@@ -70,20 +70,22 @@ def _read_payload(path: str) -> object:
 def _print_single_report(report: QualityHarnessReport) -> None:
     """Print a compact table for a single-run evaluation."""
     print("\n" + "=" * 90)
-    print(f"{'id':<28}{'score':>8}{'ptok':>9}{'sec':>8}  missing")
+    print(f"{'id':<28}{'score':>8}{'style':>8}{'ptok':>9}{'sec':>8}  missing")
     print("-" * 90)
     for probe in report.probes:
         score = f"{probe.score}/{probe.maximum}"
+        style = "ok" if probe.style_ok else "bad"
         missing = ", ".join(probe.missing_facts) if probe.missing_facts else "-"
         if probe.error:
             missing = probe.error
         print(
-            f"{probe.id:<28}{score:>8}{probe.prompt_tokens:>9}"
+            f"{probe.id:<28}{score:>8}{style:>8}{probe.prompt_tokens:>9}"
             f"{probe.seconds:>8.1f}  {missing[:40]}"
         )
     print("-" * 90)
     print(
         f"{'TOTAL':<28}{f'{report.total_score}/{report.total_maximum}':>8}"
+        f"{report.style_ok_count:>4}/{len(report.probes):<3}"
         f"{report.total_prompt_tokens:>9}{report.total_seconds:>8.1f}"
     )
     print("=" * 90)

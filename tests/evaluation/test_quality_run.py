@@ -61,7 +61,16 @@ class TestBuildQualityRun:
 
     def test_probe_row_fields_carried_through(self) -> None:
         report = evaluate_results(
-            [_result("a", hits=["f1"], misses=["f2"], prompt_tokens=100, seconds=1.5)]
+            [
+                _result(
+                    "a",
+                    hits=["f1"],
+                    misses=["f2"],
+                    prompt_tokens=100,
+                    seconds=1.5,
+                    style_violations=["reasoning_preamble"],
+                )
+            ]
         )
 
         run = build_quality_run(report, model="qwen36")
@@ -72,9 +81,12 @@ class TestBuildQualityRun:
         assert probe.score == 1
         assert probe.maximum == 2
         assert probe.missing_facts == ("f2",)
+        assert probe.style_violations == ("reasoning_preamble",)
         assert probe.prompt_tokens == 100
         assert probe.seconds == 1.5
         assert probe.error == ""
+        assert run.style_ok_count == 0
+        assert run.total_style_violations == 1
 
     def test_context_delta_fields_are_none_in_single_mode(self) -> None:
         report = evaluate_results([_result("a", hits=["f1"])])
@@ -177,6 +189,7 @@ class TestImmutability:
             score=1,
             maximum=2,
             missing_facts=("f2",),
+            style_violations=(),
             prompt_tokens=10,
             seconds=1.0,
             error="",

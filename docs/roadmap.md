@@ -47,9 +47,14 @@ The fixed probe set now proves repository context adds answer-quality signal
 (`15/15` with context versus `2/15` without context in the latest run).
 Next improvements:
 
-- add a style/compliance metric for unwanted reasoning preambles
 - add more probes for multi-turn Cline-like history
 - record compare runs to a small JSON/JSONL artifact for trend tracking
+
+Done in this area:
+
+- deterministic style/compliance signal for unwanted reasoning preambles and
+  tool/thinking chatter, carried through quality-harness JSON,
+  `evaluate_quality_harness.py`, and `QualityRun`
 
 ### 3. Repository Context Budgeting And Ranking
 

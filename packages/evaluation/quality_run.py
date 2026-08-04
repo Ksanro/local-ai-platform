@@ -60,6 +60,7 @@ class ProbeRun:
         score: Number of expected facts found.
         maximum: Total number of expected facts.
         missing_facts: Expected fact labels not found in the answer.
+        style_violations: Deterministic answer-style violations.
         prompt_tokens: Prompt token cost reported by the gateway.
         seconds: Wall-clock latency of the probe request.
         error: Non-empty if the probe request failed.
@@ -74,6 +75,7 @@ class ProbeRun:
     score: int
     maximum: int
     missing_facts: tuple[str, ...]
+    style_violations: tuple[str, ...]
     prompt_tokens: int
     seconds: float
     error: str
@@ -100,6 +102,8 @@ class QualityRun:
         total_maximum: Sum of per-probe maximums.
         total_prompt_tokens: Sum of per-probe prompt tokens.
         total_seconds: Sum of per-probe latencies.
+        style_ok_count: Number of probes without style violations.
+        total_style_violations: Total style-violation count across probes.
         probes: Per-probe rows, in input order.
     """
 
@@ -112,6 +116,8 @@ class QualityRun:
     total_maximum: int
     total_prompt_tokens: int
     total_seconds: float
+    style_ok_count: int
+    total_style_violations: int
     probes: tuple[ProbeRun, ...] = field(default_factory=tuple)
 
 
@@ -133,6 +139,7 @@ def _probe_run(
         score=probe.score,
         maximum=probe.maximum,
         missing_facts=probe.missing_facts,
+        style_violations=probe.style_violations,
         prompt_tokens=probe.prompt_tokens,
         seconds=probe.seconds,
         error=probe.error,
@@ -169,6 +176,8 @@ def build_quality_run(
         total_maximum=report.total_maximum,
         total_prompt_tokens=report.total_prompt_tokens,
         total_seconds=report.total_seconds,
+        style_ok_count=report.style_ok_count,
+        total_style_violations=report.total_style_violations,
         probes=tuple(_probe_run(probe) for probe in report.probes),
     )
 
@@ -222,5 +231,7 @@ def build_quality_run_from_comparison(
         total_maximum=comparison.with_context.total_maximum,
         total_prompt_tokens=comparison.with_context.total_prompt_tokens,
         total_seconds=comparison.with_context.total_seconds,
+        style_ok_count=comparison.with_context.style_ok_count,
+        total_style_violations=comparison.with_context.total_style_violations,
         probes=probes,
     )

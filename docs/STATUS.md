@@ -127,6 +127,8 @@ Builds the provider payload from `NormalizedRequest`, swaps `model` to
 - session log analyzer
 - live gateway quality harness
 - live Cline/vLLM A/B measurement protocol
+- quality-harness style/compliance signal for unwanted reasoning preambles and
+  tool/thinking chatter (`style_violations`, `style_ok`)
 - `packages.evaluation.quality_harness_report` (`evaluate_results`,
   `evaluate_comparison`) via `scripts/evaluate_quality_harness.py` — scores
   quality-harness `--json` output (score, missing facts, prompt tokens,
@@ -233,6 +235,7 @@ Recommended live-path checks:
 - Token estimates still use `CHARS_PER_TOKEN = 4.0`, not model-specific
   tokenizers.
 - The model often includes reasoning/preamble despite terse system prompts; the
-  quality harness scores required facts, not style compliance.
+  quality harness now records deterministic style violations separately from
+  required-fact score.
 - Only vLLM is implemented as a concrete provider; true multi-provider
   operation is not product-proven.

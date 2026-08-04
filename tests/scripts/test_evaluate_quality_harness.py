@@ -47,7 +47,14 @@ class TestSingleRun:
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         payload = [
-            _result("a", hits=["f1"], misses=["f2"], prompt_tokens=100, seconds=1.5),
+            _result(
+                "a",
+                hits=["f1"],
+                misses=["f2"],
+                prompt_tokens=100,
+                seconds=1.5,
+                style_violations=["reasoning_preamble"],
+            ),
             _result("b", hits=["f1", "f2"], prompt_tokens=50, seconds=0.5),
         ]
         path = _write(tmp_path, "run.json", payload)
@@ -60,7 +67,10 @@ class TestSingleRun:
         assert out["total_maximum"] == 4
         assert out["total_prompt_tokens"] == 150
         assert out["total_seconds"] == 2.0
+        assert out["style_ok_count"] == 1
+        assert out["total_style_violations"] == 1
         assert out["probes"][0]["missing_facts"] == ["f2"]
+        assert out["probes"][0]["style_violations"] == ["reasoning_preamble"]
 
     def test_table_output_contains_total_line(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -74,6 +84,7 @@ class TestSingleRun:
         assert exit_code == 0
         assert "TOTAL" in out
         assert "1/2" in out
+        assert "style" in out
 
     def test_reads_utf8_bom_json_file(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]

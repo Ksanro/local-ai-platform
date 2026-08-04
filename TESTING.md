@@ -91,10 +91,13 @@ Run deterministic answer-quality probes:
 Read the `TOTAL` line. `--compare-context` changes exactly one variable per
 probe: repository context on versus off through the same gateway/provider path.
 Recent baselines were `14-15/15` with context and `2/15` without context.
+The quality table also reports a separate style signal: `ok` means no known
+reasoning preamble or tool/thinking marker was detected, while `bad` means the
+answer still contained that chatter even if the required facts were present.
 
 Optionally, pipe `--json` output through `scripts\evaluate_quality_harness.py`
 to get a structured evaluation (score, missing facts, prompt-token cost,
-latency, and — in `--compare-context` mode — per-probe context delta) via
+latency, style violations, and — in `--compare-context` mode — per-probe context delta) via
 `packages.evaluation.quality_harness_report`:
 
 ```powershell
