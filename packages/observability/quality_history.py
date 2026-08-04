@@ -9,7 +9,7 @@ the repository, or replace gateway/session logs.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable
+from typing import Any, Iterable
 
 from packages.engineering_memory.memory import EngineeringMemory
 from packages.engineering_memory.models import EngineeringSessionRecord
@@ -64,18 +64,18 @@ class QualityHistorySummary:
     recent_missing_facts: tuple[RecentMissingFacts, ...]
 
 
-def _score_ratio(report: dict) -> float:
+def _score_ratio(report: dict[str, Any]) -> float:
     maximum = int(report.get("total_maximum", 0) or 0)
     if maximum <= 0:
         return 0.0
     return int(report.get("total_score", 0) or 0) / maximum
 
 
-def _prompt_tokens(report: dict) -> int:
+def _prompt_tokens(report: dict[str, Any]) -> int:
     return int(report.get("total_prompt_tokens", 0) or 0)
 
 
-def _base_report(record: EngineeringSessionRecord) -> dict:
+def _base_report(record: EngineeringSessionRecord) -> dict[str, Any]:
     report = record.evaluation_report
     if record.workflow_name == COMPARISON_WORKFLOW_NAME:
         with_context = report.get("with_context", {})
@@ -125,6 +125,8 @@ def _missing_facts(
             missing = probe.get("missing_facts", ())
             if not missing:
                 continue
+            if len(rows) >= limit:
+                return tuple(rows)
             rows.append(
                 RecentMissingFacts(
                     session_id=record.session_id,
@@ -134,8 +136,6 @@ def _missing_facts(
                     missing_facts=tuple(str(item) for item in missing),
                 )
             )
-            if len(rows) >= limit:
-                return tuple(rows)
     return tuple(rows)
 
 

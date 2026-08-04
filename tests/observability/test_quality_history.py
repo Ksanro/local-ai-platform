@@ -214,6 +214,21 @@ class TestSummarizeQualityHistory:
         assert summary.recent_missing_facts[0].probe_id == "new-probe"
         assert summary.recent_missing_facts[0].missing_facts == ("new-missing",)
 
+    def test_missing_fact_limit_zero_returns_no_rows(self) -> None:
+        records = [
+            _single_record(
+                "only",
+                hits=[],
+                misses=["some-missing"],
+                prompt_tokens=100,
+                completed_at="2026-08-02T10:00:00+00:00",
+            ),
+        ]
+
+        summary = summarize_quality_history(records, missing_fact_limit=0)
+
+        assert summary.recent_missing_facts == ()
+
     def test_empty_history_is_zeroed(self) -> None:
         summary = summarize_quality_history([])
 
