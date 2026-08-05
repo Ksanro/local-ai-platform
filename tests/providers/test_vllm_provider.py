@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 import sys
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
@@ -241,6 +242,87 @@ class TestVLLMProviderChat:
         assert result["choices"][0]["message"]["content"] == "Hello!"
 
     @pytest.mark.asyncio
+    async def test_chat_strips_leading_empty_think_block(
+        self,
+        mock_httpx_client: AsyncMock,
+    ) -> None:
+        """Non-streaming chat strips an empty leading think block."""
+        client_instance = mock_httpx_client
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "<think>\n\n</think>\n\nHello!",
+                    }
+                }
+            ]
+        }
+        mock_response.raise_for_status = MagicMock()
+        client_instance.post = AsyncMock(return_value=mock_response)  # noqa: SIM103
+
+        from packages.providers.vllm import VLLMProvider
+
+        provider = VLLMProvider()
+        result = await provider.chat(
+            model="test",
+            messages=[{"role": "user", "content": "Hi"}],
+        )
+
+        assert result["choices"][0]["message"]["content"] == "Hello!"
+
+    @pytest.mark.asyncio
+    async def test_chat_preserves_nonempty_think_block(
+        self,
+        mock_httpx_client: AsyncMock,
+    ) -> None:
+        """Non-streaming chat preserves non-empty leading think blocks."""
+        client_instance = mock_httpx_client
+        content = "<think>real reasoning</think>Final"
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "choices": [{"message": {"role": "assistant", "content": content}}]
+        }
+        mock_response.raise_for_status = MagicMock()
+        client_instance.post = AsyncMock(return_value=mock_response)  # noqa: SIM103
+
+        from packages.providers.vllm import VLLMProvider
+
+        provider = VLLMProvider()
+        result = await provider.chat(
+            model="test",
+            messages=[{"role": "user", "content": "Hi"}],
+        )
+
+        assert result["choices"][0]["message"]["content"] == content
+
+    @pytest.mark.asyncio
+    async def test_chat_preserves_mid_answer_think_block(
+        self,
+        mock_httpx_client: AsyncMock,
+    ) -> None:
+        """Non-streaming chat preserves think blocks that are not leading."""
+        client_instance = mock_httpx_client
+        content = "Answer <think></think>"
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "choices": [{"message": {"role": "assistant", "content": content}}]
+        }
+        mock_response.raise_for_status = MagicMock()
+        client_instance.post = AsyncMock(return_value=mock_response)  # noqa: SIM103
+
+        from packages.providers.vllm import VLLMProvider
+
+        provider = VLLMProvider()
+        result = await provider.chat(
+            model="test",
+            messages=[{"role": "user", "content": "Hi"}],
+        )
+
+        assert result["choices"][0]["message"]["content"] == content
+
+    @pytest.mark.asyncio
     async def test_chat_forwards_payload_unchanged(self, mock_httpx_client: AsyncMock) -> None:
         """Test that chat payload is forwarded unchanged."""
         client_instance = mock_httpx_client
@@ -332,6 +414,45 @@ class TestVLLMProviderChat:
 
 class TestVLLMProviderStreaming:
     """Test vLLM provider streaming."""
+
+    async def _stream_events(
+        self,
+        mock_httpx_client: AsyncMock,
+        lines: list[str],
+    ) -> list[str]:
+        """Run a mocked streaming call and return emitted SSE events."""
+        client_instance = mock_httpx_client
+
+        async def mock_aiter_lines() -> AsyncGenerator[str, None]:
+            for line in lines:
+                yield line
+
+        mock_response = MagicMock()
+        mock_response.__aenter__ = AsyncMock(return_value=mock_response)
+        mock_response.__aexit__ = AsyncMock(return_value=None)
+        mock_response.raise_for_status = MagicMock()
+        mock_response.aiter_lines = Mock(side_effect=mock_aiter_lines)  # noqa: SIM103
+        client_instance.stream = Mock(return_value=mock_response)  # noqa: F821
+
+        from packages.providers.vllm import VLLMProvider
+
+        provider = VLLMProvider()
+        result = await provider.chat(
+            model="test",
+            messages=[{"role": "user", "content": "Hi"}],
+            stream=True,
+        )
+
+        events: list[str] = []
+        async for event in result["generator"]():
+            events.append(event)
+        return events
+
+    def _event_content(self, event: str) -> str:
+        """Extract first delta content from one emitted SSE event."""
+        data = event.removeprefix("data: ").strip()
+        parsed = json.loads(data)
+        return parsed["choices"][0]["delta"]["content"]
 
     @pytest.mark.asyncio
     async def test_streaming_returns_generator(self, mock_httpx_client: AsyncMock) -> None:
@@ -442,6 +563,126 @@ class TestVLLMProviderStreaming:
 
         error_found = any('"error"' in event for event in events)
         assert error_found is True
+
+    @pytest.mark.asyncio
+    async def test_streaming_strips_leading_empty_think_block_one_delta(
+        self,
+        mock_httpx_client: AsyncMock,
+    ) -> None:
+        """Streaming strips a leading empty think block from one delta."""
+        events = await self._stream_events(
+            mock_httpx_client,
+            [
+                (
+                    'data: {"choices":[{"delta":{"content":'
+                    '"<think>\\n\\n</think>\\n\\nHello"}}]}'
+                ),
+                "data: [DONE]",
+            ],
+        )
+
+        assert self._event_content(events[0]) == "Hello"
+        assert events[-1] == "data: [DONE]\n\n"
+
+    @pytest.mark.asyncio
+    async def test_streaming_strips_data_prefix_without_space(
+        self,
+        mock_httpx_client: AsyncMock,
+    ) -> None:
+        """Streaming accepts SSE data prefix with no following space."""
+        events = await self._stream_events(
+            mock_httpx_client,
+            [
+                (
+                    'data:{"choices":[{"delta":{"content":'
+                    '"<think>\\n\\n</think>\\n\\nHello"}}]}'
+                ),
+                "data:[DONE]",
+            ],
+        )
+
+        assert self._event_content(events[0]) == "Hello"
+        assert events[-1] == "data: [DONE]\n\n"
+
+    @pytest.mark.asyncio
+    async def test_streaming_strips_leading_empty_think_block_split_deltas(
+        self,
+        mock_httpx_client: AsyncMock,
+    ) -> None:
+        """Streaming strips an empty think block split across initial deltas."""
+        events = await self._stream_events(
+            mock_httpx_client,
+            [
+                'data: {"choices":[{"delta":{"content":"<think>\\n"}}]}',
+                'data: {"choices":[{"delta":{"content":"\\n</think>\\n\\nHel"}}]}',
+                'data: {"choices":[{"delta":{"content":"lo"}}]}',
+                "data: [DONE]",
+            ],
+        )
+
+        assert self._event_content(events[0]) == "Hel"
+        assert self._event_content(events[1]) == ""
+        assert self._event_content(events[2]) == "lo"
+        assert events[-1] == "data: [DONE]\n\n"
+
+    @pytest.mark.asyncio
+    async def test_streaming_preserves_nonempty_think_block(
+        self,
+        mock_httpx_client: AsyncMock,
+    ) -> None:
+        """Streaming preserves non-empty leading think blocks."""
+        events = await self._stream_events(
+            mock_httpx_client,
+            [
+                'data: {"choices":[{"delta":{"content":"<think>real"}}]}',
+                'data: {"choices":[{"delta":{"content":" reasoning</think>Final"}}]}',
+                "data: [DONE]",
+            ],
+        )
+
+        assert self._event_content(events[0]) == "<think>real"
+        assert self._event_content(events[1]) == " reasoning</think>Final"
+        assert events[-1] == "data: [DONE]\n\n"
+
+    @pytest.mark.asyncio
+    async def test_streaming_preserves_mid_answer_think_block(
+        self,
+        mock_httpx_client: AsyncMock,
+    ) -> None:
+        """Streaming preserves think blocks that are not leading."""
+        events = await self._stream_events(
+            mock_httpx_client,
+            [
+                'data: {"choices":[{"delta":{"content":"Answer <think></think>"}}]}',
+                "data: [DONE]",
+            ],
+        )
+
+        assert self._event_content(events[0]) == "Answer <think></think>"
+        assert events[-1] == "data: [DONE]\n\n"
+
+    @pytest.mark.asyncio
+    async def test_streaming_forwards_role_only_delta_before_sanitizing(
+        self,
+        mock_httpx_client: AsyncMock,
+    ) -> None:
+        """Streaming forwards non-content deltas and still strips later prefix."""
+        events = await self._stream_events(
+            mock_httpx_client,
+            [
+                'data: {"choices":[{"delta":{"role":"assistant"}}]}',
+                (
+                    'data: {"choices":[{"delta":{"content":'
+                    '"<think>\\n\\n</think>\\n\\nHello"}}]}'
+                ),
+                "data: [DONE]",
+            ],
+        )
+
+        first = json.loads(events[0].removeprefix("data: ").strip())
+        assert first["choices"][0]["delta"] == {"role": "assistant"}
+        assert self._event_content(events[1]) == "Hello"
+        assert events[-1] == "data: [DONE]\n\n"
 
 
 class TestVLLMProviderClose:

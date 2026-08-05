@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+import re
 from typing import Any, AsyncIterator
 
 import httpx
@@ -17,6 +18,9 @@ from packages.providers.exceptions import (
 from packages.providers.registry import register
 
 logger = logging.getLogger(__name__)
+
+EMPTY_THINK_BLOCK_RE = re.compile(r"^<think>\s*</think>\s*")
+THINK_BLOCK_DECISION_CHARS = len("<think></think>") + 64
 
 
 def _get_vllm_config(
@@ -100,6 +104,99 @@ def _resolve_config_value(key: str, default: Any) -> Any:
             return env_value.lower() in ("true", "1", "yes")
         return env_value
     return default
+
+
+def _strip_leading_empty_think_block(content: str) -> str:
+    """Remove an empty leading think block from assistant-visible content."""
+    return EMPTY_THINK_BLOCK_RE.sub("", content, count=1)
+
+
+def _sanitize_chat_response(result: dict[str, Any]) -> dict[str, Any]:
+    """Normalize provider response content before returning to clients."""
+    for choice in result.get("choices", []):
+        if not isinstance(choice, dict):
+            continue
+        message = choice.get("message")
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        if isinstance(content, str):
+            message["content"] = _strip_leading_empty_think_block(content)
+    return result
+
+
+def _sanitize_stream_chunk(chunk: dict[str, Any], content: str) -> dict[str, Any]:
+    """Return a copy of a stream chunk with a replacement delta content."""
+    sanitized = dict(chunk)
+    choices: list[Any] = []
+    replaced = False
+    for choice in chunk.get("choices", []):
+        if not isinstance(choice, dict):
+            choices.append(choice)
+            continue
+        new_choice = dict(choice)
+        delta = choice.get("delta")
+        if isinstance(delta, dict) and not replaced:
+            new_delta = dict(delta)
+            new_delta["content"] = content
+            new_choice["delta"] = new_delta
+            replaced = True
+        choices.append(new_choice)
+    sanitized["choices"] = choices
+    return sanitized
+
+
+def _sanitize_pending_stream_chunks(
+    chunks: list[dict[str, Any]],
+    content: str,
+) -> list[dict[str, Any]]:
+    """Preserve buffered SSE chunks while replacing their combined content."""
+    sanitized: list[dict[str, Any]] = []
+    replaced = False
+    for chunk in chunks:
+        chunk_content = _stream_chunk_content(chunk)
+        if chunk_content is None:
+            sanitized.append(chunk)
+        elif replaced:
+            sanitized.append(_sanitize_stream_chunk(chunk, ""))
+        else:
+            sanitized.append(_sanitize_stream_chunk(chunk, content))
+            replaced = True
+    return sanitized
+
+
+def _stream_chunk_content(chunk: dict[str, Any]) -> str | None:
+    """Extract the first string delta content from a stream chunk."""
+    for choice in chunk.get("choices", []):
+        if not isinstance(choice, dict):
+            continue
+        delta = choice.get("delta")
+        if not isinstance(delta, dict):
+            continue
+        content = delta.get("content")
+        if isinstance(content, str):
+            return content
+    return None
+
+
+def _has_nonempty_leading_think_block(text: str) -> bool:
+    """Return whether text starts with a non-empty complete think block."""
+    closing = "</think>"
+    if not text.startswith("<think>") or closing not in text:
+        return False
+    inner = text[len("<think>"):text.index(closing)]
+    return bool(inner.strip())
+
+
+def _should_decide_stream_prefix(buffer: str) -> bool:
+    """Return whether enough streamed text has arrived to sanitize or flush."""
+    if EMPTY_THINK_BLOCK_RE.match(buffer):
+        return True
+    if _has_nonempty_leading_think_block(buffer):
+        return True
+    if not "<think>".startswith(buffer) and not buffer.startswith("<think>"):
+        return True
+    return len(buffer) >= THINK_BLOCK_DECISION_CHARS
 
 
 class VLLMProvider(Provider):
@@ -215,7 +312,7 @@ class VLLMProvider(Provider):
                 response = await client.post("/chat/completions", json=kwargs)
                 response.raise_for_status()
                 result: dict[str, Any] = response.json()
-                return result
+                return _sanitize_chat_response(result)
         except httpx.HTTPStatusError as exc:
             status_code = exc.response.status_code
             if status_code == 401:
@@ -242,6 +339,19 @@ class VLLMProvider(Provider):
 
         async def event_generator() -> AsyncIterator[str]:
             """Generate SSE events from the streaming response."""
+            pending_chunks: list[dict[str, Any]] = []
+            pending_text = ""
+            prefix_decided = False
+
+            def flush_pending() -> list[str]:
+                nonlocal pending_chunks
+                events = [
+                    f"data: {self._json_encode(chunk)}\n\n"
+                    for chunk in pending_chunks
+                ]
+                pending_chunks = []
+                return events
+
             try:
                 async with client.stream(
                     "POST",
@@ -251,10 +361,54 @@ class VLLMProvider(Provider):
                     response.raise_for_status()
                     async for line in response.aiter_lines():
                         if line:
-                            if line.startswith("data: "):
-                                yield line + "\n\n"
-                            elif line.strip():
-                                yield f"data: {line}\n\n"
+                            data = (
+                                line.removeprefix("data:").strip()
+                                if line.startswith("data:")
+                                else line.strip()
+                            )
+                            if data == "[DONE]":
+                                for event in flush_pending():
+                                    yield event
+                                yield "data: [DONE]\n\n"
+                                continue
+                            try:
+                                parsed = json.loads(data)
+                            except json.JSONDecodeError:
+                                for event in flush_pending():
+                                    yield event
+                                yield f"data: {data}\n\n"
+                                continue
+                            if not isinstance(parsed, dict):
+                                for event in flush_pending():
+                                    yield event
+                                yield f"data: {data}\n\n"
+                                continue
+                            content = _stream_chunk_content(parsed)
+                            if prefix_decided or content is None:
+                                yield f"data: {self._json_encode(parsed)}\n\n"
+                                continue
+
+                            pending_chunks.append(parsed)
+                            pending_text += content
+                            if not _should_decide_stream_prefix(pending_text):
+                                continue
+
+                            sanitized = _strip_leading_empty_think_block(
+                                pending_text
+                            )
+                            if sanitized != pending_text:
+                                for chunk in _sanitize_pending_stream_chunks(
+                                    pending_chunks,
+                                    sanitized,
+                                ):
+                                    yield f"data: {self._json_encode(chunk)}\n\n"
+                                pending_chunks = []
+                            else:
+                                for event in flush_pending():
+                                    yield event
+                            prefix_decided = True
+                    for event in flush_pending():
+                        yield event
             except httpx.HTTPStatusError as exc:
                 status_code = exc.response.status_code
                 error_data: dict[str, Any] = {

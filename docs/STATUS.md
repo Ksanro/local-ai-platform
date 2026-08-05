@@ -114,6 +114,8 @@ Builds the provider payload from `NormalizedRequest`, swaps `model` to
 - FastAPI gateway endpoints: `/health`, `/version`, `/v1/models`,
   `/v1/chat/completions`
 - vLLM provider
+- vLLM/OpenAI-compatible provider response cleanup for leading empty
+  `<think></think>` blocks emitted by some llama.cpp/Qwen chat templates
 - provider registry and factory
 - model registry and model router
 - normalized request boundary
