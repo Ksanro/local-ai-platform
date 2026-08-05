@@ -81,6 +81,10 @@ Drive traffic, then analyze:
 .\uv run python scripts\analyze_sessions.py logs\sessions.jsonl
 ```
 
+The `CONTEXT COST` section includes a `By intent` table. Use it to compare
+REFACTOR versus EXPLAIN repository-context budget behavior: median estimated
+context tokens, configured budget, budget utilization, and share of prompt.
+
 Run deterministic answer-quality probes:
 
 ```powershell

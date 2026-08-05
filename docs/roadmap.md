@@ -82,7 +82,9 @@ History capping works, but repository context often dominates total prompt
 tokens. Next performance work should:
 
 - continue tuning selected symbols/modules by intent
-- compare `REFACTOR` and `EXPLAIN` budgets with the quality harness
+- compare `REFACTOR` and `EXPLAIN` budget quality with live
+  `--compare-context` runs; session analysis now reports context cost by
+  intent for the matching budget/cost view
 - add tokenizer-aware estimates when the current character estimate becomes a
   practical blocker
 

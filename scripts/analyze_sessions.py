@@ -612,6 +612,7 @@ def _print_context_cost(records: list[dict[str, Any]]) -> None:
     context_budget_pct: list[float] = []
     context_budgets: list[int] = []
     repo_ms_values: list[float] = []
+    by_intent: dict[str, dict[str, list[float]]] = {}
 
     for r in records:
         t = r.get("timing", {})
@@ -624,13 +625,29 @@ def _print_context_cost(records: list[dict[str, Any]]) -> None:
         if est is not None:
             est_int = int(est)
             if est_int > 0:
+                intent = str(r.get("intent", "DEFAULT") or "DEFAULT").upper()
+                intent_stats = by_intent.setdefault(
+                    intent,
+                    {
+                        "estimated": [],
+                        "budget": [],
+                        "budget_pct": [],
+                        "prompt_pct": [],
+                    },
+                )
+                intent_stats["estimated"].append(float(est_int))
                 context_tokens.append(est_int)
                 if pt:
-                    context_prompt_pct.append((est_int / int(pt)) * 100)
+                    prompt_pct = (est_int / int(pt)) * 100
+                    context_prompt_pct.append(prompt_pct)
+                    intent_stats["prompt_pct"].append(prompt_pct)
                 if budget:
                     budget_int = int(budget)
                     context_budgets.append(budget_int)
-                    context_budget_pct.append((est_int / budget_int) * 100)
+                    budget_pct = (est_int / budget_int) * 100
+                    context_budget_pct.append(budget_pct)
+                    intent_stats["budget"].append(float(budget_int))
+                    intent_stats["budget_pct"].append(budget_pct)
         if pt is not None:
             if status == "assembled":
                 assembled_tokens.append(int(pt))
@@ -667,6 +684,31 @@ def _print_context_cost(records: list[dict[str, Any]]) -> None:
                 f"    Median budget utilization: "
                 f"{statistics.median(context_budget_pct):.1f}%"
             )
+        if by_intent:
+            print()
+            print("  By intent:")
+            print(
+                "    "
+                f"{'intent':<12}{'n':>4}{'est_med':>10}{'budget_med':>12}"
+                f"{'util_med':>11}{'prompt_med':>12}"
+            )
+            for intent in sorted(by_intent):
+                stats = by_intent[intent]
+                estimated = stats["estimated"]
+                budgets = stats["budget"]
+                budget_pct = stats["budget_pct"]
+                prompt_pct = stats["prompt_pct"]
+                budget_med = statistics.median(budgets) if budgets else 0.0
+                util_med = statistics.median(budget_pct) if budget_pct else 0.0
+                prompt_med = statistics.median(prompt_pct) if prompt_pct else 0.0
+                print(
+                    "    "
+                    f"{intent:<12}{len(estimated):>4}"
+                    f"{statistics.median(estimated):>10.0f}"
+                    f"{budget_med:>12.0f}"
+                    f"{util_med:>10.1f}%"
+                    f"{prompt_med:>11.1f}%"
+                )
     else:
         print("  Direct repository context estimate: no context token data.")
     print()

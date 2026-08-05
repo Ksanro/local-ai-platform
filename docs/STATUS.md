@@ -125,6 +125,8 @@ Builds the provider payload from `NormalizedRequest`, swaps `model` to
 - history capping
 - session JSONL logging
 - session log analyzer
+- session analyzer context-cost by-intent table for comparing REFACTOR versus
+  EXPLAIN budget use from live session logs
 - live gateway quality harness
 - live Cline/vLLM A/B measurement protocol
 - quality-harness style/compliance signal for unwanted reasoning preambles and

@@ -186,6 +186,7 @@ class TestContextCost:
         """Analyzer reports context.estimated_tokens separately from prompt tokens."""
         records = [
             {
+                "intent": "EXPLAIN",
                 "context": {
                     "status": "assembled",
                     "estimated_tokens": 1000,
@@ -196,6 +197,7 @@ class TestContextCost:
                 "status": "ok",
             },
             {
+                "intent": "REFACTOR",
                 "context": {
                     "status": "assembled",
                     "estimated_tokens": 2000,
@@ -226,7 +228,69 @@ class TestContextCost:
         assert "Median share of prompt: 25.0%" in output
         assert "Median configured budget: 6000 tokens" in output
         assert "Median budget utilization: 25.0%" in output
+        assert "By intent:" in output
+        assert "EXPLAIN" in output
+        assert "REFACTOR" in output
         assert "Prompt-token comparison by context status" in output
+
+    def test_context_cost_by_intent_compares_budget_utilization(self) -> None:
+        """Analyzer splits repository-context budget cost by intent."""
+        records = [
+            {
+                "intent": "EXPLAIN",
+                "context": {
+                    "status": "assembled",
+                    "estimated_tokens": 1000,
+                    "max_tokens": 4000,
+                },
+                "usage": {"prompt_tokens": 5000, "completion_tokens": 50},
+                "timing": {"total_ms": 100},
+                "status": "ok",
+            },
+            {
+                "intent": "EXPLAIN",
+                "context": {
+                    "status": "assembled",
+                    "estimated_tokens": 2000,
+                    "max_tokens": 4000,
+                },
+                "usage": {"prompt_tokens": 6000, "completion_tokens": 50},
+                "timing": {"total_ms": 100},
+                "status": "ok",
+            },
+            {
+                "intent": "REFACTOR",
+                "context": {
+                    "status": "assembled",
+                    "estimated_tokens": 3000,
+                    "max_tokens": 6000,
+                },
+                "usage": {"prompt_tokens": 9000, "completion_tokens": 50},
+                "timing": {"total_ms": 100},
+                "status": "ok",
+            },
+        ]
+        path = self._write_fixture(records)
+        recs = _load_records(path)
+
+        import io
+        import sys
+
+        out = io.StringIO()
+        old_stdout = sys.stdout
+        sys.stdout = out
+        try:
+            analyze(recs)
+        finally:
+            sys.stdout = old_stdout
+
+        output = out.getvalue()
+        assert "By intent:" in output
+        assert "EXPLAIN" in output
+        assert "REFACTOR" in output
+        assert "1500" in output
+        assert "6000" in output
+        assert "50.0%" in output
 
 
 class TestLastUserMessagePreview:
