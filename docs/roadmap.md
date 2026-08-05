@@ -61,6 +61,9 @@ Done in this area:
 - two multi-turn Cline-like probes (`multiturn_history_cap_budget`,
   `multiturn_config_systems`) — `QualityProbe.history` carries prior
   user/assistant turns, sent before the scored final prompt
+- delta-context smoke probe (`quality_harness.py --delta-context`) sends two
+  sequential live requests and checks session-log `symbols_suppressed` on the
+  follow-up request
 - compare-run trend tracking, via `scripts/evaluate_quality_harness.py
   --persist` (writes each run to `EngineeringMemory`) and
   `scripts/quality_history.py` (reads back best/worst/average score ratio,
@@ -70,8 +73,8 @@ Next improvements:
 
 - run `--compare-context` live to confirm the two multi-turn probes hold up
   the same way the single-turn set does
-- consider probes that exercise delta context injection (repeated symbols
-  suppressed across turns), not just plain history recall
+- run `--delta-context` live after gateway changes that touch repository
+  context, delta injection, or session logging
 
 ### 3. Repository Context Budgeting And Ranking
 

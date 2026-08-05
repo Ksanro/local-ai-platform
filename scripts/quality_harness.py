@@ -24,6 +24,7 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 DEFAULT_BASE_URL = "http://127.0.0.1:8001/v1"
@@ -121,6 +122,28 @@ class QualityResult:
     def style_ok(self) -> bool:
         """Return whether the answer avoided known reasoning/tool preambles."""
         return not self.style_violations
+
+
+@dataclass(frozen=True)
+class DeltaContextProbe:
+    """A two-request probe that exercises server-side delta context."""
+
+    id: str
+    first: QualityProbe
+    followup: QualityProbe
+
+
+@dataclass
+class DeltaContextResult:
+    """Result of a two-request delta-context probe."""
+
+    id: str
+    ok: bool = False
+    first: QualityResult | None = None
+    followup: QualityResult | None = None
+    first_context: dict[str, Any] = field(default_factory=dict)
+    followup_context: dict[str, Any] = field(default_factory=dict)
+    error: str = ""
 
 
 PROBES: tuple[QualityProbe, ...] = (
@@ -258,6 +281,35 @@ PROBES: tuple[QualityProbe, ...] = (
         expect=(
             fact("packages/providers/vllm.py", "packages/providers/vllm"),
             fact("apps/gateway/core/config.py", "apps/gateway/core/config"),
+        ),
+    ),
+)
+
+DELTA_CONTEXT_PROBE = DeltaContextProbe(
+    id="delta_answer_preview_followup",
+    first=QualityProbe(
+        id="delta_answer_preview_primer",
+        intent="SEARCH",
+        prompt=(
+            "In this codebase, where is session log answer_preview extracted? "
+            "Name the file and the callable that extracts it."
+        ),
+        expect=(
+            fact("apps/gateway/session_log.py", "apps/gateway/session_log"),
+            fact("_extract_answer_preview"),
+        ),
+    ),
+    followup=QualityProbe(
+        id="delta_answer_preview_followup",
+        intent="DEBUG",
+        prompt=(
+            "For the same answer_preview extraction area, name the helper that "
+            "reads streaming chunks and the OpenAI streaming field it should read."
+        ),
+        expect=(
+            fact("_choice_content"),
+            fact("delta.content", "delta", 'delta.get("content"'),
+            fact("apps/gateway/session_log.py", "apps/gateway/session_log"),
         ),
     ),
 )
@@ -407,6 +459,118 @@ def run_probe(
     return result
 
 
+def _session_log_offset(path: str) -> int:
+    """Return the current byte offset of a session JSONL file."""
+    log_path = Path(path)
+    if not log_path.exists():
+        return 0
+    return log_path.stat().st_size
+
+
+def _read_session_log_records(path: str, *, offset: int) -> list[dict[str, Any]]:
+    """Read JSONL session records appended after `offset`."""
+    log_path = Path(path)
+    if not log_path.exists():
+        return []
+    records: list[dict[str, Any]] = []
+    with log_path.open("r", encoding="utf-8") as handle:
+        handle.seek(offset)
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                parsed = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(parsed, dict):
+                records.append(parsed)
+    return records
+
+
+def _record_for_last_user(
+    records: list[dict[str, Any]],
+    last_user_message: str,
+) -> dict[str, Any]:
+    """Find the newest session record for a final user message."""
+    for record in reversed(records):
+        if record.get("last_user_message") == last_user_message:
+            return record
+    return {}
+
+
+def run_delta_context_probe(
+    probe: DeltaContextProbe,
+    *,
+    base_url: str,
+    model: str,
+    max_tokens: int,
+    timeout: float,
+    use_intent_overrides: bool,
+    session_log_path: str,
+) -> DeltaContextResult:
+    """Run a two-request probe and inspect session logs for delta suppression."""
+    result = DeltaContextResult(id=probe.id)
+    offset = _session_log_offset(session_log_path)
+
+    first = run_probe(
+        probe.first,
+        base_url=base_url,
+        model=model,
+        max_tokens=max_tokens,
+        timeout=timeout,
+        use_intent_overrides=use_intent_overrides,
+        context_enabled=True,
+    )
+    result.first = first
+    if first.error:
+        result.error = first.error
+        return result
+
+    followup_probe = QualityProbe(
+        id=probe.followup.id,
+        intent=probe.followup.intent,
+        prompt=probe.followup.prompt,
+        expect=probe.followup.expect,
+        history=(
+            turn("user", probe.first.prompt),
+            turn("assistant", first.answer),
+        ),
+    )
+    followup = run_probe(
+        followup_probe,
+        base_url=base_url,
+        model=model,
+        max_tokens=max_tokens,
+        timeout=timeout,
+        use_intent_overrides=use_intent_overrides,
+        context_enabled=True,
+    )
+    result.followup = followup
+    if followup.error:
+        result.error = followup.error
+        return result
+
+    records = _read_session_log_records(session_log_path, offset=offset)
+    first_record = _record_for_last_user(records, probe.first.prompt)
+    followup_record = _record_for_last_user(records, probe.followup.prompt)
+    result.first_context = first_record.get("context", {}) if first_record else {}
+    result.followup_context = (
+        followup_record.get("context", {}) if followup_record else {}
+    )
+
+    if not first_record or not followup_record:
+        result.error = "session_log_records_not_found"
+        return result
+
+    result.ok = (
+        first.score == first.maximum
+        and followup.score == followup.maximum
+        and int(result.followup_context.get("symbols_suppressed", 0) or 0) > 0
+    )
+    return result
+
+
 def print_table(results: list[QualityResult]) -> None:
     """Print a compact quality table."""
     print("\n" + "=" * 100)
@@ -514,6 +678,19 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         action="store_true",
         help="let the gateway detect intent instead of sending context_intent",
     )
+    parser.add_argument(
+        "--delta-context",
+        action="store_true",
+        help=(
+            "run a two-request delta-context probe and inspect the session log "
+            "for follow-up symbol suppression"
+        ),
+    )
+    parser.add_argument(
+        "--session-log-path",
+        default="logs/sessions.jsonl",
+        help="session JSONL file to inspect for --delta-context",
+    )
     return parser.parse_args(argv)
 
 
@@ -523,9 +700,66 @@ def main(argv: list[str]) -> int:
     if args.compare_context and args.no_context:
         print("ERROR: --compare-context and --no-context are mutually exclusive", file=sys.stderr)
         return 2
+    if args.delta_context and (args.compare_context or args.no_context):
+        print(
+            "ERROR: --delta-context cannot be combined with --compare-context or --no-context",
+            file=sys.stderr,
+        )
+        return 2
 
     use_intent_overrides = not args.no_intent_overrides
     context_enabled = not args.no_context
+
+    if args.delta_context:
+        delta_result = run_delta_context_probe(
+            DELTA_CONTEXT_PROBE,
+            base_url=args.base_url,
+            model=args.model,
+            max_tokens=args.max_tokens,
+            timeout=args.timeout,
+            use_intent_overrides=use_intent_overrides,
+            session_log_path=args.session_log_path,
+        )
+        if args.json:
+            print(json.dumps({
+                "id": delta_result.id,
+                "ok": delta_result.ok,
+                "first": delta_result.first.__dict__ if delta_result.first else None,
+                "followup": (
+                    delta_result.followup.__dict__
+                    if delta_result.followup
+                    else None
+                ),
+                "first_context": delta_result.first_context,
+                "followup_context": delta_result.followup_context,
+                "error": delta_result.error,
+            }, indent=2))
+        else:
+            print("\n" + "=" * 100)
+            print("DELTA CONTEXT")
+            print("-" * 100)
+            print(f"id: {delta_result.id}")
+            print(f"ok: {delta_result.ok}")
+            first_score = (
+                f"{delta_result.first.score}/{delta_result.first.maximum}"
+                if delta_result.first
+                else "-"
+            )
+            followup_score = (
+                f"{delta_result.followup.score}/{delta_result.followup.maximum}"
+                if delta_result.followup
+                else "-"
+            )
+            print(f"first score: {first_score}")
+            print(f"followup score: {followup_score}")
+            print(
+                "followup symbols_suppressed: "
+                f"{delta_result.followup_context.get('symbols_suppressed', 0)}"
+            )
+            if delta_result.error:
+                print(f"error: {delta_result.error}")
+            print("=" * 100)
+        return 0 if delta_result.ok else 1
 
     if args.compare_context:
         context_results = [

@@ -132,6 +132,9 @@ Builds the provider payload from `NormalizedRequest`, swaps `model` to
 - multi-turn Cline-like quality-harness probes (`QualityProbe.history`) —
   `multiturn_history_cap_budget`, `multiturn_config_systems`; prior
   user/assistant turns are sent before the scored final prompt
+- delta-context quality-harness smoke probe (`scripts/quality_harness.py
+  --delta-context`) that sends two sequential live requests and verifies the
+  follow-up session record reports suppressed repeated symbols
 - `packages.evaluation.quality_harness_report` (`evaluate_results`,
   `evaluate_comparison`) via `scripts/evaluate_quality_harness.py` — scores
   quality-harness `--json` output (score, missing facts, prompt tokens,
@@ -224,6 +227,7 @@ Recommended live-path checks:
 .\uv run python -m mypy packages\providers packages\pipeline apps\gateway
 .\uv run python scripts\quality_harness.py
 .\uv run python scripts\quality_harness.py --compare-context
+.\uv run python scripts\quality_harness.py --delta-context --session-log-path logs\sessions.jsonl
 .\uv run python scripts\quality_harness.py --json | .\uv run python scripts\evaluate_quality_harness.py -
 ```
 

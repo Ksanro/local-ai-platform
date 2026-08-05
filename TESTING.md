@@ -86,6 +86,7 @@ Run deterministic answer-quality probes:
 ```powershell
 .\uv run python scripts\quality_harness.py
 .\uv run python scripts\quality_harness.py --compare-context
+.\uv run python scripts\quality_harness.py --delta-context --session-log-path logs\sessions.jsonl
 ```
 
 Read the `TOTAL` line. `--compare-context` changes exactly one variable per
@@ -100,6 +101,12 @@ The quality table also reports a separate style signal: `ok` means no known
 reasoning preamble or tool/thinking marker was detected, while `bad` means the
 answer still contained that chatter even if the required facts were present.
 
+Use `--delta-context` for the server-side delta-context smoke test. It sends
+two sequential live requests, then reads the session JSONL context metadata and
+expects the follow-up request to report `symbols_suppressed > 0`. Keep session
+logging enabled and point `--session-log-path` at the gateway's
+`APP_SESSION_LOG_PATH` value.
+
 Optionally, pipe `--json` output through `scripts\evaluate_quality_harness.py`
 to get a structured evaluation (score, missing facts, prompt-token cost,
 latency, style violations, and — in `--compare-context` mode — per-probe context delta) via
@@ -108,6 +115,7 @@ latency, style violations, and — in `--compare-context` mode — per-probe con
 ```powershell
 .\uv run python scripts\quality_harness.py --json | .\uv run python scripts\evaluate_quality_harness.py -
 .\uv run python scripts\quality_harness.py --compare-context --json | .\uv run python scripts\evaluate_quality_harness.py -
+.\uv run python scripts\quality_harness.py --delta-context --json --session-log-path logs\sessions.jsonl
 ```
 
 Add `--persist --model <name> [--gateway-commit <sha>] [--notes "..."]` to

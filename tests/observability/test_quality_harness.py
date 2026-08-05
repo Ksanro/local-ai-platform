@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 from scripts.quality_harness import (
+    DELTA_CONTEXT_PROBE,
     PROBES,
     QualityProbe,
     QualityResult,
+    _read_session_log_records,
+    _record_for_last_user,
     build_payload,
     detect_style_violations,
     extract_answer,
@@ -240,6 +243,58 @@ def test_build_payload_without_history_matches_single_turn_shape() -> None:
     )
 
     assert len(payload["messages"]) == 2
+
+
+class TestDeltaContextProbe:
+    """Delta-context probes use two live requests plus session-log metadata."""
+
+    def test_delta_probe_has_distinct_primer_and_followup(self) -> None:
+        assert DELTA_CONTEXT_PROBE.first.id.endswith("primer")
+        assert DELTA_CONTEXT_PROBE.followup.id.endswith("followup")
+        assert DELTA_CONTEXT_PROBE.first.prompt != DELTA_CONTEXT_PROBE.followup.prompt
+
+    def test_read_session_log_records_from_offset(self, tmp_path) -> None:
+        log_path = tmp_path / "sessions.jsonl"
+        old_line = (
+            '{"last_user_message":"old","context":{"symbols_suppressed":0}}\n'
+        )
+        new_line = (
+            '{"last_user_message":"new","context":{"symbols_suppressed":2}}\n'
+        )
+        log_path.write_text(old_line, encoding="utf-8")
+        offset = log_path.stat().st_size
+        with log_path.open("a", encoding="utf-8") as handle:
+            handle.write(new_line)
+
+        records = _read_session_log_records(str(log_path), offset=offset)
+
+        assert len(records) == 1
+        assert records[0]["last_user_message"] == "new"
+        assert records[0]["context"]["symbols_suppressed"] == 2
+
+    def test_read_session_log_records_skips_malformed_lines(self, tmp_path) -> None:
+        log_path = tmp_path / "sessions.jsonl"
+        log_path.write_text(
+            "not json\n"
+            '{"last_user_message":"ok","context":{"symbols_suppressed":1}}\n',
+            encoding="utf-8",
+        )
+
+        records = _read_session_log_records(str(log_path), offset=0)
+
+        assert len(records) == 1
+        assert records[0]["last_user_message"] == "ok"
+
+    def test_record_for_last_user_returns_newest_match(self) -> None:
+        records = [
+            {"last_user_message": "target", "context": {"symbols_suppressed": 1}},
+            {"last_user_message": "other", "context": {"symbols_suppressed": 0}},
+            {"last_user_message": "target", "context": {"symbols_suppressed": 3}},
+        ]
+
+        record = _record_for_last_user(records, "target")
+
+        assert record["context"]["symbols_suppressed"] == 3
 
 
 def test_print_comparison_table_shows_context_delta(capsys) -> None:
