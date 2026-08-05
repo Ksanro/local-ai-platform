@@ -90,7 +90,12 @@ Run deterministic answer-quality probes:
 
 Read the `TOTAL` line. `--compare-context` changes exactly one variable per
 probe: repository context on versus off through the same gateway/provider path.
-Recent baselines were `14-15/15` with context and `2/15` without context.
+Recent baselines were `14-15/15` with context and `2/15` without context, on
+the original 6 single-turn probes — the probe set now also includes 2
+multi-turn probes (`multiturn_history_cap_budget`, `multiturn_config_systems`)
+that send prior user/assistant turns before the scored final prompt, so a
+fresh baseline run is needed to include them (`total_maximum` moves from `15`
+to `20`).
 The quality table also reports a separate style signal: `ok` means no known
 reasoning preamble or tool/thinking marker was detected, while `bad` means the
 answer still contained that chatter even if the required facts were present.

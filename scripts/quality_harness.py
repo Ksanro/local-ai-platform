@@ -67,14 +67,26 @@ def fact(label: str, *variants: str) -> ExpectedFact:
     return ExpectedFact(label=label, variants=(label, *variants))
 
 
+def turn(role: str, content: str) -> dict[str, str]:
+    """Create one conversation-history message for a multi-turn probe."""
+    return {"role": role, "content": content}
+
+
 @dataclass(frozen=True)
 class QualityProbe:
-    """A fixed quality prompt with deterministic expected answer facts."""
+    """A fixed quality prompt with deterministic expected answer facts.
+
+    `history` holds prior conversation turns (role/content dicts) sent before
+    `prompt`, simulating a Cline-like multi-turn session. The assistant turns
+    in `history` are fixed canned text, not model output — only the final
+    `prompt` response is scored. Single-turn probes leave `history` empty.
+    """
 
     id: str
     intent: str
     prompt: str
     expect: tuple[ExpectedFact, ...]
+    history: tuple[dict[str, str], ...] = ()
 
 
 @dataclass
@@ -196,6 +208,58 @@ PROBES: tuple[QualityProbe, ...] = (
             fact("repository_context_enabled"),
         ),
     ),
+    QualityProbe(
+        id="multiturn_history_cap_budget",
+        intent="EXPLAIN",
+        history=(
+            turn(
+                "user",
+                "Which component caps forwarded chat history so it does not "
+                "grow unbounded, and where does that happen relative to "
+                "repository-context injection?",
+            ),
+            turn(
+                "assistant",
+                "History capping runs inside PipelineEngine, right after the "
+                "repository_context stage and before the provider stage.",
+            ),
+        ),
+        prompt=(
+            "For that capping logic: name the function that applies the cap, "
+            "its file, and the env var used to force a specific token budget "
+            "instead of deriving one from the model's context window."
+        ),
+        expect=(
+            fact("_apply_history_cap"),
+            fact("packages/pipeline/engine.py", "packages/pipeline/engine"),
+            fact("APP_HISTORY_CAP_TOKENS"),
+        ),
+    ),
+    QualityProbe(
+        id="multiturn_config_systems",
+        intent="EXPLAIN",
+        history=(
+            turn(
+                "user",
+                "How many separate configuration systems does this gateway "
+                "use for provider settings?",
+            ),
+            turn(
+                "assistant",
+                "Two: a Pydantic Settings object with an APP_ prefix, and a "
+                "raw-env system with no prefix used by the vLLM provider.",
+            ),
+        ),
+        prompt=(
+            "Given that split: which file defines the raw-env DEFAULT_MODEL "
+            "variable, and which file defines the Pydantic default_model "
+            "field set via APP_DEFAULT_MODEL?"
+        ),
+        expect=(
+            fact("packages/providers/vllm.py", "packages/providers/vllm"),
+            fact("apps/gateway/core/config.py", "apps/gateway/core/config"),
+        ),
+    ),
 )
 
 
@@ -275,6 +339,7 @@ def build_payload(
         "model": model,
         "messages": [
             {"role": "system", "content": QUALITY_SYSTEM_PROMPT},
+            *probe.history,
             {"role": "user", "content": probe.prompt},
         ],
         "stream": False,

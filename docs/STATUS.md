@@ -129,6 +129,9 @@ Builds the provider payload from `NormalizedRequest`, swaps `model` to
 - live Cline/vLLM A/B measurement protocol
 - quality-harness style/compliance signal for unwanted reasoning preambles and
   tool/thinking chatter (`style_violations`, `style_ok`)
+- multi-turn Cline-like quality-harness probes (`QualityProbe.history`) —
+  `multiturn_history_cap_budget`, `multiturn_config_systems`; prior
+  user/assistant turns are sent before the scored final prompt
 - `packages.evaluation.quality_harness_report` (`evaluate_results`,
   `evaluate_comparison`) via `scripts/evaluate_quality_harness.py` — scores
   quality-harness `--json` output (score, missing facts, prompt tokens,

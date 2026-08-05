@@ -12,6 +12,7 @@ from scripts.quality_harness import (
     fact,
     print_comparison_table,
     score_answer,
+    turn,
 )
 
 
@@ -143,6 +144,102 @@ def test_probe_set_covers_live_intents() -> None:
     intents = {probe.intent for probe in PROBES}
 
     assert intents == {"SEARCH", "DEBUG", "TEST", "EXPLAIN", "REFACTOR", "IMPLEMENT"}
+
+
+def test_probe_set_fixed_maximum_is_documented() -> None:
+    """The quality baseline denominator should change only intentionally."""
+    total_maximum = sum(len(probe.expect) for probe in PROBES)
+
+    assert total_maximum == 20
+
+
+class TestMultiTurnProbes:
+    """Multi-turn Cline-like probes exercise conversation history handling."""
+
+    def test_at_least_two_multiturn_probes_are_defined(self) -> None:
+        multiturn = [probe for probe in PROBES if probe.history]
+
+        assert len(multiturn) >= 2
+
+    def test_multiturn_probes_have_at_least_two_history_turns(self) -> None:
+        multiturn = [probe for probe in PROBES if probe.history]
+
+        for probe in multiturn:
+            assert len(probe.history) >= 2
+            assert probe.history[0]["role"] == "user"
+
+    def test_single_turn_probes_have_empty_history(self) -> None:
+        single_turn = [probe for probe in PROBES if not probe.id.startswith("multiturn_")]
+
+        assert single_turn
+        for probe in single_turn:
+            assert probe.history == ()
+
+    def test_expected_fact_variants_do_not_collide_across_facts(self) -> None:
+        """A variant of one expected fact must not be a substring of another.
+
+        score_answer matches by substring, so overlapping variants (e.g.
+        "DEFAULT_MODEL" inside "APP_DEFAULT_MODEL") would let a probe pass
+        without the model actually producing the more specific fact.
+        """
+        for probe in PROBES:
+            variants_by_label = {
+                expected.label: [variant.lower() for variant in expected.variants]
+                for expected in probe.expect
+            }
+            labels = list(variants_by_label)
+            for i, label_a in enumerate(labels):
+                for label_b in labels[i + 1 :]:
+                    for variant_a in variants_by_label[label_a]:
+                        for variant_b in variants_by_label[label_b]:
+                            assert variant_a not in variant_b, (
+                                f"{probe.id}: {label_a!r} variant {variant_a!r} "
+                                f"is a substring of {label_b!r} variant {variant_b!r}"
+                            )
+                            assert variant_b not in variant_a, (
+                                f"{probe.id}: {label_b!r} variant {variant_b!r} "
+                                f"is a substring of {label_a!r} variant {variant_a!r}"
+                            )
+
+
+def test_build_payload_includes_history_before_final_prompt() -> None:
+    """Multi-turn probes should send history turns, then the final prompt."""
+    probe = QualityProbe(
+        id="p1",
+        intent="EXPLAIN",
+        prompt="final question",
+        expect=(fact("thing"),),
+        history=(turn("user", "turn one"), turn("assistant", "reply one")),
+    )
+
+    payload = build_payload(
+        probe,
+        model="qwen36",
+        max_tokens=50,
+        use_intent_overrides=False,
+        context_enabled=True,
+    )
+
+    roles = [message["role"] for message in payload["messages"]]
+    contents = [message["content"] for message in payload["messages"]]
+    assert roles == ["system", "user", "assistant", "user"]
+    assert contents[1:3] == ["turn one", "reply one"]
+    assert contents[-1] == "final question"
+
+
+def test_build_payload_without_history_matches_single_turn_shape() -> None:
+    """Single-turn probes keep the original two-message payload shape."""
+    probe = QualityProbe("p1", "SEARCH", "Find the thing", (fact("thing"),))
+
+    payload = build_payload(
+        probe,
+        model="qwen36",
+        max_tokens=50,
+        use_intent_overrides=False,
+        context_enabled=True,
+    )
+
+    assert len(payload["messages"]) == 2
 
 
 def test_print_comparison_table_shows_context_delta(capsys) -> None:

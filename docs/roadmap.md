@@ -29,32 +29,49 @@ Last reviewed: 2026-08-01.
 
 ## Immediate Goals
 
-### 1. Dormant-Code Inventory And Activation
+### 1. Dormant-Code Inventory And Activation — first candidates DONE
 
 Use the dormant packages as a backlog, not as assumed runtime behavior. For
 each candidate, decide whether it should be wired into the live gateway,
-adapted as a script/tool, or left dormant.
+adapted as a script/tool, or left dormant. See
+`docs/dormant-code-backlog.md` for the activated slices and what remains
+dormant in each package.
 
-First candidates:
+First candidates, all activated as narrow, script-reachable slices:
 
-- `packages.evaluation` - score quality-harness and session-log runs
-- `packages.engineering_memory` - persist deterministic run summaries
-- `packages.observability` - reuse selectively if it improves session analysis
+- `packages.evaluation` - `quality_harness_report.py` scores quality-harness runs
+- `packages.engineering_memory` - `quality_harness_records.py` persists deterministic run summaries
+- `packages.observability` - `quality_history.py` reuses the persisted records for trend summaries
+
+Remaining dormant packages stay on hold per `docs/dormant-code-backlog.md`'s
+"Hold For Later" list until there is a concrete product need.
 
 ### 2. Quality Harness Expansion
 
 The fixed probe set now proves repository context adds answer-quality signal
-(`15/15` with context versus `2/15` without context in the latest run).
-Next improvements:
-
-- add more probes for multi-turn Cline-like history
-- record compare runs to a small JSON/JSONL artifact for trend tracking
+(`15/15` with context versus `2/15` without context in the latest run, on the
+6 single-turn probes; needs a fresh live run to include the 2 new multi-turn
+probes below).
 
 Done in this area:
 
 - deterministic style/compliance signal for unwanted reasoning preambles and
   tool/thinking chatter, carried through quality-harness JSON,
   `evaluate_quality_harness.py`, and `QualityRun`
+- two multi-turn Cline-like probes (`multiturn_history_cap_budget`,
+  `multiturn_config_systems`) — `QualityProbe.history` carries prior
+  user/assistant turns, sent before the scored final prompt
+- compare-run trend tracking, via `scripts/evaluate_quality_harness.py
+  --persist` (writes each run to `EngineeringMemory`) and
+  `scripts/quality_history.py` (reads back best/worst/average score ratio,
+  latest context delta, recent missing facts)
+
+Next improvements:
+
+- run `--compare-context` live to confirm the two multi-turn probes hold up
+  the same way the single-turn set does
+- consider probes that exercise delta context injection (repeated symbols
+  suppressed across turns), not just plain history recall
 
 ### 3. Repository Context Budgeting And Ranking
 
