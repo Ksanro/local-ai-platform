@@ -36,25 +36,36 @@ not part of the live gateway path until explicitly registered.
 
 from __future__ import annotations
 
-from packages.pipeline.stages.evaluation_stage import EvaluationStage
-from packages.pipeline.stages.execution_stage import ExecutionStage
+from importlib import import_module
+
 from packages.pipeline.stages.planning_stage import PlanningStage
 from packages.pipeline.stages.repository_context import RepositoryContextStage
 from packages.pipeline.stages.stages import ProviderStage
-from packages.pipeline.stages.verification_stage import VerificationStage
-from packages.pipeline.stages.workflow_stage import WorkflowStage
+
+_LAZY_STAGE_EXPORTS = {
+    "ModelResolutionStage": (
+        "packages.pipeline.stages.model_resolution",
+        "ModelResolutionStage",
+    ),
+    "WorkflowStage": ("packages.pipeline.stages.workflow_stage", "WorkflowStage"),
+    "ExecutionStage": ("packages.pipeline.stages.execution_stage", "ExecutionStage"),
+    "VerificationStage": (
+        "packages.pipeline.stages.verification_stage",
+        "VerificationStage",
+    ),
+    "EvaluationStage": ("packages.pipeline.stages.evaluation_stage", "EvaluationStage"),
+}
 
 
-# Lazy import ModelResolutionStage to avoid circular imports at module load.
-# It is registered in lifespan after the router is built.
-def __getattr__(name: str):
-    """Lazy-load ModelResolutionStage to avoid circular imports."""
-    if name == "ModelResolutionStage":
-        from packages.pipeline.stages.model_resolution import (
-            ModelResolutionStage as _ModelResolutionStage,
-        )
-
-        return _ModelResolutionStage
+# Lazy import stages that either have circular dependencies or belong to
+# dormant/future workflow stacks. Live gateway startup imports only the active
+# stages eagerly above.
+def __getattr__(name: str) -> object:
+    """Lazy-load stage exports that are not eagerly imported."""
+    export = _LAZY_STAGE_EXPORTS.get(name)
+    if export is not None:
+        module_name, attribute = export
+        return getattr(import_module(module_name), attribute)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 

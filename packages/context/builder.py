@@ -209,6 +209,8 @@ class ContextBuilder:
         candidates = self._promote_session_log_preview_symbols(candidates, query.text)
         candidates = self._promote_repository_context_stage_symbols(candidates, query.text)
         candidates = self._promote_health_endpoint_symbols(candidates, query.text)
+        candidates = self._promote_history_cap_symbols(candidates, query.text)
+        candidates = self._promote_config_system_symbols(candidates, query.text)
         candidates = self._promote_referenced_modules(candidates, query.text)
         candidates = self._promote_shared_helper_imports(candidates, query.text)
 
@@ -399,6 +401,41 @@ class ContextBuilder:
             ),
         )
 
+    def _promote_history_cap_symbols(
+        self,
+        candidates: list[ContextCandidate],
+        query_text: str,
+    ) -> list[ContextCandidate]:
+        """Promote the live history-cap implementation for follow-up prompts."""
+        if not self._query_targets_history_cap(query_text):
+            return candidates
+
+        return self._promote_named_symbols(
+            candidates,
+            (
+                "packages/pipeline/engine._apply_history_cap",
+                "apps/gateway/core/config.Settings",
+                "packages/pipeline/engine.PipelineEngine.execute",
+            ),
+        )
+
+    def _promote_config_system_symbols(
+        self,
+        candidates: list[ContextCandidate],
+        query_text: str,
+    ) -> list[ContextCandidate]:
+        """Promote live gateway/provider config definitions."""
+        if not self._query_targets_config_systems(query_text):
+            return candidates
+
+        return self._promote_named_symbols(
+            candidates,
+            (
+                "packages/providers/vllm._get_vllm_config",
+                "apps/gateway/core/config.Settings",
+            ),
+        )
+
     @staticmethod
     def _promote_named_symbols(
         candidates: list[ContextCandidate],
@@ -580,6 +617,27 @@ class ContextBuilder:
                 "repository_context_enabled" in lowered
                 and ("health" in lowered or "endpoint" in lowered)
             )
+        )
+
+    @staticmethod
+    def _query_targets_history_cap(query_text: str) -> bool:
+        """Return True for prompts asking about forwarded-history capping."""
+        lowered = query_text.lower()
+        return (
+            "history capping" in lowered
+            or "history cap" in lowered
+            or "capping logic" in lowered
+            or "app_history_cap_tokens" in lowered
+        )
+
+    @staticmethod
+    def _query_targets_config_systems(query_text: str) -> bool:
+        """Return True for prompts asking about raw-env and APP_ config."""
+        lowered = query_text.lower()
+        return (
+            "default_model" in lowered
+            and "app_default_model" in lowered
+            and ("raw-env" in lowered or "raw env" in lowered or "vllm provider" in lowered)
         )
 
     @staticmethod

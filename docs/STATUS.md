@@ -56,6 +56,10 @@ Uses the startup repository index to select ranked symbols and modules, then
 injects repository context into the provider-bound messages. Delta injection
 suppresses symbols already sent in the conversation.
 
+For anaphoric multi-turn follow-ups such as "for that capping logic" or
+"given that split", retrieval includes the previous clean user task text so
+ranking sees the disambiguating prior turn instead of only the short follow-up.
+
 Test files are included in the repository index by default
 (`APP_REPOSITORY_EXCLUDE_TESTS=false`) so TEST-mode prompts can retrieve the
 actual validation files. Ranking still penalizes test files for ordinary
@@ -129,13 +133,21 @@ Builds the provider payload from `NormalizedRequest`, swaps `model` to
 - session log analyzer
 - session analyzer context-cost by-intent table for comparing REFACTOR versus
   EXPLAIN budget use from live session logs
+- CI focused on the documented live gateway path instead of dormant packages
 - live gateway quality harness
 - live Cline/vLLM A/B measurement protocol
 - quality-harness style/compliance signal for unwanted reasoning preambles and
   tool/thinking chatter (`style_violations`, `style_ok`)
-- multi-turn Cline-like quality-harness probes (`QualityProbe.history`) —
+- local-agent coding workflow catalog (`scripts/local_agent_coding.py`) for one
+  staged Cline/qwen27B planning, Claude-extension/qwen35B implementation,
+  Claude CLI review/tests, and Codex coordination branch; the first task is
+  `style_preamble_cleanup` and targets the current style-preamble/chatter issue
+- multi-turn Cline-like quality-harness probes (`QualityProbe.history`) -
   `multiturn_history_cap_budget`, `multiturn_config_systems`; prior
   user/assistant turns are sent before the scored final prompt
+- latest qwen36 live `scripts/quality_harness.py --compare-context` run scores
+  `20/20` with repository context versus `2/20` without context across the
+  full 8-probe set, including the multi-turn probes
 - delta-context quality-harness smoke probe (`scripts/quality_harness.py
   --delta-context`) that sends two sequential live requests and verifies the
   follow-up session record reports suppressed repeated symbols
@@ -237,12 +249,10 @@ Recommended live-path checks:
 
 ## Current Open Issues
 
-- CI still runs broad repo checks and should be realigned to the documented
-  baseline or cleaned up.
 - Repository context can dominate prompt size; history capping alone is not the
   full latency lever. Configurable repository-context budget enforcement and
   targeted retrieval promotions now exist; recent quality-harness runs show
-  `14-15/15` with context versus `2/15` without context on the fixed probe set.
+  `20/20` with context versus `2/20` without context on the fixed probe set.
 - Token estimates still use `CHARS_PER_TOKEN = 4.0`, not model-specific
   tokenizers.
 - The model often includes reasoning/preamble despite terse system prompts; the

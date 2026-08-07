@@ -7,13 +7,22 @@ assembly, because ``context_window`` is needed later for token-budgeting.
 from __future__ import annotations
 
 import logging
+from typing import Protocol
 
 from packages.pipeline.base import PipelineStage
 from packages.pipeline.context import PipelineContext
 from packages.pipeline.result import PipelineStageResult
-from packages.providers.router import ModelRouter
+from packages.providers.models import ResolvedModel
 
 logger = logging.getLogger(__name__)
+
+
+class ModelResolver(Protocol):
+    """Router interface needed by the model-resolution stage."""
+
+    def resolve(self, model: str) -> ResolvedModel:
+        """Resolve a client model name to a provider-bound model."""
+        ...
 
 
 class ModelResolutionStage(PipelineStage):
@@ -26,7 +35,7 @@ class ModelResolutionStage(PipelineStage):
     On ``UnknownModelError``, returns a **failed** result (does not raise).
     """
 
-    def __init__(self, router: ModelRouter) -> None:
+    def __init__(self, router: ModelResolver) -> None:
         """Initialize with the model router.
 
         Args:

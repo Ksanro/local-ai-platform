@@ -759,6 +759,79 @@ class AuthMiddleware:
             "apps/gateway/core/config.Settings",
         ]
 
+    def test_promotes_history_cap_symbols_for_followup_prompt(self):
+        """History-cap follow-ups should lead with the live pipeline cap helper."""
+        candidates = [
+            ContextCandidate(
+                symbol_id="packages/context/models.ContextBudgetResult",
+                qualified_name="packages/context/models.ContextBudgetResult",
+                module="packages/context/models",
+            ),
+            ContextCandidate(
+                symbol_id="packages/pipeline/engine._apply_history_cap",
+                qualified_name="packages/pipeline/engine._apply_history_cap",
+                module="packages/pipeline/engine",
+            ),
+            ContextCandidate(
+                symbol_id="apps/gateway/core/config.Settings",
+                qualified_name="apps/gateway/core/config.Settings",
+                module="apps/gateway/core/config",
+            ),
+        ]
+        builder = ContextBuilder(_make_index([]))
+
+        promoted = builder._promote_history_cap_symbols(
+            candidates,
+            (
+                "Which component caps forwarded chat history?\n\n"
+                "For that capping logic: name the function and "
+                "APP_HISTORY_CAP_TOKENS."
+            ),
+        )
+
+        assert [candidate.qualified_name for candidate in promoted[:2]] == [
+            "packages/pipeline/engine._apply_history_cap",
+            "apps/gateway/core/config.Settings",
+        ]
+
+    def test_promotes_config_system_symbols_for_default_model_prompt(self):
+        """Config split prompts should lead with live provider and gateway config."""
+        candidates = [
+            ContextCandidate(
+                symbol_id="packages/bootstrap/configuration.PlatformConfiguration.default",
+                qualified_name=(
+                    "packages/bootstrap/configuration."
+                    "PlatformConfiguration.default"
+                ),
+                module="packages/bootstrap/configuration",
+            ),
+            ContextCandidate(
+                symbol_id="packages/providers/vllm._get_vllm_config",
+                qualified_name="packages/providers/vllm._get_vllm_config",
+                module="packages/providers/vllm",
+            ),
+            ContextCandidate(
+                symbol_id="apps/gateway/core/config.Settings",
+                qualified_name="apps/gateway/core/config.Settings",
+                module="apps/gateway/core/config",
+            ),
+        ]
+        builder = ContextBuilder(_make_index([]))
+
+        promoted = builder._promote_config_system_symbols(
+            candidates,
+            (
+                "The gateway uses raw-env config for the vLLM provider and "
+                "APP_ Pydantic settings.\n\n"
+                "Which files define DEFAULT_MODEL and APP_DEFAULT_MODEL?"
+            ),
+        )
+
+        assert [candidate.qualified_name for candidate in promoted[:2]] == [
+            "packages/providers/vllm._get_vllm_config",
+            "apps/gateway/core/config.Settings",
+        ]
+
     def test_build_enriches_supporting_symbols(self):
         """Supporting symbols should get signature and preview."""
         source = '''def helper():

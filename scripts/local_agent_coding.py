@@ -1,0 +1,302 @@
+"""Emit repeatable local-agent coding workflow prompts and verification commands.
+
+The tasks here are intentionally small and fixed. They are meant to keep one
+local coding workflow coordinated across Codex, Cline, Claude extension, and
+Claude CLI without losing track of who did what.
+"""
+
+from __future__ import annotations
+
+import argparse
+import dataclasses
+import json
+import subprocess
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+
+
+@dataclass(frozen=True)
+class VerificationCommand:
+    """A command that verifies an agent task after the agent has edited files."""
+
+    argv: tuple[str, ...]
+    description: str
+
+    @property
+    def display(self) -> str:
+        """Return a copy/paste-friendly PowerShell command."""
+        return " ".join(self.argv)
+
+
+@dataclass(frozen=True)
+class AgentStep:
+    """One role-specific prompt in a local-agent coding workflow."""
+
+    role: str
+    actor: str
+    purpose: str
+    prompt: str
+
+
+@dataclass(frozen=True)
+class LocalAgentCodingTask:
+    """A deterministic local-agent task specification."""
+
+    id: str
+    title: str
+    objective: str
+    workflow: tuple[AgentStep, ...]
+    expected_files: tuple[str, ...]
+    verification: tuple[VerificationCommand, ...]
+    success_criteria: tuple[str, ...]
+
+
+TASKS: tuple[LocalAgentCodingTask, ...] = (
+    LocalAgentCodingTask(
+        id="style_preamble_cleanup",
+        title="Reduce Reasoning Preamble Chatter",
+        objective=(
+            "Improve local coding-agent answer quality by reducing visible reasoning/tool chatter "
+            "without changing factual scoring or repository-context selection."
+        ),
+        workflow=(
+            AgentStep(
+                role="plan",
+                actor="Cline with qwen3.6 27B dense",
+                purpose="first review, planning, and architecture check",
+                prompt=(
+                    "You are reviewing local-ai-platform before implementation. Focus on the "
+                    "quality-harness style issue: live answers often include visible reasoning "
+                    "preambles even when all required repository facts are present.\n\n"
+                    "Read scripts/quality_harness.py, packages/providers/vllm.py, provider tests, "
+                    "and the relevant gateway serialization path. Do not edit files. Produce a "
+                    "short implementation plan naming the safest code location, test cases to add, "
+                    "and risks. Do not activate dormant workflow/controller/execution packages."
+                ),
+            ),
+            AgentStep(
+                role="code",
+                actor="Claude extension with local qwen3.6 35B A3B",
+                purpose="implementation",
+                prompt=(
+                    "You are coding in local-ai-platform. Implement a narrow fix for the current "
+                    "quality-harness style issue: live answers often include visible reasoning "
+                    "preambles even when all required repository facts are present.\n\n"
+                    "Use the planning notes if present. Scope:\n"
+                    "- Inspect scripts/quality_harness.py, packages/providers/vllm.py, and the "
+                    "provider tests before editing.\n"
+                    "- Preserve factual scoring behavior; do not loosen expected-fact matching to "
+                    "hide bad answers.\n"
+                    "- Prefer a deterministic cleanup or prompt/serialization guardrail that is "
+                    "safe for OpenAI-compatible responses.\n"
+                    "- Add focused tests for any cleanup/detection behavior you change.\n"
+                    "- Do not activate dormant workflow/controller/execution packages.\n\n"
+                    "After editing, run:\n"
+                    ".\\uv.exe run python -m pytest tests\\observability\\test_quality_harness.py "
+                    "tests\\providers -q\n"
+                    ".\\uv.exe run python -m ruff check scripts\\quality_harness.py "
+                    "packages\\providers tests\\observability\\test_quality_harness.py "
+                    "tests\\providers\n\n"
+                    "Report the changed files, test results, and remaining live-vLLM risk."
+                ),
+            ),
+            AgentStep(
+                role="review",
+                actor="Claude CLI",
+                purpose="code review and tests",
+                prompt=(
+                    "Review the current local-ai-platform changes for the style_preamble_cleanup "
+                    "task. Prioritize bugs, regressions, over-broad cleanup, loosened scoring, and "
+                    "missing tests. Run the focused verification commands if available. Report "
+                    "findings first with file/line references, then test results. Do not make "
+                    "unrelated edits."
+                ),
+            ),
+            AgentStep(
+                role="coordinate",
+                actor="Codex",
+                purpose="master planning, final review, and integration decision",
+                prompt=(
+                    "Coordinate the style_preamble_cleanup task: inspect Cline's plan, Claude "
+                    "extension's patch, and Claude CLI's review/tests. Decide whether the patch is "
+                    "ready, needs follow-up, or should be reverted/refined. Run final focused "
+                    "checks and summarize the integration decision."
+                ),
+            ),
+        ),
+        expected_files=(
+            "scripts/quality_harness.py",
+            "packages/providers/vllm.py",
+            "tests/observability/test_quality_harness.py",
+            "tests/providers",
+        ),
+        verification=(
+            VerificationCommand(
+                argv=(
+                    ".\\uv.exe",
+                    "run",
+                    "python",
+                    "-m",
+                    "pytest",
+                    "tests\\observability\\test_quality_harness.py",
+                    "tests\\providers",
+                    "-q",
+                ),
+                description="focused style/provider regression tests",
+            ),
+            VerificationCommand(
+                argv=(
+                    ".\\uv.exe",
+                    "run",
+                    "python",
+                    "-m",
+                    "ruff",
+                    "check",
+                    "scripts\\quality_harness.py",
+                    "packages\\providers",
+                    "tests\\observability\\test_quality_harness.py",
+                    "tests\\providers",
+                ),
+                description="focused lint for touched style/provider paths",
+            ),
+        ),
+        success_criteria=(
+            "Each agent uses its role-specific prompt on the same branch/workspace.",
+            "The code step is the only expected implementation step.",
+            "Focused tests and lint pass after implementation and review.",
+            "The patch does not change required-fact scoring to mask style failures.",
+            "Any remaining model-dependent live-vLLM behavior is reported explicitly.",
+        ),
+    ),
+)
+
+
+def _task_by_id(task_id: str) -> LocalAgentCodingTask:
+    for task in TASKS:
+        if task.id == task_id:
+            return task
+    known = ", ".join(task.id for task in TASKS)
+    raise ValueError(f"Unknown task {task_id!r}. Known tasks: {known}")
+
+
+def _as_dict(task: LocalAgentCodingTask) -> dict[str, object]:
+    return {
+        **dataclasses.asdict(task),
+        "verification": [
+            {
+                "description": command.description,
+                "argv": list(command.argv),
+                "display": command.display,
+            }
+            for command in task.verification
+        ],
+    }
+
+
+def print_task(task: LocalAgentCodingTask) -> None:
+    """Print a human-readable task card."""
+    print(f"{task.id}: {task.title}")
+    print(task.objective)
+    print()
+    print("WORKFLOW")
+    for index, step in enumerate(task.workflow, start=1):
+        print(f"{index}. {step.role}: {step.actor}")
+        print(f"   purpose: {step.purpose}")
+    print()
+    print("EXPECTED FILES")
+    for path in task.expected_files:
+        print(f"- {path}")
+    print()
+    print("VERIFY")
+    for command in task.verification:
+        print(f"- {command.display}  # {command.description}")
+    print()
+    print("SUCCESS")
+    for criterion in task.success_criteria:
+        print(f"- {criterion}")
+
+
+def print_step(task: LocalAgentCodingTask, role: str) -> None:
+    """Print one role-specific prompt."""
+    for step in task.workflow:
+        if step.role == role:
+            print(f"{task.id} / {step.role}: {step.actor}")
+            print(step.purpose)
+            print()
+            print("PROMPT")
+            print("```")
+            print(step.prompt)
+            print("```")
+            return
+    known = ", ".join(step.role for step in task.workflow)
+    raise ValueError(f"Unknown role {role!r}. Known roles for {task.id}: {known}")
+
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    """Parse CLI arguments."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    subparsers.add_parser("list", help="list available local-agent coding tasks")
+
+    show = subparsers.add_parser("show", help="print one task")
+    show.add_argument("task_id", help="task id to print")
+    show.add_argument("--json", action="store_true", help="emit task as JSON")
+
+    step = subparsers.add_parser("step", help="print one role-specific prompt")
+    step.add_argument("task_id", help="task id")
+    step.add_argument(
+        "role",
+        choices=("plan", "code", "review", "coordinate"),
+        help="workflow role to print",
+    )
+
+    verify = subparsers.add_parser("verify", help="run or print verification commands")
+    verify.add_argument("task_id", help="task id to verify")
+    verify.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="print commands without executing them",
+    )
+    return parser.parse_args(argv)
+
+
+def run_verification(task: LocalAgentCodingTask, *, dry_run: bool) -> int:
+    """Run static verification commands for a task."""
+    for command in task.verification:
+        print(command.display)
+        if dry_run:
+            continue
+        completed = subprocess.run(command.argv, cwd=Path(__file__).resolve().parent.parent)
+        if completed.returncode != 0:
+            return completed.returncode
+    return 0
+
+
+def main(argv: list[str]) -> int:
+    """Run the local-agent coding task CLI."""
+    args = parse_args(argv)
+    if args.command == "list":
+        for task in TASKS:
+            print(f"{task.id}\t{task.title}")
+        return 0
+
+    task = _task_by_id(args.task_id)
+    if args.command == "show":
+        if args.json:
+            print(json.dumps(_as_dict(task), indent=2))
+        else:
+            print_task(task)
+        return 0
+    if args.command == "step":
+        print_step(task, args.role)
+        return 0
+    if args.command == "verify":
+        return run_verification(task, dry_run=args.dry_run)
+
+    raise AssertionError(f"Unhandled command: {args.command}")
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

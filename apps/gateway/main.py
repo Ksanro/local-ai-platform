@@ -28,10 +28,10 @@ from apps.gateway.middleware import RequestMiddleware, TimingMiddleware
 from apps.gateway.session_log import SessionLoggerMiddleware
 from packages.pipeline.engine import PipelineEngine
 from packages.pipeline.stages import (
-    ModelResolutionStage,
     PlanningStage,
     ProviderStage,
 )
+from packages.pipeline.stages.model_resolution import ModelResolutionStage
 from packages.pipeline.stages.repository_context import RepositoryContextStage
 from packages.providers import _load_providers
 from packages.providers.exceptions import UnknownModelError

@@ -102,8 +102,8 @@ class RepositoryIndexBuilder:
         )
 
         # Propagate the excluded file counts from the extractor.
-        self._excluded_test_count = self._extractor.excluded_test_count
-        self._excluded_glob_count = self._extractor.excluded_glob_count
+        self._excluded_test_count = getattr(self._extractor, "excluded_test_count", 0)
+        self._excluded_glob_count = getattr(self._extractor, "excluded_glob_count", 0)
 
         modules: dict[str, Module] = {}
         symbols: list[Symbol] = []

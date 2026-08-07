@@ -398,9 +398,6 @@ class ContextComposer:
         if module_path == primary_candidate.module:
             return "Contains the primary symbol"
 
-        # Check if any candidate from this module is a caller/callee.
-        has_caller = False
-        has_callee = False
         for candidate in candidates + supporting_candidates:
             if candidate.module == module_path:
                 # Check if it's in the same class scope as primary.
@@ -412,6 +409,6 @@ class ContextComposer:
                         candidate.qualified_name.rsplit(".", 1)[:-1]
                     ) if "." in candidate.qualified_name else ""
                     if primary_class and candidate_class == primary_class:
-                        return f"Shares class scope with primary symbol"
+                        return "Shares class scope with primary symbol"
 
-        return f"Supporting module with related symbols"
+        return "Supporting module with related symbols"

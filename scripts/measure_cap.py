@@ -110,7 +110,11 @@ async def run_one(
                 "prompt_tokens": usage.get("prompt_tokens"),
                 "completion_tokens": usage.get("completion_tokens"),
                 "total_ms": round(elapsed_ms, 1),
-                "history_dropped": (resp.metadata or {}).get("history_dropped_count") if resp.success else None,
+                "history_dropped": (
+                    (resp.metadata or {}).get("history_dropped_count")
+                    if resp.success
+                    else None
+                ),
                 "ok": resp.success,
             }
             records.append(rec)
@@ -151,11 +155,9 @@ async def main() -> int:
     from apps.gateway.core.config import get_settings
 
     get_settings.cache_clear()
-    window = 0
     try:
-        # Best-effort read of the model window for the aggressive setting note.
-        s = get_settings()
-        window = 0  # informational only
+        # Best-effort settings load to surface configuration errors early.
+        get_settings()
     except Exception:  # noqa: BLE001
         pass
 

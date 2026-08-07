@@ -25,17 +25,11 @@ from __future__ import annotations
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from packages.context.context_package import ContextPackage
 from packages.pipeline.normalized import NormalizedRequest
 from packages.pipeline.result import PipelineStageResult
-
-if TYPE_CHECKING:
-    from packages.evaluation.models import EvaluationReport  # noqa: F401
-    from packages.execution.runtime_models import ExecutionReport  # noqa: F401
-    from packages.verification.models import VerificationReport  # noqa: F401
-    from packages.workflows.models import WorkflowPlan  # noqa: F401
 
 
 @dataclass

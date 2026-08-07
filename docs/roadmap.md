@@ -49,9 +49,8 @@ Remaining dormant packages stay on hold per `docs/dormant-code-backlog.md`'s
 ### 2. Quality Harness Expansion
 
 The fixed probe set now proves repository context adds answer-quality signal
-(`15/15` with context versus `2/15` without context in the latest run, on the
-6 single-turn probes; needs a fresh live run to include the 2 new multi-turn
-probes below).
+(`20/20` with context versus `2/20` without context in the latest qwen36
+`--compare-context` run, including the 2 multi-turn probes).
 
 Done in this area:
 
@@ -64,17 +63,27 @@ Done in this area:
 - delta-context smoke probe (`quality_harness.py --delta-context`) sends two
   sequential live requests and checks session-log `symbols_suppressed` on the
   follow-up request
+- local-agent coding workflow catalog (`scripts/local_agent_coding.py`) emits
+  role-specific prompts and verifier commands for one staged
+  Cline/Claude-extension/Claude-CLI/Codex branch; first task targets the current
+  style-preamble/chatter gap
 - compare-run trend tracking, via `scripts/evaluate_quality_harness.py
   --persist` (writes each run to `EngineeringMemory`) and
   `scripts/quality_history.py` (reads back best/worst/average score ratio,
   latest context delta, recent missing facts)
+- live-path CI realignment for gateway/pipeline/provider/planning/context/
+  repository tests, lint, and type checks
+- multi-turn follow-up retrieval now carries recent clean user task text for
+  anaphoric prompts and promotes live history-cap/config-system symbols; latest
+  qwen36 live comparison scores `20/20` with context versus `2/20` without
 
 Next improvements:
 
-- run `--compare-context` live to confirm the two multi-turn probes hold up
-  the same way the single-turn set does
 - run `--delta-context` live after gateway changes that touch repository
   context, delta injection, or session logging
+- run the staged `style_preamble_cleanup` workflow: Cline/qwen27B plans,
+  Claude-extension/qwen35B implements, Claude CLI reviews/tests, Codex makes the
+  final integration decision
 
 ### 3. Repository Context Budgeting And Ranking
 
@@ -88,13 +97,15 @@ tokens. Next performance work should:
 - add tokenizer-aware estimates when the current character estimate becomes a
   practical blocker
 
-### 4. CI Realignment
+### 4. CI Realignment - DONE
 
-CI currently represents the old "whole repo is equally live" worldview. Choose
-one path:
+CI now follows the documented live-path baseline instead of treating every
+dormant package as production runtime:
 
-- live-path CI only, focused on gateway/pipeline/providers/planning/context/repository
-- or full cleanup/quarantine of dormant packages until whole-repo CI is honest
+- tests: `tests/pipeline`, `tests/gateway`, `tests/providers`,
+  `tests/planning`, `tests/context`, `tests/repository`
+- lint: `apps/gateway`, live `packages/*` slices, and `scripts`
+- type checks: `packages/providers`, `packages/pipeline`, and `apps/gateway`
 
 ## Next After That
 

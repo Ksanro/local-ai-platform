@@ -87,8 +87,9 @@ class PipelineEngine:
         context.set_metadata("context_enabled", request.metadata.get("context_enabled", True))
 
         # History cap settings arrive on request.metadata (set by the gateway
-        # endpoint from settings); the engine reads them from context metadata
-        # below, so they must be forwarded here or capping never engages.
+        # endpoint from settings, including APP_HISTORY_CAP_TOKENS); the engine
+        # reads them from context metadata below, so they must be forwarded here
+        # or capping never engages.
         context.set_metadata(
             "history_cap_enabled", request.metadata.get("history_cap_enabled", False)
         )
@@ -246,7 +247,8 @@ def _apply_history_cap(
     if nr is None:
         return
 
-    # Derive the history token budget.
+    # Derive the history token budget. APP_HISTORY_CAP_TOKENS populates
+    # history_cap_tokens; when it is 0, derive from the model context window.
     if history_cap_tokens_override := context.get_metadata("history_cap_tokens", 0):
         max_history_tokens = history_cap_tokens_override
     elif resolved_model is not None:

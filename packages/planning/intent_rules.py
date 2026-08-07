@@ -71,10 +71,9 @@ Public API
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from packages.planning.plan import ContextPlan
-
 
 # ---------------------------------------------------------------------------
 # EngineeringIntentRule model
@@ -202,7 +201,7 @@ BUILTIN_INTENT_RULES: tuple[EngineeringIntentRule, ...] = (
         ),
         retrieval_profile="TASK",
         preferred_symbol_types=("CLASS", "FUNCTION"),
-        preferred_module_patterns=("*task*"),
+        preferred_module_patterns=("*task*",),
         priority=5,
     ),
 
@@ -230,7 +229,7 @@ BUILTIN_INTENT_RULES: tuple[EngineeringIntentRule, ...] = (
         ),
         retrieval_profile="PROVIDER",
         preferred_symbol_types=("CLASS",),
-        preferred_module_patterns=("*provider*"),
+        preferred_module_patterns=("*provider*",),
         priority=5,
     ),
 
@@ -307,7 +306,7 @@ BUILTIN_INTENT_RULES: tuple[EngineeringIntentRule, ...] = (
         ),
         retrieval_profile="TEST",
         preferred_symbol_types=("FUNCTION", "CLASS"),
-        preferred_module_patterns=("*test*"),
+        preferred_module_patterns=("*test*",),
         priority=10,
     ),
 
@@ -353,7 +352,7 @@ BUILTIN_INTENT_RULES: tuple[EngineeringIntentRule, ...] = (
         ),
         retrieval_profile="VALIDATION",
         preferred_symbol_types=("CLASS", "FUNCTION"),
-        preferred_module_patterns=("*valid*"),
+        preferred_module_patterns=("*valid*",),
         priority=10,
     ),
 

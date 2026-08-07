@@ -174,18 +174,65 @@ type run_B.txt
 
 Compare `run_A.txt` and `run_B.txt` on the specific metrics named in the test request.
 
-## Cline task strings — rules
+## Cline task strings - rules
 
 - Provide the task as a verbatim code block; the operator pastes it unchanged.
 - Reference specific files by path so the token load is reproducible across runs.
-- Keep it a fixed, bounded task (read these files, explain this) — not open-ended ("improve the
+- Keep it a fixed, bounded task (read these files, explain this) - not open-ended ("improve the
   code"), whose token load varies run to run and breaks the comparison.
-- After a live run, note in prose whether Cline **completed the task correctly** — tool calls
+- After a live run, note in prose whether Cline **completed the task correctly** - tool calls
   executed, answer coherent. A latency win that breaks Cline's behaviour is not a win.
+
+## Local agent coding workflow
+
+Use `scripts/local_agent_coding.py` to coordinate one local coding branch across
+the current agent roles:
+
+- Cline with qwen3.6 27B dense: first review, planning, architecture
+- Claude extension with local qwen3.6 35B A3B: implementation
+- Claude CLI: code review and tests
+- Codex: master planning, final review, integration decision
+
+The script owns the role-specific prompts and verifier commands:
+
+```powershell
+.\uv.exe run python scripts\local_agent_coding.py list
+.\uv.exe run python scripts\local_agent_coding.py show style_preamble_cleanup
+.\uv.exe run python scripts\local_agent_coding.py show style_preamble_cleanup --json
+.\uv.exe run python scripts\local_agent_coding.py step style_preamble_cleanup plan
+.\uv.exe run python scripts\local_agent_coding.py step style_preamble_cleanup code
+.\uv.exe run python scripts\local_agent_coding.py step style_preamble_cleanup review
+.\uv.exe run python scripts\local_agent_coding.py step style_preamble_cleanup coordinate
+.\uv.exe run python scripts\local_agent_coding.py verify style_preamble_cleanup --dry-run
+```
+
+Run the steps on one branch in this order:
+
+```powershell
+git switch -c agent-style-preamble-cleanup
+.\uv.exe run python scripts\local_agent_coding.py step style_preamble_cleanup plan
+# paste PROMPT into Cline, save its notes in the chat or a short handoff note
+.\uv.exe run python scripts\local_agent_coding.py step style_preamble_cleanup code
+# paste PROMPT into Claude extension with local qwen3.6 35B A3B
+.\uv.exe run python scripts\local_agent_coding.py verify style_preamble_cleanup
+.\uv.exe run python scripts\local_agent_coding.py step style_preamble_cleanup review
+# paste PROMPT into Claude CLI
+.\uv.exe run python scripts\local_agent_coding.py step style_preamble_cleanup coordinate
+# Codex performs the final integration review
+```
+
+After the implementation and review steps, run:
+
+```powershell
+.\uv.exe run python scripts\local_agent_coding.py verify style_preamble_cleanup
+```
+
+Do not run the same task independently in multiple branches unless the goal is
+an explicit A/B comparison. The default workflow is one branch, staged handoffs.
 
 ## The core discipline
 
-The recurring failure mode in this project is **green tests certifying inert code** — a feature wired
+The recurring failure mode in this project is **green tests certifying inert code** - a feature wired
 to the wrong slot passes every test and does nothing. The reliable way to catch it is to demand a
 **measurable effect** (a number that must move), not to ask the suite whether the code is correct.
 Every live measurement should name, in advance, the number that proves the feature ran at all

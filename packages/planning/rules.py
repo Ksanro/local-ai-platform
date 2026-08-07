@@ -70,7 +70,6 @@ from dataclasses import dataclass
 
 from packages.planning.plan import ContextPlan
 
-
 # ---------------------------------------------------------------------------
 # Extended PlanningRule with retrieval profile support
 # ---------------------------------------------------------------------------

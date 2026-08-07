@@ -32,7 +32,12 @@ class SymbolExtractor(ABC):
         ...
 
     @abstractmethod
-    def extract(self, path: Path, exclude_tests: bool = False) -> SymbolGraph:
+    def extract(
+        self,
+        path: Path,
+        exclude_tests: bool = False,
+        exclude_globs: list[str] | None = None,
+    ) -> SymbolGraph:
         """Extract symbols from a single file or directory.
 
         Args:
@@ -40,6 +45,8 @@ class SymbolExtractor(ABC):
             exclude_tests: When ``True``, skip test files
                 (``test_*.py``, ``*_test.py``, ``conftest.py``).
                 Defaults to ``False`` for backward compatibility.
+            exclude_globs: Glob patterns for files to exclude, matched
+                against paths relative to the index root.
 
         Returns:
             A ``SymbolGraph`` containing all discovered symbols and

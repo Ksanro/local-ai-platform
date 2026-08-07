@@ -281,9 +281,9 @@ class RepositoryIndex:
         source = self.get_symbol_source(qualified_name)
         if source is None:
             return None
-        import re
         # Match triple-quoted docstrings (single or double quotes)
-        pattern = r'(?<!\w)r?("""|\'\'\'|\3)(.*?)\3'
+        import re
+
         match = re.search(r'^\s*("""|\'\'\')(.*?)\1', source, re.DOTALL)
         if match:
             return match.group(2).strip() or None
@@ -364,9 +364,7 @@ class RepositoryIndex:
             return source[:max_chars] + "\n    # ... (truncated)"
         return source
 
-    def get_symbol_full_context(
-        self, qualified_name: str
-    ) -> dict[str, str | int | int | None | list[str] | None]:
+    def get_symbol_full_context(self, qualified_name: str) -> dict[str, object]:
         """Return complete source context for a symbol.
 
         This is the consolidated accessor used by the Context Builder

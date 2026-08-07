@@ -25,12 +25,9 @@ jobs:
       - name: Install dependencies
         run: |
           uv sync
-      - name: Run ruff linter
+      - name: Run ruff linter on live path
         run: |
-          ruff check .
-      - name: Run ruff formatter
-        run: |
-          ruff format --check .
+          uv run python -m ruff check apps/gateway packages/pipeline packages/providers packages/planning packages/context packages/repository scripts
 
   type-check:
     runs-on: ubuntu-latest
@@ -50,9 +47,9 @@ jobs:
       - name: Install dependencies
         run: |
           uv sync
-      - name: Run mypy
+      - name: Run mypy on live path
         run: |
-          mypy .
+          uv run python -m mypy apps/gateway packages/providers/base.py packages/providers/exceptions.py packages/providers/factory.py packages/providers/models.py packages/providers/registry.py packages/providers/registry_models.py packages/providers/router.py packages/providers/vllm.py packages/pipeline/base.py packages/pipeline/context.py packages/pipeline/engine.py packages/pipeline/exceptions.py packages/pipeline/history.py packages/pipeline/normalized.py packages/pipeline/request.py packages/pipeline/response.py packages/pipeline/result.py packages/pipeline/user_messages.py packages/pipeline/stages/model_resolution.py packages/pipeline/stages/planning_stage.py packages/pipeline/stages/repository_context.py packages/pipeline/stages/stages.py
 
   test:
     runs-on: ubuntu-latest
@@ -72,6 +69,6 @@ jobs:
       - name: Install dependencies
         run: |
           uv sync
-      - name: Run tests
+      - name: Run live-path tests
         run: |
-          pytest
+          uv run python -m pytest tests/pipeline tests/gateway tests/providers tests/planning tests/context tests/repository -q

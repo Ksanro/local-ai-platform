@@ -105,7 +105,7 @@ class Settings(BaseSettings):
     session_log_enabled: bool = True  # on by default — opt in
     session_log_path: str = "logs/sessions.jsonl"
     history_cap_enabled: bool = False  # on by default — opt in to reduce prefill
-    history_cap_tokens: int = 0  # 0 = derive from context_window
+    history_cap_tokens: int = 0  # APP_HISTORY_CAP_TOKENS; 0 = derive from context_window
 
     model_config = {"env_prefix": "APP_"}
 

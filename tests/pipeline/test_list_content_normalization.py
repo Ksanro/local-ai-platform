@@ -55,3 +55,48 @@ def test_list_content_text_view_reaches_internal_consumers() -> None:
     assert dropped > 0
     assert capped[-1]["content"] == messages[-1]["content"]
     assert isinstance(capped[-1]["content"], list)
+
+
+def test_followup_query_includes_previous_clean_user_task() -> None:
+    """Anaphoric follow-ups should carry recent user task text into retrieval."""
+    messages = [
+        {
+            "role": "user",
+            "content": (
+                "Which component caps forwarded chat history, and where does "
+                "that happen relative to repository-context injection?"
+            ),
+        },
+        {
+            "role": "assistant",
+            "content": (
+                "History capping runs inside PipelineEngine, right after the "
+                "repository_context stage and before the provider stage."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                "For that capping logic: name the function that applies the "
+                "cap and the env var used to force a token budget."
+            ),
+        },
+    ]
+    context = PipelineContext(request={"messages": messages})
+
+    query = RepositoryContextStage._extract_query(context)
+
+    assert "Which component caps forwarded chat history" in query
+    assert "For that capping logic" in query
+
+
+def test_non_followup_query_still_uses_last_task_only() -> None:
+    """Ordinary multi-turn chats should not drag unrelated prior tasks into retrieval."""
+    messages = [
+        {"role": "user", "content": "first unrelated request"},
+        {"role": "assistant", "content": "ok"},
+        {"role": "user", "content": "Find answer_preview extraction."},
+    ]
+    context = PipelineContext(request={"messages": messages})
+
+    assert RepositoryContextStage._extract_query(context) == "Find answer_preview extraction."

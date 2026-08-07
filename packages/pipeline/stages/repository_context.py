@@ -86,7 +86,7 @@ from packages.context.models import ContextQuery
 from packages.pipeline.base import PipelineStage
 from packages.pipeline.context import PipelineContext
 from packages.pipeline.result import PipelineStageResult
-from packages.pipeline.user_messages import select_last_task_text
+from packages.pipeline.user_messages import select_context_query_text
 from packages.repository.index.models import RepositoryIndex
 from packages.serializers.factory import SerializerFactory
 from packages.serializers.openai import OpenAISerializer  # noqa: F401 - auto-registers
@@ -504,7 +504,7 @@ class RepositoryContextStage(PipelineStage):
         if not isinstance(request, dict):
             return ""
 
-        return select_last_task_text(request.get("messages", []))
+        return select_context_query_text(request.get("messages", []))
 
     @staticmethod
     def _get_messages(context: PipelineContext) -> list[dict[str, str]]:
