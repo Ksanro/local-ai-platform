@@ -169,6 +169,114 @@ TASKS: tuple[LocalAgentCodingTask, ...] = (
             "Any remaining model-dependent live-vLLM behavior is reported explicitly.",
         ),
     ),
+    LocalAgentCodingTask(
+        id="delta_context_live_smoke",
+        title="Run Delta-Context Live Smoke",
+        objective=(
+            "Verify the live gateway still suppresses repeated repository symbols on a "
+            "follow-up request after repository-context, delta-injection, or session-log changes."
+        ),
+        workflow=(
+            AgentStep(
+                role="plan",
+                actor="Cline with qwen3.6 27B dense",
+                purpose="live smoke planning and risk check",
+                prompt=(
+                    "You are planning a live delta-context smoke check for local-ai-platform. "
+                    "Do not edit files. Inspect scripts/quality_harness.py, docs/STATUS.md, "
+                    "docs/roadmap.md, and the session-log/delta-context path if needed. Produce "
+                    "a short run plan: required gateway state, exact commands, expected pass/fail "
+                    "signals, and risks. Keep the plan focused on "
+                    "scripts/quality_harness.py --delta-context."
+                ),
+            ),
+            AgentStep(
+                role="code",
+                actor="Claude extension with local qwen3.6 35B A3B",
+                purpose="operator-run live verification, no implementation unless blocked",
+                prompt=(
+                    "You are running a live verification task in local-ai-platform, not doing a "
+                    "feature implementation. Use the planning notes if present. Goal: verify "
+                    "`scripts/quality_harness.py --delta-context` against the local gateway and "
+                    "session log.\n\n"
+                    "Do not edit files unless the smoke test exposes a concrete bug. If you do "
+                    "edit files, keep the patch minimal and explain why verification could not "
+                    "pass without it.\n\n"
+                    "Expected operator shape:\n"
+                    "1. Start the gateway with session logging enabled and a fresh session log.\n"
+                    "2. Run the delta-context probe with `--session-log-path` pointed at "
+                    "that log.\n"
+                    "3. Confirm the follow-up result is OK and the follow-up session record shows "
+                    "suppressed repeated symbols.\n"
+                    "4. Run focused tests if any code changed.\n\n"
+                    "Report exact commands, pass/fail output, changed files if any, and whether "
+                    "the live result is trustworthy."
+                ),
+            ),
+            AgentStep(
+                role="review",
+                actor="Claude CLI",
+                purpose="review live smoke output and any patch",
+                prompt=(
+                    "Review the delta_context_live_smoke handoff. Prioritize whether the live "
+                    "delta-context run actually exercised session logging and repeated-symbol "
+                    "suppression. If code changed, review for regressions and run focused tests. "
+                    "Report findings first, then the final pass/fail assessment."
+                ),
+            ),
+            AgentStep(
+                role="coordinate",
+                actor="Codex",
+                purpose="final live-smoke decision and roadmap update",
+                prompt=(
+                    "Coordinate delta_context_live_smoke: inspect the plan, live output, session "
+                    "log evidence, and review notes. Decide whether delta context is verified, "
+                    "blocked by backend instability, or needs a code fix. Update docs only if the "
+                    "live result is conclusive."
+                ),
+            ),
+        ),
+        expected_files=(
+            "scripts/quality_harness.py",
+            "apps/gateway/session_log.py",
+            "packages/context",
+            "packages/pipeline/stages/repository_context.py",
+            "logs/sessions.jsonl",
+        ),
+        verification=(
+            VerificationCommand(
+                argv=(
+                    ".\\uv.exe",
+                    "run",
+                    "python",
+                    "scripts\\quality_harness.py",
+                    "--delta-context",
+                    "--session-log-path",
+                    "logs\\sessions.jsonl",
+                ),
+                description="live delta-context probe against the running gateway",
+            ),
+            VerificationCommand(
+                argv=(
+                    ".\\uv.exe",
+                    "run",
+                    "python",
+                    "-m",
+                    "pytest",
+                    "tests\\observability\\test_quality_harness.py",
+                    "-q",
+                ),
+                description="delta-context harness regression tests",
+            ),
+        ),
+        success_criteria=(
+            "The gateway is running with session logging enabled and a fresh session log.",
+            "`quality_harness.py --delta-context` reports an OK follow-up result.",
+            "The follow-up session record contains suppressed repeated symbols.",
+            "Any backend crash or context-window failure is reported as blocked, not as success.",
+            "No code is changed unless the live smoke exposes a concrete bug.",
+        ),
+    ),
 )
 
 

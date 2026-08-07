@@ -5,6 +5,9 @@ from __future__ import annotations
 from scripts.quality_harness import (
     DELTA_CONTEXT_PROBE,
     PROBES,
+    QUALITY_SYSTEM_PROMPT,
+    REASONING_PREAMBLE_PREFIXES,
+    TOOL_CHATTER_MARKERS,
     QualityProbe,
     QualityResult,
     _read_session_log_records,
@@ -83,6 +86,38 @@ def test_detect_style_violations_ignores_clean_fact_answer() -> None:
     answer = "apps/gateway/session_log.py, _extract_answer_preview"
 
     assert detect_style_violations(answer) == ()
+
+
+def test_quality_system_prompt_covers_reasoning_preamble_prefixes() -> None:
+    """The live quality prompt should tell the model not to emit known preambles."""
+    prompt = QUALITY_SYSTEM_PROMPT.lower()
+
+    for prefix in REASONING_PREAMBLE_PREFIXES:
+        assert prefix in prompt
+
+
+def test_quality_system_prompt_covers_tool_chatter_markers() -> None:
+    """The live quality prompt should tell the model not to emit tool chatter."""
+    prompt = QUALITY_SYSTEM_PROMPT.lower()
+
+    for marker in TOOL_CHATTER_MARKERS:
+        marker_name = marker.removeprefix("<").removeprefix("/").removesuffix(">")
+        assert marker_name in prompt
+
+
+def test_build_payload_uses_quality_system_prompt() -> None:
+    """Gateway payloads should carry the strengthened quality system prompt."""
+    probe = QualityProbe("p1", "SEARCH", "Find the thing", (fact("thing"),))
+
+    payload = build_payload(
+        probe,
+        model="qwen36",
+        max_tokens=50,
+        use_intent_overrides=True,
+        context_enabled=True,
+    )
+
+    assert payload["messages"][0] == {"role": "system", "content": QUALITY_SYSTEM_PROMPT}
 
 
 def test_extract_answer_reads_openai_shape() -> None:

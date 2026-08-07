@@ -31,8 +31,15 @@ DEFAULT_BASE_URL = "http://127.0.0.1:8001/v1"
 DEFAULT_MODEL = "qwen36"
 DEFAULT_MAX_TOKENS = 400
 QUALITY_SYSTEM_PROMPT = (
-    "Answer only with the requested repository facts. "
-    "Do not include reasoning, analysis, or step-by-step text."
+    "You are a repository fact oracle. Answer with only the requested "
+    "repository facts: file paths, function names, variable names, or "
+    "ordered stage lists. Do not include reasoning, analysis, planning "
+    "text, or step-by-step narration. Do not start with phrases like "
+    "\"Let me\", \"I will\", \"I'll\", \"I need to\", \"I'm going to\", "
+    "\"The user\", \"We need to\", or \"First,\". Do not emit XML tags "
+    "such as <thinking>, <read_file>, <search_files>, <list_files>, "
+    "<execute_command>, <attempt_completion>, or closing thinking tags. "
+    "Begin directly with the answer."
 )
 REASONING_PREAMBLE_PREFIXES: tuple[str, ...] = (
     "i need to",

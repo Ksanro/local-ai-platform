@@ -28,6 +28,8 @@ def test_list_outputs_task_ids(capsys: pytest.CaptureFixture[str]) -> None:
     assert exit_code == 0
     assert "style_preamble_cleanup" in out
     assert "Reduce Reasoning Preamble Chatter" in out
+    assert "delta_context_live_smoke" in out
+    assert "Run Delta-Context Live Smoke" in out
 
 
 def test_show_outputs_verbatim_task_block(capsys: pytest.CaptureFixture[str]) -> None:
@@ -60,6 +62,29 @@ def test_step_outputs_role_specific_prompt(capsys: pytest.CaptureFixture[str]) -
     assert "Claude extension with local qwen3.6 35B A3B" in out
     assert "PROMPT" in out
     assert ".\\uv.exe run python -m pytest" in out
+
+
+def test_delta_context_plan_step_outputs_live_smoke_prompt(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    exit_code = main(["step", "delta_context_live_smoke", "plan"])
+
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "Cline with qwen3.6 27B dense" in out
+    assert "--delta-context" in out
+    assert "Do not edit files" in out
+
+
+def test_delta_context_verify_dry_run_prints_live_command(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    exit_code = main(["verify", "delta_context_live_smoke", "--dry-run"])
+
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "scripts\\quality_harness.py --delta-context" in out
+    assert "--session-log-path logs\\sessions.jsonl" in out
 
 
 def test_step_can_append_handoff_notes(
