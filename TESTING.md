@@ -211,8 +211,8 @@ Run the steps on one branch in this order:
 ```powershell
 git switch -c agent-style-preamble-cleanup
 .\uv.exe run python scripts\local_agent_coding.py step style_preamble_cleanup plan
-# paste PROMPT into Cline, save its notes in the chat or a short handoff note
-.\uv.exe run python scripts\local_agent_coding.py step style_preamble_cleanup code
+# paste PROMPT into Cline, then save its output to a handoff note file
+.\uv.exe run python scripts\local_agent_coding.py step style_preamble_cleanup code --notes-file logs\agent_handoffs\style_preamble_cleanup_plan.md
 # paste PROMPT into Claude extension with local qwen3.6 35B A3B
 .\uv.exe run python scripts\local_agent_coding.py verify style_preamble_cleanup
 .\uv.exe run python scripts\local_agent_coding.py step style_preamble_cleanup review

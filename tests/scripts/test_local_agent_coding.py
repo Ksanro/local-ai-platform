@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -59,6 +60,29 @@ def test_step_outputs_role_specific_prompt(capsys: pytest.CaptureFixture[str]) -
     assert "Claude extension with local qwen3.6 35B A3B" in out
     assert "PROMPT" in out
     assert ".\\uv.exe run python -m pytest" in out
+
+
+def test_step_can_append_handoff_notes(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    notes = tmp_path / "plan.md"
+    notes.write_text("Cline says: use the quality harness prompt.", encoding="utf-8")
+
+    exit_code = main(
+        [
+            "step",
+            "style_preamble_cleanup",
+            "code",
+            "--notes-file",
+            str(notes),
+        ]
+    )
+
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "Handoff notes from the previous step:" in out
+    assert "Cline says: use the quality harness prompt." in out
 
 
 def test_verify_dry_run_prints_commands_without_running(

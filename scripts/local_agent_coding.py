@@ -217,8 +217,17 @@ def print_task(task: LocalAgentCodingTask) -> None:
         print(f"- {criterion}")
 
 
-def print_step(task: LocalAgentCodingTask, role: str) -> None:
+def _read_notes(path: str | None) -> str:
+    """Read optional handoff notes for the next workflow step."""
+    if not path:
+        return ""
+    notes_path = Path(path)
+    return notes_path.read_text(encoding="utf-8")
+
+
+def print_step(task: LocalAgentCodingTask, role: str, *, notes_file: str | None = None) -> None:
     """Print one role-specific prompt."""
+    notes = _read_notes(notes_file)
     for step in task.workflow:
         if step.role == role:
             print(f"{task.id} / {step.role}: {step.actor}")
@@ -227,6 +236,10 @@ def print_step(task: LocalAgentCodingTask, role: str) -> None:
             print("PROMPT")
             print("```")
             print(step.prompt)
+            if notes:
+                print()
+                print("Handoff notes from the previous step:")
+                print(notes.rstrip())
             print("```")
             return
     known = ", ".join(step.role for step in task.workflow)
@@ -250,6 +263,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "role",
         choices=("plan", "code", "review", "coordinate"),
         help="workflow role to print",
+    )
+    step.add_argument(
+        "--notes-file",
+        default=None,
+        help="optional previous-step notes file to append inside the prompt block",
     )
 
     verify = subparsers.add_parser("verify", help="run or print verification commands")
@@ -290,7 +308,7 @@ def main(argv: list[str]) -> int:
             print_task(task)
         return 0
     if args.command == "step":
-        print_step(task, args.role)
+        print_step(task, args.role, notes_file=args.notes_file)
         return 0
     if args.command == "verify":
         return run_verification(task, dry_run=args.dry_run)
