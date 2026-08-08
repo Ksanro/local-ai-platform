@@ -273,6 +273,166 @@ TASKS: tuple[LocalAgentCodingTask, ...] = (
             "No code is changed unless the live smoke exposes a concrete bug.",
         ),
     ),
+    LocalAgentCodingTask(
+        id="context_budget_ranking",
+        title="Repository Context Budgeting And Ranking",
+        objective=(
+            "Reduce repository-context token cost for REFACTOR and EXPLAIN intents without "
+            "losing quality-harness fact coverage, using measured --compare-context runs and "
+            "session-log context-cost-by-intent data to decide whether a budget or ranking "
+            "change is actually justified before writing one."
+        ),
+        workflow=(
+            AgentStep(
+                role="plan",
+                actor="Cline with qwen3.6 27B dense",
+                purpose="measurement-driven budget/ranking plan, no edits",
+                prompt=(
+                    "You are planning repository-context budget and ranking tuning for "
+                    "local-ai-platform. This is planning/architecture only: do not edit "
+                    "files.\n\n"
+                    "Focus: REFACTOR and EXPLAIN intents still use the default repository-"
+                    "context token budget. SEARCH, TEST, and DEBUG already have measured "
+                    "APP_REPOSITORY_CONTEXT_INTENT_BUDGETS overrides; REFACTOR and EXPLAIN do "
+                    "not, and repository context still dominates total prompt tokens for "
+                    "them.\n\n"
+                    "Inspect, in this order:\n"
+                    "- docs/roadmap.md (section 3, Repository Context Budgeting And Ranking) "
+                    "and docs/STATUS.md (RepositoryContextStage) for the current tuning "
+                    "baseline and how SEARCH/TEST/DEBUG were tuned\n"
+                    "- scripts/quality_harness.py and scripts/evaluate_quality_harness.py for "
+                    "how --compare-context measures context cost against fact coverage\n"
+                    "- scripts/analyze_sessions.py, specifically _print_context_cost, for the "
+                    "existing context-cost-by-intent session view\n"
+                    "- packages/context/budget.py, packages/context/ranking.py, "
+                    "packages/context/ranking_config.py, and packages/context/builder.py for "
+                    "how token budgets and ranking currently work\n"
+                    "- packages/pipeline/stages/repository_context.py for how the intent "
+                    "budget map is applied\n"
+                    "- ranking/budget tests under tests/context (test_budget.py, "
+                    "test_ranking.py, test_ranking_v2.py, test_builder.py) for the invariants "
+                    "a change must not break\n\n"
+                    "Produce a short plan: what REFACTOR/EXPLAIN budget values or ranking "
+                    "changes to try, how to measure before/after (--compare-context, session-"
+                    "log context-cost-by-intent), what could regress fact coverage or the "
+                    "existing SEARCH/TEST/DEBUG tuning, and what tests would need to change. "
+                    "Do not propose activating dormant workflow/controller/execution/"
+                    "evaluation packages."
+                ),
+            ),
+            AgentStep(
+                role="code",
+                actor="Claude extension with local qwen3.6 35B A3B",
+                purpose="implement the measured budget/ranking change",
+                prompt=(
+                    "You are coding in local-ai-platform. Implement the REFACTOR/EXPLAIN "
+                    "repository-context budget or ranking change from the plan step, not a "
+                    "redesign.\n\n"
+                    "Use the planning notes if present. Scope:\n"
+                    "- Change only what the plan calls for in packages/context/budget.py, "
+                    "packages/context/ranking.py, packages/context/ranking_config.py, "
+                    "packages/pipeline/stages/repository_context.py, or "
+                    "APP_REPOSITORY_CONTEXT_INTENT_BUDGETS defaults.\n"
+                    "- Preserve the existing SEARCH/TEST/DEBUG tuning unless the plan "
+                    "explicitly calls for changing it.\n"
+                    "- Add or update tests under tests/context for any budget/ranking "
+                    "behavior you change.\n"
+                    "- Do not activate dormant workflow/controller/execution/evaluation "
+                    "packages.\n\n"
+                    "After editing, run:\n"
+                    ".\\uv.exe run python -m pytest tests\\context tests\\pipeline -q\n"
+                    ".\\uv.exe run python -m ruff check packages\\context "
+                    "packages\\pipeline\\stages\\repository_context.py tests\\context\n"
+                    ".\\uv.exe run python scripts\\quality_harness.py --compare-context\n\n"
+                    "Report the changed files, test results, and the before/after "
+                    "--compare-context numbers for REFACTOR and EXPLAIN."
+                ),
+            ),
+            AgentStep(
+                role="review",
+                actor="Claude CLI",
+                purpose="review the budget/ranking change and live measurement",
+                prompt=(
+                    "Review the current local-ai-platform changes for the "
+                    "context_budget_ranking task. Prioritize whether the REFACTOR/EXPLAIN "
+                    "token reduction is real rather than budget truncation hiding lost facts, "
+                    "whether SEARCH/TEST/DEBUG tuning regressed, and whether tests actually "
+                    "cover the new behavior. Run the focused verification commands and the "
+                    "live --compare-context comparison if available. Report findings first "
+                    "with file/line references, then the measured before/after numbers."
+                ),
+            ),
+            AgentStep(
+                role="coordinate",
+                actor="Codex",
+                purpose="final integration decision and doc/roadmap update",
+                prompt=(
+                    "Coordinate the context_budget_ranking task: inspect Cline's plan, Claude "
+                    "extension's patch, and Claude CLI's review/measurement. Decide whether "
+                    "the budget/ranking change is ready, needs another tuning pass, or should "
+                    "be reverted. Update docs/STATUS.md and docs/roadmap.md only if the live "
+                    "result is conclusive, using the same measured-numbers style as the "
+                    "existing SEARCH/TEST/DEBUG tuning notes."
+                ),
+            ),
+        ),
+        expected_files=(
+            "packages/context/budget.py",
+            "packages/context/ranking.py",
+            "packages/context/ranking_config.py",
+            "packages/pipeline/stages/repository_context.py",
+            "tests/context",
+        ),
+        verification=(
+            VerificationCommand(
+                argv=(
+                    ".\\uv.exe",
+                    "run",
+                    "python",
+                    "-m",
+                    "pytest",
+                    "tests\\context",
+                    "tests\\pipeline",
+                    "-q",
+                ),
+                description="focused context/pipeline regression tests",
+            ),
+            VerificationCommand(
+                argv=(
+                    ".\\uv.exe",
+                    "run",
+                    "python",
+                    "-m",
+                    "ruff",
+                    "check",
+                    "packages\\context",
+                    "packages\\pipeline\\stages\\repository_context.py",
+                    "tests\\context",
+                ),
+                description="focused lint for touched context/pipeline paths",
+            ),
+            VerificationCommand(
+                argv=(
+                    ".\\uv.exe",
+                    "run",
+                    "python",
+                    "scripts\\quality_harness.py",
+                    "--compare-context",
+                ),
+                description="live before/after quality-harness comparison",
+            ),
+        ),
+        success_criteria=(
+            "The plan step produces measurement targets and risks, not implementation, and "
+            "does not edit files.",
+            "REFACTOR and EXPLAIN prompt/context tokens drop in a live --compare-context run "
+            "without losing required-fact score.",
+            "SEARCH/TEST/DEBUG budgets and quality-harness scores do not regress.",
+            "Focused context/pipeline tests pass after implementation and review.",
+            "docs/STATUS.md and docs/roadmap.md are updated only with measured, conclusive "
+            "results.",
+        ),
+    ),
 )
 
 

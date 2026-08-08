@@ -3,7 +3,7 @@
 This file is the current runtime snapshot. It intentionally describes only
 what matters for the live gateway path and calls out dormant code explicitly.
 
-Last reviewed: 2026-08-01.
+Last reviewed: 2026-08-08.
 
 ## Product Shape
 
@@ -138,10 +138,11 @@ Builds the provider payload from `NormalizedRequest`, swaps `model` to
 - live Cline/vLLM A/B measurement protocol
 - quality-harness style/compliance signal for unwanted reasoning preambles and
   tool/thinking chatter (`style_violations`, `style_ok`)
-- local-agent coding workflow catalog (`scripts/local_agent_coding.py`) for one
+- local-agent coding workflow catalog (`scripts/local_agent_coding.py`) for a
   staged Cline/qwen27B planning, Claude-extension/qwen35B implementation,
-  Claude CLI review/tests, and Codex coordination branch; the first task is
-  `style_preamble_cleanup` and targets the current style-preamble/chatter issue
+  Claude CLI review/tests, and Codex coordination branch; `style_preamble_cleanup`
+  and `delta_context_live_smoke` are both complete, `context_budget_ranking`
+  is the active planning-first task for `REFACTOR`/`EXPLAIN` budget tuning
 - multi-turn Cline-like quality-harness probes (`QualityProbe.history`) -
   `multiturn_history_cap_budget`, `multiturn_config_systems`; prior
   user/assistant turns are sent before the scored final prompt
@@ -150,7 +151,13 @@ Builds the provider payload from `NormalizedRequest`, swaps `model` to
   full 8-probe set, including the multi-turn probes
 - delta-context quality-harness smoke probe (`scripts/quality_harness.py
   --delta-context`) that sends two sequential live requests and verifies the
-  follow-up session record reports suppressed repeated symbols
+  follow-up session record reports suppressed repeated symbols; the live run
+  found the session-log middleware flushes after the HTTP response reaches
+  the client, so the harness retries reads
+  (`_read_session_log_records_with_retry`) instead of racing the write
+- `docs/live-gateway-runbook.md` documents how to start the gateway, check it,
+  and run the delta-context smoke from a fresh PowerShell or Bash/Git Bash
+  terminal, including `.env`/session-log-path alignment
 - `packages.evaluation.quality_harness_report` (`evaluate_results`,
   `evaluate_comparison`) via `scripts/evaluate_quality_harness.py` — scores
   quality-harness `--json` output (score, missing facts, prompt tokens,
@@ -253,6 +260,9 @@ Recommended live-path checks:
   full latency lever. Configurable repository-context budget enforcement and
   targeted retrieval promotions now exist; recent quality-harness runs show
   `20/20` with context versus `2/20` without context on the fixed probe set.
+  `SEARCH`/`TEST`/`DEBUG` have measured budget overrides; `REFACTOR`/`EXPLAIN`
+  tuning is the active item, see `docs/roadmap.md` section 3 and the
+  `context_budget_ranking` local-agent-coding task.
 - Token estimates still use `CHARS_PER_TOKEN = 4.0`, not model-specific
   tokenizers.
 - The model often includes reasoning/preamble despite terse system prompts; the

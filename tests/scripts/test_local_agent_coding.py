@@ -30,6 +30,8 @@ def test_list_outputs_task_ids(capsys: pytest.CaptureFixture[str]) -> None:
     assert "Reduce Reasoning Preamble Chatter" in out
     assert "delta_context_live_smoke" in out
     assert "Run Delta-Context Live Smoke" in out
+    assert "context_budget_ranking" in out
+    assert "Repository Context Budgeting And Ranking" in out
 
 
 def test_show_outputs_verbatim_task_block(capsys: pytest.CaptureFixture[str]) -> None:
@@ -97,6 +99,42 @@ def test_delta_context_code_step_explains_gateway_and_log_setup(
     assert "docs/live-gateway-runbook.md" in out
     assert "Start Gateway, Check Gateway, and Delta Context Smoke" in out
     assert "Do not paste the whole runbook back" in out
+
+
+def test_context_budget_ranking_is_planning_first(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The plan step must ask for measurement, not implementation, and forbid edits."""
+    exit_code = main(["step", "context_budget_ranking", "plan"])
+
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "Cline with qwen3.6 27B dense" in out
+    assert "do not edit files" in out.lower()
+    assert "REFACTOR" in out
+    assert "EXPLAIN" in out
+    assert "packages/context/budget.py" in out
+    assert "packages/pipeline/stages/repository_context.py" in out
+
+
+def test_context_budget_ranking_verify_dry_run_prints_compare_context(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    exit_code = main(["verify", "context_budget_ranking", "--dry-run"])
+
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "tests\\context tests\\pipeline -q" in out
+    assert "ruff check packages\\context" in out
+    assert "scripts\\quality_harness.py --compare-context" in out
+
+
+def test_context_budget_ranking_expected_files_target_context_and_pipeline() -> None:
+    task = next(task for task in TASKS if task.id == "context_budget_ranking")
+
+    assert [step.role for step in task.workflow] == ["plan", "code", "review", "coordinate"]
+    assert "packages/context/budget.py" in task.expected_files
+    assert "tests/context" in task.expected_files
 
 
 def test_step_can_append_handoff_notes(

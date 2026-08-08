@@ -52,11 +52,14 @@ If you are about to create a new directory under `packages/`, stop — that is a
 
 ## Test baseline
 
-`pytest -q` currently reports **42 failures** on Python 3.13 (48 on 3.12 — six immutability tests
+`pytest -q` currently reports **43 failures** on Python 3.13 (49 on 3.12 — six immutability tests
 depend on a CPython fix for `@dataclass(frozen=True, slots=True)`).
 
-**42 failures is the expected baseline, not breakage.** They live in `autonomous` (26),
-`observability` (12) and `integration/test_engineering_flow` (4) — all unreachable code.
+**43 failures is the expected baseline, not breakage.** They live in `autonomous` (26),
+`observability` (12), `integration/test_engineering_flow` (4), and
+`modification/test_engine.py::TestInvalidPatchSet::test_nonexistent_workspace_raises` (1) — all
+unreachable code. The `modification` failure is a pre-existing Windows-path issue
+(`pytest.raises(FileNotFoundError)` does not raise), independent of the frozen-dataclass/3.12 issue.
 
 A change is only clean if the count does not increase. Report the before and after number.
 

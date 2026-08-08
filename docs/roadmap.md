@@ -2,7 +2,7 @@
 
 This roadmap is based on the current live gateway, not on dormant scaffolding.
 
-Last reviewed: 2026-08-01.
+Last reviewed: 2026-08-08.
 
 ## Done Enough For Now
 
@@ -62,11 +62,16 @@ Done in this area:
   user/assistant turns, sent before the scored final prompt
 - delta-context smoke probe (`quality_harness.py --delta-context`) sends two
   sequential live requests and checks session-log `symbols_suppressed` on the
-  follow-up request
+  follow-up request; the live `delta_context_live_smoke` run found that the
+  session-log middleware flushes after the HTTP response reaches the client,
+  so the harness now retries reads (`_read_session_log_records_with_retry`)
+  instead of racing the write
 - local-agent coding workflow catalog (`scripts/local_agent_coding.py`) emits
-  role-specific prompts and verifier commands for one staged
-  Cline/Claude-extension/Claude-CLI/Codex branch; first task targets the current
-  style-preamble/chatter gap
+  role-specific prompts and verifier commands for a staged
+  Cline/Claude-extension/Claude-CLI/Codex branch; `style_preamble_cleanup`
+  (quality-harness system prompt now explicitly bans reasoning-preamble
+  phrases and tool-chatter tags) and `delta_context_live_smoke` are both
+  complete
 - compare-run trend tracking, via `scripts/evaluate_quality_harness.py
   --persist` (writes each run to `EngineeringMemory`) and
   `scripts/quality_history.py` (reads back best/worst/average score ratio,
@@ -79,16 +84,20 @@ Done in this area:
 
 Next improvements:
 
-- run `--delta-context` live after gateway changes that touch repository
-  context, delta injection, or session logging
-- run the staged `style_preamble_cleanup` workflow: Cline/qwen27B plans,
-  Claude-extension/qwen35B implements, Claude CLI reviews/tests, Codex makes the
-  final integration decision
+- keep running `--delta-context` live after gateway changes that touch
+  repository context, delta injection, or session logging
+- next real product item is Repository Context Budgeting And Ranking (below),
+  planning-first via the `context_budget_ranking` local-agent-coding task
 
-### 3. Repository Context Budgeting And Ranking
+### 3. Repository Context Budgeting And Ranking — active
 
 History capping works, but repository context often dominates total prompt
-tokens. Next performance work should:
+tokens. `SEARCH`, `TEST`, and `DEBUG` already have measured
+`APP_REPOSITORY_CONTEXT_INTENT_BUDGETS` overrides (see `docs/STATUS.md`);
+`REFACTOR` and `EXPLAIN` do not. This is now the active next item, run
+planning-first via the `context_budget_ranking` task in
+`scripts/local_agent_coding.py` (Cline plans, Claude extension implements,
+Claude CLI reviews, Codex coordinates) before any budget/ranking code changes:
 
 - continue tuning selected symbols/modules by intent
 - compare `REFACTOR` and `EXPLAIN` budget quality with live
