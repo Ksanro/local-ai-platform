@@ -4,9 +4,10 @@ Use this when an agent or operator needs to run live gateway probes from a
 fresh terminal.
 
 Run `uv` as `.\uv.exe` from the repo root. `uv` is not assumed to be on `PATH`.
-Commands below are PowerShell-first because the project is normally operated on
-Windows. If an agent is in Bash/Git Bash/WSL, either run these through
-`powershell.exe -Command "..."` or use the Bash equivalents below.
+
+Use PowerShell for these commands. If an agent is in Bash/Git Bash/WSL, do not
+translate the commands unless explicitly asked. Run the PowerShell command blocks
+through `powershell.exe -NoProfile -Command "..."`.
 
 Important: `apps/gateway/main.py` loads `.env` with `override=True`. Values in
 `.env` can override shell environment variables passed when starting the
@@ -29,16 +30,10 @@ New-Item -ItemType File -Force logs\sessions.jsonl | Out-Null
 
 Leave this terminal running.
 
-Bash/Git Bash equivalent:
+If the agent shell is Bash/Git Bash, start the same gateway with:
 
 ```bash
-export UV_CACHE_DIR='C:\Users\ovidi\local-ai-platform\.uv-cache'
-export APP_SESSION_LOG_ENABLED='true'
-export APP_SESSION_LOG_PATH='logs\sessions.jsonl'
-export APP_CONTEXT_DELTA_INJECTION='true'
-mkdir -p logs
-: > logs/sessions.jsonl
-./uv.exe run python -m uvicorn apps.gateway.main:create_app --factory --port 8001
+powershell.exe -NoProfile -Command "Set-Location 'C:\Users\ovidi\local-ai-platform'; `$env:UV_CACHE_DIR='C:\Users\ovidi\local-ai-platform\.uv-cache'; `$env:APP_SESSION_LOG_ENABLED='true'; `$env:APP_SESSION_LOG_PATH='logs\sessions.jsonl'; `$env:APP_CONTEXT_DELTA_INJECTION='true'; New-Item -ItemType Directory -Force logs | Out-Null; New-Item -ItemType File -Force logs\sessions.jsonl | Out-Null; .\uv.exe run python -m uvicorn apps.gateway.main:create_app --factory --port 8001"
 ```
 
 ## Check Gateway
@@ -48,6 +43,12 @@ In a second terminal:
 ```powershell
 curl http://127.0.0.1:8001/health
 curl http://127.0.0.1:8001/v1/models
+```
+
+If the agent shell is Bash/Git Bash:
+
+```bash
+powershell.exe -NoProfile -Command "curl http://127.0.0.1:8001/health; curl http://127.0.0.1:8001/v1/models"
 ```
 
 If `/health` fails, the gateway is not running. If `/v1/models` fails, the
@@ -72,19 +73,17 @@ For the current local `.env`, if it still contains
 .\uv.exe run python scripts\quality_harness.py --delta-context --session-log-path logs\implement_budget_A_4096_20260801.jsonl
 ```
 
-Bash/Git Bash equivalent:
+If the agent shell is Bash/Git Bash:
 
 ```bash
-mkdir -p logs
-: > logs/sessions.jsonl
-./uv.exe run python scripts/quality_harness.py --delta-context --session-log-path logs/sessions.jsonl
+powershell.exe -NoProfile -Command "Set-Location 'C:\Users\ovidi\local-ai-platform'; Remove-Item logs\sessions.jsonl -ErrorAction SilentlyContinue; New-Item -ItemType File -Force logs\sessions.jsonl | Out-Null; .\uv.exe run python scripts\quality_harness.py --delta-context --session-log-path logs\sessions.jsonl"
 ```
 
 If `.env` points at `logs/implement_budget_A_4096_20260801.jsonl`, use that
-same path in Bash too:
+same path in Bash/Git Bash too:
 
 ```bash
-./uv.exe run python scripts/quality_harness.py --delta-context --session-log-path logs/implement_budget_A_4096_20260801.jsonl
+powershell.exe -NoProfile -Command "Set-Location 'C:\Users\ovidi\local-ai-platform'; .\uv.exe run python scripts\quality_harness.py --delta-context --session-log-path logs\implement_budget_A_4096_20260801.jsonl"
 ```
 
 Pass means:

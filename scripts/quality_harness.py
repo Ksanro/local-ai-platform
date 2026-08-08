@@ -495,6 +495,44 @@ def _read_session_log_records(path: str, *, offset: int) -> list[dict[str, Any]]
     return records
 
 
+def _read_session_log_records_with_retry(
+    path: str,
+    *,
+    offset: int,
+    expected_min: int,
+    max_wait_seconds: float = 5.0,
+    sleep_seconds: float = 0.5,
+) -> list[dict[str, Any]]:
+    """Read JSONL session records appended after `offset` with a short retry loop.
+
+    The session-log middleware flushes *after* the HTTP response reaches the
+    client, so the harness may read before the follow-up record is visible on
+    disk.  This helper retries until *expected_min* records appear or the
+    timeout expires.
+
+    Args:
+        path: Path to the session JSONL file.
+        offset: Byte offset to start reading from.
+        expected_min: Minimum number of records to wait for.
+        max_wait_seconds: Maximum total seconds to retry.
+        sleep_seconds: Sleep interval between retries.
+
+    Returns:
+        All records found after the offset (up to the timeout).
+    """
+    deadline = time.monotonic() + max_wait_seconds
+    records: list[dict[str, Any]] = []
+    while time.monotonic() < deadline:
+        records = _read_session_log_records(path, offset=offset)
+        if len(records) >= expected_min:
+            break
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(sleep_seconds, remaining))
+    return records
+
+
 def _record_for_last_user(
     records: list[dict[str, Any]],
     last_user_message: str,
@@ -558,7 +596,11 @@ def run_delta_context_probe(
         result.error = followup.error
         return result
 
-    records = _read_session_log_records(session_log_path, offset=offset)
+    records = _read_session_log_records_with_retry(
+        session_log_path,
+        offset=offset,
+        expected_min=2,
+    )
     first_record = _record_for_last_user(records, probe.first.prompt)
     followup_record = _record_for_last_user(records, probe.followup.prompt)
     result.first_context = first_record.get("context", {}) if first_record else {}
@@ -567,7 +609,10 @@ def run_delta_context_probe(
     )
 
     if not first_record or not followup_record:
-        result.error = "session_log_records_not_found"
+        result.error = (
+            f"session_log_records_not_found: found {len(records)} record(s) "
+            f"after offset {offset}"
+        )
         return result
 
     result.ok = (

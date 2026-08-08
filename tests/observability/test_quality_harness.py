@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import unittest.mock
+
 from scripts.quality_harness import (
     DELTA_CONTEXT_PROBE,
     PROBES,
@@ -11,12 +13,14 @@ from scripts.quality_harness import (
     QualityProbe,
     QualityResult,
     _read_session_log_records,
+    _read_session_log_records_with_retry,
     _record_for_last_user,
     build_payload,
     detect_style_violations,
     extract_answer,
     fact,
     print_comparison_table,
+    run_delta_context_probe,
     score_answer,
     turn,
 )
@@ -330,6 +334,117 @@ class TestDeltaContextProbe:
         record = _record_for_last_user(records, "target")
 
         assert record["context"]["symbols_suppressed"] == 3
+
+
+class TestReadSessionLogRecordsWithRetry:
+    """Tests for the retry wrapper around _read_session_log_records."""
+
+    def test_returns_records_immediately_when_present(self, tmp_path) -> None:
+        """When records are already on disk, return them without waiting."""
+        log_path = tmp_path / "sessions.jsonl"
+        log_path.write_text(
+            '{"last_user_message":"a","context":{}}\n'
+            '{"last_user_message":"b","context":{}}\n',
+            encoding="utf-8",
+        )
+        offset = 0
+
+        records = _read_session_log_records_with_retry(
+            str(log_path), offset=offset, expected_min=2
+        )
+
+        assert len(records) == 2
+        assert records[0]["last_user_message"] == "a"
+        assert records[1]["last_user_message"] == "b"
+
+    def test_returns_partial_records_when_some_missing(self, tmp_path) -> None:
+        """When only one record exists, return it rather than failing."""
+        log_path = tmp_path / "sessions.jsonl"
+        log_path.write_text(
+            '{"last_user_message":"only_one","context":{}}\n',
+            encoding="utf-8",
+        )
+
+        records = _read_session_log_records_with_retry(
+            str(log_path), offset=0, expected_min=2, max_wait_seconds=0.15
+        )
+
+        assert len(records) == 1
+        assert records[0]["last_user_message"] == "only_one"
+
+    def test_returns_empty_when_file_missing(self, tmp_path) -> None:
+        """A non-existent log file returns zero records quickly."""
+        records = _read_session_log_records_with_retry(
+            str(tmp_path / "nope.jsonl"),
+            offset=0,
+            expected_min=1,
+            max_wait_seconds=0.1,
+        )
+
+        assert records == []
+
+    def test_retries_and_succeeds_when_records_appear_later(self, tmp_path) -> None:
+        """Records written mid-retry should be picked up."""
+        log_path = tmp_path / "sessions.jsonl"
+        log_path.write_text(
+            '{"last_user_message":"early","context":{}}\n',
+            encoding="utf-8",
+        )
+
+        def _write_later() -> None:
+            import time
+
+            time.sleep(0.15)
+            with log_path.open("a", encoding="utf-8") as handle:
+                handle.write('{"last_user_message":"later","context":{}}\n')
+
+        import threading
+
+        t = threading.Thread(target=_write_later)
+        t.start()
+
+        records = _read_session_log_records_with_retry(
+            str(log_path), offset=0, expected_min=2, max_wait_seconds=2.0
+        )
+        t.join(timeout=5)
+
+        assert len(records) == 2
+        assert records[1]["last_user_message"] == "later"
+
+
+def test_delta_context_probe_reports_record_count_on_failure(tmp_path) -> None:
+    """When session-log records are missing, the error includes the count."""
+    log_path = tmp_path / "sessions.jsonl"
+    # File exists but has no records matching our probe prompts.
+    log_path.write_text(
+        '{"last_user_message":"some unrelated prompt","context":{}}\n',
+        encoding="utf-8",
+    )
+
+    # Patch post_json so both probe requests succeed and the real
+    # session-log path is exercised.
+    _fake_response = {
+        "choices": [{"message": {"role": "assistant", "content": "ok"}}],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+    }
+    with unittest.mock.patch(
+        "scripts.quality_harness.post_json", return_value=_fake_response
+    ):
+        result = run_delta_context_probe(
+            DELTA_CONTEXT_PROBE,
+            base_url="http://127.0.0.1:9999",
+            model="qwen36",
+            max_tokens=50,
+            timeout=1.0,
+            use_intent_overrides=True,
+            session_log_path=str(log_path),
+        )
+
+    assert result.error is not None
+    assert "session_log_records_not_found" in result.error
+    # The file has 1 record that doesn't match either probe prompt,
+    # so found should be 1 (or 0 if the record is filtered by last_user_message).
+    assert "record(s)" in result.error
 
 
 def test_print_comparison_table_shows_context_delta(capsys) -> None:
