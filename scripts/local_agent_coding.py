@@ -199,16 +199,12 @@ TASKS: tuple[LocalAgentCodingTask, ...] = (
                     "feature implementation. Use the planning notes if present. Goal: verify "
                     "`scripts/quality_harness.py --delta-context` against the local gateway and "
                     "session log.\n\n"
+                    "Read docs/live-gateway-runbook.md and follow its Start Gateway, Check "
+                    "Gateway, and Delta Context Smoke sections exactly. Do not paste the whole "
+                    "runbook back; report only the commands you ran and their outcomes.\n\n"
                     "Do not edit files unless the smoke test exposes a concrete bug. If you do "
                     "edit files, keep the patch minimal and explain why verification could not "
                     "pass without it.\n\n"
-                    "Expected operator shape:\n"
-                    "1. Start the gateway with session logging enabled and a fresh session log.\n"
-                    "2. Run the delta-context probe with `--session-log-path` pointed at "
-                    "that log.\n"
-                    "3. Confirm the follow-up result is OK and the follow-up session record shows "
-                    "suppressed repeated symbols.\n"
-                    "4. Run focused tests if any code changed.\n\n"
                     "Report exact commands, pass/fail output, changed files if any, and whether "
                     "the live result is trustworthy."
                 ),
@@ -333,6 +329,12 @@ def _read_notes(path: str | None) -> str:
     return notes_path.read_text(encoding="utf-8")
 
 
+def _console_safe(text: str) -> str:
+    """Return text printable on Windows consoles using legacy code pages."""
+    encoding = sys.stdout.encoding or "utf-8"
+    return text.encode(encoding, errors="replace").decode(encoding)
+
+
 def print_step(task: LocalAgentCodingTask, role: str, *, notes_file: str | None = None) -> None:
     """Print one role-specific prompt."""
     notes = _read_notes(notes_file)
@@ -347,7 +349,7 @@ def print_step(task: LocalAgentCodingTask, role: str, *, notes_file: str | None 
             if notes:
                 print()
                 print("Handoff notes from the previous step:")
-                print(notes.rstrip())
+                print(_console_safe(notes.rstrip()))
             print("```")
             return
     known = ", ".join(step.role for step in task.workflow)

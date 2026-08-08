@@ -87,6 +87,18 @@ def test_delta_context_verify_dry_run_prints_live_command(
     assert "--session-log-path logs\\sessions.jsonl" in out
 
 
+def test_delta_context_code_step_explains_gateway_and_log_setup(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    exit_code = main(["step", "delta_context_live_smoke", "code"])
+
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "docs/live-gateway-runbook.md" in out
+    assert "Start Gateway, Check Gateway, and Delta Context Smoke" in out
+    assert "Do not paste the whole runbook back" in out
+
+
 def test_step_can_append_handoff_notes(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -108,6 +120,28 @@ def test_step_can_append_handoff_notes(
     assert exit_code == 0
     assert "Handoff notes from the previous step:" in out
     assert "Cline says: use the quality harness prompt." in out
+
+
+def test_step_sanitizes_handoff_notes_for_console(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    notes = tmp_path / "plan.md"
+    notes.write_text("unicode note: ≠", encoding="utf-8")
+
+    exit_code = main(
+        [
+            "step",
+            "style_preamble_cleanup",
+            "code",
+            "--notes-file",
+            str(notes),
+        ]
+    )
+
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "unicode note:" in out
 
 
 def test_verify_dry_run_prints_commands_without_running(

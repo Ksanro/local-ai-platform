@@ -60,12 +60,11 @@ all_files_list.txt
 
 # Diagrams
 execution-flow-engineering.mmd
-.claude/agents/test-agent.md
+.claude/
 execution-flow.mmd
 
 logs/
 *.jsonl
 data/engineering_memory/
 
-# Claude Code local settings (tool permissions, etc.)
-.claude/settings.local.json
+# Claude Code / extension local settings, caches, and tool output

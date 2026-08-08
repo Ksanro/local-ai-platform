@@ -206,6 +206,10 @@ The script owns the role-specific prompts and verifier commands:
 .\uv.exe run python scripts\local_agent_coding.py verify style_preamble_cleanup --dry-run
 ```
 
+For live gateway setup, agents should read `docs/live-gateway-runbook.md`
+instead of rediscovering how to start the gateway, align session log paths, and
+run delta-context probes.
+
 Run the steps on one branch in this order:
 
 ```powershell
