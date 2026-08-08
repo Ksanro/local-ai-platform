@@ -86,7 +86,7 @@ class QualityProbe:
 
     `history` holds prior conversation turns (role/content dicts) sent before
     `prompt`, simulating a Cline-like multi-turn session. The assistant turns
-    in `history` are fixed canned text, not model output — only the final
+    in `history` are fixed canned text, not model output - only the final
     `prompt` response is scored. Single-turn probes leave `history` empty.
     """
 
@@ -293,30 +293,32 @@ PROBES: tuple[QualityProbe, ...] = (
 )
 
 DELTA_CONTEXT_PROBE = DeltaContextProbe(
-    id="delta_answer_preview_followup",
+    id="delta_history_cap_followup",
     first=QualityProbe(
-        id="delta_answer_preview_primer",
-        intent="SEARCH",
+        id="delta_history_cap_primer",
+        intent="EXPLAIN",
         prompt=(
-            "In this codebase, where is session log answer_preview extracted? "
-            "Name the file and the callable that extracts it."
+            "Which function caps the chat history to a token budget? "
+            "Name the function and its file."
         ),
         expect=(
-            fact("apps/gateway/session_log.py", "apps/gateway/session_log"),
-            fact("_extract_answer_preview"),
+            fact("cap_history"),
+            fact("packages/pipeline/history.py", "packages/pipeline/history"),
         ),
     ),
     followup=QualityProbe(
-        id="delta_answer_preview_followup",
-        intent="DEBUG",
+        id="delta_history_cap_followup",
+        intent="EXPLAIN",
         prompt=(
-            "For the same answer_preview extraction area, name the helper that "
-            "reads streaming chunks and the OpenAI streaming field it should read."
+            "In packages/pipeline/history.py, cap_history delegates token "
+            "counting through one per-message helper that calls one string "
+            "estimator helper, and uses one grouping helper for atomic "
+            "tool-call groups. Name those three helper functions."
         ),
         expect=(
-            fact("_choice_content"),
-            fact("delta.content", "delta", 'delta.get("content"'),
-            fact("apps/gateway/session_log.py", "apps/gateway/session_log"),
+            fact("_message_token_count"),
+            fact("_estimate_tokens"),
+            fact("_build_cap_groups"),
         ),
     ),
 )

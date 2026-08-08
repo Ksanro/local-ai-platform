@@ -292,6 +292,23 @@ class TestDeltaContextProbe:
         assert DELTA_CONTEXT_PROBE.followup.id.endswith("followup")
         assert DELTA_CONTEXT_PROBE.first.prompt != DELTA_CONTEXT_PROBE.followup.prompt
 
+    def test_delta_probe_targets_history_cap_area(self) -> None:
+        """The live delta smoke should target a dense multi-symbol code area."""
+        assert "history" in DELTA_CONTEXT_PROBE.first.prompt.lower()
+        assert "cap" in DELTA_CONTEXT_PROBE.first.prompt.lower()
+        assert DELTA_CONTEXT_PROBE.first.expect[0].label == "cap_history"
+        assert DELTA_CONTEXT_PROBE.first.expect[1].label == "packages/pipeline/history.py"
+
+    def test_delta_followup_requests_multiple_helpers(self) -> None:
+        """The follow-up should ask for multiple helper symbols to suppress."""
+        expected_labels = {expected.label for expected in DELTA_CONTEXT_PROBE.followup.expect}
+
+        assert expected_labels == {
+            "_message_token_count",
+            "_estimate_tokens",
+            "_build_cap_groups",
+        }
+
     def test_read_session_log_records_from_offset(self, tmp_path) -> None:
         log_path = tmp_path / "sessions.jsonl"
         old_line = (

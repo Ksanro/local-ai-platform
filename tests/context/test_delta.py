@@ -8,6 +8,7 @@ suppression logic in ``packages.context.delta`` and the
 from __future__ import annotations
 
 from contextlib import contextmanager
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -19,6 +20,9 @@ from packages.context.delta import (
     store_key,
 )
 from packages.context.models import ContextCandidate
+
+if TYPE_CHECKING:
+    from packages.pipeline.context import PipelineContext
 
 # ------------------------------------------------------------------
 # Helpers
@@ -274,6 +278,21 @@ class TestFilterCandidates:
         result = filter_candidates(cands, already)
         assert len(result) == 1
 
+    def test_primary_only_produces_zero_suppression(self) -> None:
+        """A single-candidate list is returned unchanged; no suppression possible.
+
+        When the ranking retrieves only the primary symbol (no supporting
+        symbols), ``filter_candidates`` preserves the primary and returns a
+        list with exactly one element.  The primary is kept by design, so
+        ``symbols_suppressed`` stays at zero.
+        This is the expected behaviour for narrow, single-symbol queries.
+        """
+        cands = [_candidate("primary")]
+        already = {"primary"}  # even if already sent, primary is kept
+        result = filter_candidates(cands, already)
+        assert len(result) == 1
+        assert result[0].qualified_name == "primary"
+
 
 # ------------------------------------------------------------------
 # collect_all_symbols tests
@@ -478,8 +497,6 @@ class TestStageIntegration:
     @pytest.mark.asyncio
     async def test_no_new_symbols_logs_status(self) -> None:
         """When all symbols are suppressed, log says no_new_symbols."""
-        import logging
-
         from packages.pipeline.stages.repository_context import RepositoryContextStage
         from packages.repository.index.models import (
             Module,
@@ -530,7 +547,7 @@ class TestStageIntegration:
         assert ctx1.context_package is not None
 
         # Turn 2: same history, same symbols -> primary already sent,
-        # supporting suppressed → no_new_symbols
+        # supporting suppressed -> no_new_symbols
         ctx2 = self._make_context(
             messages=[
                 {"role": "user", "content": "what is App"},
@@ -710,6 +727,115 @@ class TestStageIntegration:
         )
         await stage_b.execute(ctx_b)
         assert ctx_b.context_package is not None
+
+    @pytest.mark.asyncio
+    async def test_supporting_symbol_suppression_with_mocked_ranking(self) -> None:
+        """Turn 2 with [new_primary, old_supporting] suppresses the old supporting.
+
+        This deterministic test mocks ContextBuilder.build so turn 1 returns
+        only the primary (simulating a narrow ranking), while turn 2 returns
+        the primary plus an old supporting symbol.  The delta logic suppresses
+        the old supporting symbol, leaving only the primary.
+        """
+        from unittest.mock import patch
+
+        from packages.context.models import ContextResult
+        from packages.pipeline.stages.repository_context import RepositoryContextStage
+        from packages.repository.index.models import (
+            Module,
+            RepositoryIndex,
+            RepositoryStatistics,
+            Symbol,
+            SymbolType,
+        )
+
+        # Minimal index - the real ranking is mocked, so the index just
+        # needs to be non-None.
+        symbols = [
+            Symbol(
+                id="primary_A",
+                name="primary_A",
+                qualified_name="primary_A",
+                symbol_type=SymbolType.CLASS,
+                module="a.py",
+                lineno=1,
+            ),
+        ]
+        modules = {"a.py": Module(path="a.py", symbols=symbols)}
+        statistics = RepositoryStatistics(
+            module_count=1, class_count=1, function_count=0, method_count=0, symbol_count=1,
+        )
+        index = RepositoryIndex(
+            modules=modules,
+            _symbols=symbols,
+            _relationships=[],
+            _statistics=statistics,
+        )
+
+        stage = RepositoryContextStage(index=index, context_delta_injection=True)
+
+        # Mock ContextBuilder.build to return controlled candidates.
+        # Turn 1: [primary_A] stores {primary_A} in delta cache.
+        # Turn 2: [primary_A, old_supporting_A] has old_supporting_A in
+        # the already-sent set, so it is suppressed.
+        call_count = 0
+
+        def _mock_build(*args: object, **kwargs: object) -> ContextResult:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return ContextResult(candidates=[_candidate("primary_A")])
+            return ContextResult(candidates=[
+                _candidate("primary_A"),
+                _candidate("old_supporting_A"),
+            ])
+
+        with (
+            patch(
+                "packages.pipeline.stages.repository_context.ContextBuilder",
+            ) as mock_builder_cls,
+            patch.object(stage, "_tracker") as mock_tracker,
+        ):
+            mock_builder_cls.return_value.build.side_effect = _mock_build
+            # Turn 1: empty already_sent means no suppression.
+            # Turn 2: old_supporting_A in already_sent means it is suppressed.
+            mock_tracker.get.side_effect = [
+                set(),
+                {"primary_A", "old_supporting_A"},
+            ]
+
+            # Turn 1: first pass (cache miss), no suppression.
+            ctx1 = self._make_context(
+                messages=[{"role": "user", "content": "what is primary_A"}],
+            )
+            result1 = await stage.execute(ctx1)
+
+            assert result1.success is True
+            assert ctx1.context_package is not None
+            assert ctx1.context_package.primary_symbol == "primary_A"
+            # No suppression on turn 1 (empty already-sent)
+            assert len(ctx1.context_package.supporting_symbols) == 0
+
+            # Turn 2: with history, old_supporting_A is in already_sent and
+            # suppressed. The stage sets context_package = None and returns
+            # early with symbols_suppressed in data.
+            ctx2 = self._make_context(
+                messages=[
+                    {"role": "user", "content": "what is primary_A"},
+                    {"role": "assistant", "content": "primary_A is a class"},
+                    {"role": "user", "content": "what is primary_A"},
+                ],
+            )
+            result2 = await stage.execute(ctx2)
+
+        assert result2.success is True
+        # When only supporting symbols are suppressed (primary remains),
+        # the stage sets context_package = None and returns early.
+        assert ctx2.context_package is None
+        # Verify the stage data records the suppression count.
+        data = result2.data or {}
+        assert int(data.get("symbols_suppressed", 0)) >= 1
+        assert int(data.get("symbols_new", -1)) == 1
 
     # ------------------------------------------------------------------
     # Helpers
