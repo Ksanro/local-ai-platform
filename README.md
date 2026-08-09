@@ -43,7 +43,7 @@ what runs and what is dormant.
 ## Setup
 
 ```powershell
-.\uv sync
+.\uv.exe sync
 ```
 
 Create or edit `.env`. A minimal local configuration looks like:
@@ -73,7 +73,7 @@ local use they should usually agree.
 ## Run The Gateway
 
 ```powershell
-.\uv run uvicorn apps.gateway.main:create_app --factory --port 8001
+.\uv.exe run uvicorn apps.gateway.main:create_app --factory --port 8001
 ```
 
 Check it:
@@ -96,7 +96,7 @@ With `APP_SESSION_LOG_ENABLED=true`, requests are written to
 Analyze them with:
 
 ```powershell
-.\uv run python scripts\analyze_sessions.py logs\sessions.jsonl
+.\uv.exe run python scripts\analyze_sessions.py logs\sessions.jsonl
 ```
 
 The analyzer reports prompt tokens, latency, provider wait time, context
@@ -107,7 +107,7 @@ status, intent distribution, and history-capping behavior.
 Run the live gateway quality smoke test after starting the gateway:
 
 ```powershell
-.\uv run python scripts\quality_harness.py
+.\uv.exe run python scripts\quality_harness.py
 ```
 
 The harness sends fixed low-token prompts for the live intents and scores
@@ -122,9 +122,9 @@ one run, `--compare-context` to compare context-on versus context-off, and
 Use focused gates for live-path work:
 
 ```powershell
-.\uv run python -m pytest tests\pipeline tests\gateway tests\providers tests\planning tests\context tests\repository -q
-.\uv run python -m ruff check apps\gateway packages\pipeline packages\providers packages\planning packages\context packages\repository scripts
-.\uv run python -m mypy packages\providers packages\pipeline apps\gateway
+.\uv.exe run python -m pytest tests\pipeline tests\gateway tests\providers tests\planning tests\context tests\repository -q
+.\uv.exe run python -m ruff check apps\gateway packages\pipeline packages\providers packages\planning packages\context packages\repository scripts
+.\uv.exe run python -m mypy packages\providers packages\pipeline apps\gateway
 ```
 
 The full repository still contains dormant packages with known failures and

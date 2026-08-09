@@ -7,7 +7,7 @@ request produces something runnable top-to-bottom, not prose to interpret.
 
 When providing a test or measurement, always give, in this order:
 
-1. **Exact commands, in run order.** PowerShell (Windows). Every `uv` call starts with `.\uv`. No
+1. **Exact commands, in run order.** PowerShell (Windows). Every `uv` call starts with `.\uv.exe`. No
    "then do X" prose between commands that could be folded into a command.
 2. **One exact Cline task string** (verbatim, in a code block) when the test needs a live agent
    session — never "run a real task". The same string is reused across compared runs so results are
@@ -47,14 +47,14 @@ Cline task, same files, same order. If two things change, the comparison is mean
 Use these to confirm code is correct before any live run. Fast, repeatable, no noise.
 
 ```powershell
-.\uv run python -m pytest -q
-.\uv run python -m pytest tests\pipeline tests\gateway tests\test_protocol_invariant.py -q
-.\uv run python -m ruff check packages apps
-.\uv run python -m mypy packages\pipeline apps\gateway
-.\uv run python scripts\check_fixes.py
-.\uv run python scripts\bench_context.py
-.\uv run python scripts\quality_harness.py
-.\uv run python -m pytest tests\evaluation tests\scripts tests\engineering_memory tests\observability\test_quality_harness.py tests\observability\test_quality_history.py -q
+.\uv.exe run python -m pytest -q
+.\uv.exe run python -m pytest tests\pipeline tests\gateway tests\test_protocol_invariant.py -q
+.\uv.exe run python -m ruff check packages apps
+.\uv.exe run python -m mypy packages\pipeline apps\gateway
+.\uv.exe run python scripts\check_fixes.py
+.\uv.exe run python scripts\bench_context.py
+.\uv.exe run python scripts\quality_harness.py
+.\uv.exe run python -m pytest tests\evaluation tests\scripts tests\engineering_memory tests\observability\test_quality_harness.py tests\observability\test_quality_history.py -q
 ```
 
 Baseline: the full suite has a known failure count (all in unreachable dead-code packages). A clean
@@ -66,7 +66,7 @@ clean.
 Start the gateway (leave running in its own terminal):
 
 ```powershell
-.\uv run uvicorn apps.gateway.main:create_app --factory --port 8001
+.\uv.exe run uvicorn apps.gateway.main:create_app --factory --port 8001
 ```
 
 Confirm it is up (second terminal):
@@ -78,7 +78,7 @@ curl http://localhost:8001/v1/models
 Drive traffic, then analyze:
 
 ```powershell
-.\uv run python scripts\analyze_sessions.py logs\sessions.jsonl
+.\uv.exe run python scripts\analyze_sessions.py logs\sessions.jsonl
 ```
 
 The `CONTEXT COST` section includes a `By intent` table. Use it to compare
@@ -88,9 +88,9 @@ context tokens, configured budget, budget utilization, and share of prompt.
 Run deterministic answer-quality probes:
 
 ```powershell
-.\uv run python scripts\quality_harness.py
-.\uv run python scripts\quality_harness.py --compare-context
-.\uv run python scripts\quality_harness.py --delta-context --session-log-path logs\sessions.jsonl
+.\uv.exe run python scripts\quality_harness.py
+.\uv.exe run python scripts\quality_harness.py --compare-context
+.\uv.exe run python scripts\quality_harness.py --delta-context --session-log-path logs\sessions.jsonl
 ```
 
 Read the `TOTAL` line. `--compare-context` changes exactly one variable per
@@ -117,9 +117,9 @@ latency, style violations, and — in `--compare-context` mode — per-probe con
 `packages.evaluation.quality_harness_report`:
 
 ```powershell
-.\uv run python scripts\quality_harness.py --json | .\uv run python scripts\evaluate_quality_harness.py -
-.\uv run python scripts\quality_harness.py --compare-context --json | .\uv run python scripts\evaluate_quality_harness.py -
-.\uv run python scripts\quality_harness.py --delta-context --json --session-log-path logs\sessions.jsonl
+.\uv.exe run python scripts\quality_harness.py --json | .\uv.exe run python scripts\evaluate_quality_harness.py -
+.\uv.exe run python scripts\quality_harness.py --compare-context --json | .\uv.exe run python scripts\evaluate_quality_harness.py -
+.\uv.exe run python scripts\quality_harness.py --delta-context --json --session-log-path logs\sessions.jsonl
 ```
 
 Add `--persist --model <name> [--gateway-commit <sha>] [--notes "..."]` to
@@ -127,7 +127,7 @@ store the evaluation as a deterministic `EngineeringSessionRecord` via
 `packages.engineering_memory.quality_harness_records`, e.g.:
 
 ```powershell
-.\uv run python scripts\quality_harness.py --json | .\uv run python scripts\evaluate_quality_harness.py - --persist --model qwen36 --notes "post history-cap tuning"
+.\uv.exe run python scripts\quality_harness.py --json | .\uv.exe run python scripts\evaluate_quality_harness.py - --persist --model qwen36 --notes "post history-cap tuning"
 ```
 
 Records land in `data/engineering_memory/memory_v1.json` by default (override
@@ -136,8 +136,8 @@ with `--storage-path`).
 Read persisted quality-harness history with:
 
 ```powershell
-.\uv run python scripts\quality_history.py
-.\uv run python scripts\quality_history.py --json
+.\uv.exe run python scripts\quality_history.py
+.\uv.exe run python scripts\quality_history.py --json
 ```
 
 Add `--quality-run [--quality-run-path <file>]` instead to get a flat
@@ -146,7 +146,7 @@ context-delta fields when in `--compare-context` mode) printed as JSON or
 written to a file — no dashboard, no `EngineeringMemory` involvement:
 
 ```powershell
-.\uv run python scripts\quality_harness.py --json | .\uv run python scripts\evaluate_quality_harness.py - --quality-run --model qwen36
+.\uv.exe run python scripts\quality_harness.py --json | .\uv.exe run python scripts\evaluate_quality_harness.py - --quality-run --model qwen36
 ```
 
 ## A/B measurement recipe (the standard shape)
@@ -158,17 +158,17 @@ with a clean log each time.
 # --- RUN A (control) ---
 notepad .env                                              # set the ONE flag to its A value, save
 Remove-Item logs\sessions.jsonl -ErrorAction SilentlyContinue
-.\uv run uvicorn apps.gateway.main:create_app --factory --port 8001
+.\uv.exe run uvicorn apps.gateway.main:create_app --factory --port 8001
 #   -> paste the exact Cline task, let it finish, Ctrl+C the gateway
-.\uv run python scripts\analyze_sessions.py logs\sessions.jsonl > run_A.txt
+.\uv.exe run python scripts\analyze_sessions.py logs\sessions.jsonl > run_A.txt
 type run_A.txt
 
 # --- RUN B (treatment) ---
 notepad .env                                              # flip the ONE flag to its B value, save
 Remove-Item logs\sessions.jsonl -ErrorAction SilentlyContinue
-.\uv run uvicorn apps.gateway.main:create_app --factory --port 8001
+.\uv.exe run uvicorn apps.gateway.main:create_app --factory --port 8001
 #   -> paste the SAME Cline task, let it finish, Ctrl+C the gateway
-.\uv run python scripts\analyze_sessions.py logs\sessions.jsonl > run_B.txt
+.\uv.exe run python scripts\analyze_sessions.py logs\sessions.jsonl > run_B.txt
 type run_B.txt
 ```
 

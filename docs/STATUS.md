@@ -263,13 +263,13 @@ dormant packages with known failures and pre-existing lint debt.
 Recommended live-path checks:
 
 ```powershell
-.\uv run python -m pytest tests\pipeline tests\gateway tests\providers tests\planning tests\context tests\repository -q
-.\uv run python -m ruff check apps\gateway packages\pipeline packages\providers packages\planning packages\context packages\repository scripts
-.\uv run python -m mypy packages\providers packages\pipeline apps\gateway
-.\uv run python scripts\quality_harness.py
-.\uv run python scripts\quality_harness.py --compare-context
-.\uv run python scripts\quality_harness.py --delta-context --session-log-path logs\sessions.jsonl
-.\uv run python scripts\quality_harness.py --json | .\uv run python scripts\evaluate_quality_harness.py -
+.\uv.exe run python -m pytest tests\pipeline tests\gateway tests\providers tests\planning tests\context tests\repository -q
+.\uv.exe run python -m ruff check apps\gateway packages\pipeline packages\providers packages\planning packages\context packages\repository scripts
+.\uv.exe run python -m mypy packages\providers packages\pipeline apps\gateway
+.\uv.exe run python scripts\quality_harness.py
+.\uv.exe run python scripts\quality_harness.py --compare-context
+.\uv.exe run python scripts\quality_harness.py --delta-context --session-log-path logs\sessions.jsonl
+.\uv.exe run python scripts\quality_harness.py --json | .\uv.exe run python scripts\evaluate_quality_harness.py -
 ```
 
 ## Current Open Issues
