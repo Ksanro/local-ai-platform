@@ -113,9 +113,13 @@ Done in this pass:
 
 Next:
 
-- continue tuning selected symbols/modules by intent for the remaining
-  untuned probes (`multiturn_history_cap_budget` stayed near-zero at every
-  budget tried, REFACTOR-independent)
+- `multiturn_history_cap_budget` was resolved in commit 6fe9283
+  ("Clarify history cap budget probe facts"): two root causes —
+  `APP_HISTORY_CAP_TOKENS` was missing from `_apply_history_cap`'s docstring,
+  and the probe prompt asked for the Python argument name
+  (`max_tokens_override`) instead of the environment variable. Verified live:
+  8/8 replicate runs (3 + 5, qwen27, --max-tokens 900) scored 3/3 with zero
+  misses.
 - add tokenizer-aware estimates when the current character estimate becomes a
   practical blocker
 

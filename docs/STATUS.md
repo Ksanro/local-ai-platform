@@ -108,6 +108,13 @@ always-broken to passing in 2 of 3 runs; one other EXPLAIN probe
 (`multiturn_config_systems`) got consistently worse. `explain_live_path`
 prompt tokens dropped from `5136` to `1119-1975` across runs.
 
+`multiturn_history_cap_budget` now consistently scores 3/3. The near-zero
+regression was fixed by commit 6fe9283 ("Clarify history cap budget probe
+facts"), which added `APP_HISTORY_CAP_TOKENS` to `_apply_history_cap`'s
+docstring and reworded the probe prompt to ask for the environment variable
+instead of the Python argument name. Verified live: 8/8 replicate runs (qwen27,
+--max-tokens 900) with zero misses.
+
 ### History Capping
 
 When `APP_HISTORY_CAP_ENABLED=true`, `PipelineEngine` caps non-system
