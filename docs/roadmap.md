@@ -8,8 +8,18 @@ Last reviewed: 2026-08-09.
 
 - OpenAI-compatible gateway
 - vLLM provider
+- OpenAI-compatible provider (`packages/providers/openai.py`, registered as "openai")
 - provider registry and factory
 - model registry
+- True Multi-Provider (live, two backends):
+  - model "qwen36" -> provider "vllm" -> http://100.106.236.88:8000/v1
+    (backend_model "qwen36", context_window 180000)
+  - model "qwen27" -> provider "openai" -> http://100.106.236.88:8080/v1
+    (backend_model "/models/Qwen3.6-27B-NVFP4-MTP-GGUF.gguf", llama.cpp server,
+    context_window 131072)
+  - Live smoke: `quality_harness.py --probe multiturn_history_cap_budget --json
+    --max-tokens 900 --model qwen27` scored 3/3 routed through OpenAIProvider to
+    the real llama.cpp backend
 - model router
 - client `model` to upstream `backend_model` mapping
 - normalized request boundary
@@ -134,12 +144,6 @@ dormant package as production runtime:
 - type checks: `packages/providers`, `packages/pipeline`, and `apps/gateway`
 
 ## Next After That
-
-### True Multi-Provider
-
-Routing and model registry exist, but only vLLM is implemented. Add a second
-real provider when there is a concrete backend to exercise. A generic
-OpenAI-compatible provider is likely the lowest-friction next provider.
 
 ### Tokenizer Registry
 

@@ -138,6 +138,27 @@ Measured result with Cline/vLLM:
 Builds the provider payload from `NormalizedRequest`, swaps `model` to
 `backend_model`, preserves protocol fields, and calls the resolved provider.
 
+Two live backends are configured in `APP_MODELS_CONFIG` (no empty-string
+fallback mode):
+
+| client model | provider | base_url | backend_model | context_window | notes |
+|---|---|---|---|---|---|
+| qwen36 | vllm | http://100.106.236.88:8000/v1 | qwen36 | 180000 | reasoning model |
+| qwen27 | openai | http://100.106.236.88:8080/v1 | /models/Qwen3.6-27B-NVFP4-MTP-GGUF.gguf | 131072 | llama.cpp server (owned_by: "llamacpp") |
+
+Live smoke: `quality_harness.py --probe multiturn_history_cap_budget --json
+--max-tokens 900 --model qwen27` scored 3/3 routed through OpenAIProvider to
+the real llama.cpp backend.
+
+**qwen36 max-tokens consideration:** qwen36 is a reasoning model that spends
+significant tokens on hidden reasoning before the visible answer. Measured
+against the same `multiturn_history_cap_budget` probe: 0/3 at `--max-tokens 900`
+(empty completion), 3/3 at `--max-tokens 2048` (completion_tokens=1010). This
+is not a routing or provider bug -- 900 tokens simply isn't enough headroom for
+this model. The harness default is `--max-tokens 400` (see
+`scripts/quality_harness.py` DEFAULT_MAX_TOKENS), so future qwen36 measurement
+runs should use `--max-tokens 2048` or higher.
+
 ## What Is Implemented And Reachable
 
 - FastAPI gateway endpoints: `/health`, `/version`, `/v1/models`,
@@ -289,10 +310,9 @@ Recommended live-path checks:
   was measured and reverted to the shared default after a replicated
   regression - see `docs/roadmap.md` section 3 and the "RepositoryContextStage"
   section above for the measured numbers.
-- Token estimates still use `CHARS_PER_TOKEN = 4.0`, not model-specific
-  tokenizers.
 - The model often includes reasoning/preamble despite terse system prompts; the
   quality harness now records deterministic style violations separately from
   required-fact score.
-- Only vLLM is implemented as a concrete provider; true multi-provider
-  operation is not product-proven.
+- Token estimates still use `CHARS_PER_TOKEN = 4.0`, not model-specific
+  tokenizers. True multi-provider is now live (vLLM + OpenAI-compatible to
+  llama.cpp); tokenizer-aware accounting remains the next precision improvement.
