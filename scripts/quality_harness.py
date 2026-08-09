@@ -256,8 +256,10 @@ PROBES: tuple[QualityProbe, ...] = (
         ),
         prompt=(
             "For that capping logic: name the function that applies the cap, "
-            "its file, and the env var used to force a specific token budget "
-            "instead of deriving one from the model's context window."
+            "its file, and the APP_ environment variable used to force a "
+            "specific history-cap token budget instead of deriving one from "
+            "the model's context window. Do not name the Python "
+            "max_tokens_override argument."
         ),
         expect=(
             fact("_apply_history_cap"),

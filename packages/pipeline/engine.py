@@ -235,11 +235,17 @@ def _apply_history_cap(
 
     Creates a capped NormalizedRequest and stores history_dropped_count
     and history_tokens_after on context.metadata for the session logger.
+    The forced token budget comes from ``APP_HISTORY_CAP_TOKENS``, which
+    populates ``history_cap_tokens`` in gateway settings; when unset or 0,
+    the budget is derived from the model context window. Do not confuse this
+    with ``max_tokens_override``; that argument is the generation max_tokens
+    reserve used only while deriving the history cap from the context window.
 
     Args:
         context: The pipeline context.
         resolved_model: The resolved model (with context_window).
-        max_tokens_override: Max tokens for generation (if set).
+        max_tokens_override: Max tokens for generation, not the forced
+            history-cap budget.
     """
     from packages.context.budget import CHARS_PER_TOKEN
 

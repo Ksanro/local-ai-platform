@@ -14,6 +14,7 @@ Covers all capping rules:
 
 from __future__ import annotations
 
+import inspect
 from typing import Any
 
 import pytest
@@ -541,6 +542,15 @@ class TestCurrentClineToolResultCompression:
 
 class TestFix1ResolvedModelBudget:
     """History capping engages when resolved_model context_window is set."""
+
+    def test_apply_history_cap_docstring_mentions_env_override(self) -> None:
+        """Context docs for the promoted helper should name the env override."""
+        docstring = inspect.getdoc(_apply_history_cap) or ""
+
+        assert "APP_HISTORY_CAP_TOKENS" in docstring
+        assert "history_cap_tokens" in docstring
+        assert "max_tokens_override" in docstring
+        assert "not the forced" in docstring
 
     def test_apply_history_cap_updates_request_when_only_current_tool_result_truncates(
         self,
