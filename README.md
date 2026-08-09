@@ -32,6 +32,7 @@ what runs and what is dormant.
 
 - OpenAI-compatible `/v1/chat/completions` endpoint
 - vLLM provider with streaming and non-streaming support
+- Generic OpenAI-compatible provider (`provider: "openai"`) for any OpenAI-compatible backend
 - model registry with client-facing `model` and upstream `backend_model`
 - repository index built at gateway startup
 - deterministic planning and intent detection

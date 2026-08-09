@@ -20,6 +20,7 @@ def _load_providers() -> None:
     Call this function once at application startup to ensure all
     available providers are registered.
     """
+    import packages.providers.openai  # noqa: F401
     import packages.providers.vllm  # noqa: F401
 
 
