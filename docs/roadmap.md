@@ -2,7 +2,7 @@
 
 This roadmap is based on the current live gateway, not on dormant scaffolding.
 
-Last reviewed: 2026-08-08.
+Last reviewed: 2026-08-09.
 
 ## Done Enough For Now
 
@@ -89,20 +89,33 @@ Next improvements:
 - next real product item is Repository Context Budgeting And Ranking (below),
   planning-first via the `context_budget_ranking` local-agent-coding task
 
-### 3. Repository Context Budgeting And Ranking — active
+### 3. Repository Context Budgeting And Ranking — REFACTOR/EXPLAIN measured
 
 History capping works, but repository context often dominates total prompt
-tokens. `SEARCH`, `TEST`, and `DEBUG` already have measured
-`APP_REPOSITORY_CONTEXT_INTENT_BUDGETS` overrides (see `docs/STATUS.md`);
-`REFACTOR` and `EXPLAIN` do not. This is now the active next item, run
-planning-first via the `context_budget_ranking` task in
-`scripts/local_agent_coding.py` (Cline plans, Claude extension implements,
-Claude CLI reviews, Codex coordinates) before any budget/ranking code changes:
+tokens. `SEARCH`, `TEST`, `DEBUG`, and now `EXPLAIN` have measured
+`APP_REPOSITORY_CONTEXT_INTENT_BUDGETS` overrides (see `docs/STATUS.md`).
+`REFACTOR` was measured and reverted to the shared 4096 default after live
+replication showed a real regression, not noise, at both 2048 and 3072 - see
+`docs/STATUS.md` for the measured numbers. Ran planning-first via the
+`context_budget_ranking` task in `scripts/local_agent_coding.py` (Cline
+planned, Claude extension implemented, this pass measured live and iterated):
 
-- continue tuning selected symbols/modules by intent
-- compare `REFACTOR` and `EXPLAIN` budget quality with live
-  `--compare-context` runs; session analysis now reports context cost by
-  intent for the matching budget/cost view
+Done in this pass:
+
+- measured `REFACTOR`/`EXPLAIN` budget quality with live `quality_harness.py
+  --json` runs (`--compare-context` toggles context on/off, not budget level -
+  a budget A/B needs two separate `--json` runs at different
+  `APP_REPOSITORY_CONTEXT_INTENT_BUDGETS` values, diffed by probe `id`)
+- found real, replicated (n=3) regressions distinguishable from measurement
+  noise by running the same unchanged-budget control probe alongside each
+  test - a probe with an untouched budget still swung by 2 hits run to run,
+  which is the noise floor these results were checked against
+
+Next:
+
+- continue tuning selected symbols/modules by intent for the remaining
+  untuned probes (`multiturn_history_cap_budget` stayed near-zero at every
+  budget tried, REFACTOR-independent)
 - add tokenizer-aware estimates when the current character estimate becomes a
   practical blocker
 

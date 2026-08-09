@@ -15,6 +15,26 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+PLAN_GROUNDING_RULE = (
+    "Grounding rule: for every constant, default value, weight, CLI flag, config key, or "
+    "method name you cite, quote the exact file and line you read it from. If you have not "
+    "opened the file and read the literal value, say so explicitly instead of stating a "
+    "plausible-sounding number - a wrong constant in a plan becomes a wrong implementation "
+    "two steps later."
+)
+"""Anti-fabrication instruction appended to every plan-role prompt.
+
+A live context_budget_ranking planning run (2026-08-08) produced ranking weights, a
+config map, and CLI flags that were all plausible-sounding and all wrong - none of it
+came from the files it was told to inspect. `_plan_prompt` and the coverage test below
+keep this instruction attached to every plan step, present and future.
+"""
+
+
+def _plan_prompt(body: str) -> str:
+    """Build a plan-role prompt with the shared anti-fabrication grounding rule attached."""
+    return f"{body}\n\n{PLAN_GROUNDING_RULE}"
+
 
 @dataclass(frozen=True)
 class VerificationCommand:
@@ -65,7 +85,7 @@ TASKS: tuple[LocalAgentCodingTask, ...] = (
                 role="plan",
                 actor="Cline with qwen3.6 27B dense",
                 purpose="first review, planning, and architecture check",
-                prompt=(
+                prompt=_plan_prompt(
                     "You are reviewing local-ai-platform before implementation. Focus on the "
                     "quality-harness style issue: live answers often include visible reasoning "
                     "preambles even when all required repository facts are present.\n\n"
@@ -181,7 +201,7 @@ TASKS: tuple[LocalAgentCodingTask, ...] = (
                 role="plan",
                 actor="Cline with qwen3.6 27B dense",
                 purpose="live smoke planning and risk check",
-                prompt=(
+                prompt=_plan_prompt(
                     "You are planning a live delta-context smoke check for local-ai-platform. "
                     "Do not edit files. Inspect scripts/quality_harness.py, docs/STATUS.md, "
                     "docs/roadmap.md, and the session-log/delta-context path if needed. Produce "
@@ -287,7 +307,7 @@ TASKS: tuple[LocalAgentCodingTask, ...] = (
                 role="plan",
                 actor="Cline with qwen3.6 27B dense",
                 purpose="measurement-driven budget/ranking plan, no edits",
-                prompt=(
+                prompt=_plan_prompt(
                     "You are planning repository-context budget and ranking tuning for "
                     "local-ai-platform. This is planning/architecture only: do not edit "
                     "files.\n\n"

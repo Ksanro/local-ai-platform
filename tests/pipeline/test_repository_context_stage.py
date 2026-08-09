@@ -288,6 +288,99 @@ class TestContextAttached:
         assert captured_queries[0].max_tokens == 1024
         assert result.data["max_context_tokens"] == 1024
 
+    @pytest.mark.asyncio
+    async def test_refactor_intent_budget_override(self) -> None:
+        """REFACTOR intent resolves its explicit per-intent budget, not the stage default.
+
+        Live measurement (2026-08-09, quality_harness.py --json, 3 replicate runs)
+        found that cutting REFACTOR below 4096 (tried 2048 and 3072) consistently
+        cost the model a required fact it names correctly at 4096 - not noise, the
+        same fact was missed in every replicate. REFACTOR stays at 4096, same as
+        the stage default; the override is set explicitly anyway (matching
+        .env.example) and this test uses a different stage-level default (8192)
+        so a resolved 4096 proves the intent-map path was actually taken, not the
+        fallback.
+        """
+        from packages.planning.plan import ContextPlan
+
+        symbols = [_make_symbol("App", "main.App", SymbolType.CLASS, "main.py")]
+        index = _make_index(symbols)
+        stage = RepositoryContextStage(
+            index=index,
+            max_context_tokens=8192,
+            intent_context_budgets={"REFACTOR": 4096},
+        )
+
+        captured_queries = []
+
+        with patch(
+            "packages.pipeline.stages.repository_context.ContextBuilder"
+        ) as mock_builder:
+            builder = mock_builder.return_value
+
+            def _build(query):
+                captured_queries.append(query)
+                from packages.context.models import ContextResult
+
+                return ContextResult(candidates=[], selected_modules=[])
+
+            builder.build.side_effect = _build
+
+            context = _make_context()
+            context.set_metadata("context_plan", ContextPlan(intent="REFACTOR"))
+            result = await stage.execute(context)
+
+        assert result.success is True
+        assert captured_queries[0].max_tokens == 4096
+        assert context.get_metadata("repository_context_max_tokens") == 4096
+        assert result.data["max_context_tokens"] == 4096
+
+    @pytest.mark.asyncio
+    async def test_explain_intent_budget_override(self) -> None:
+        """EXPLAIN intent resolves its per-intent budget instead of default.
+
+        Live measurement (2026-08-09, quality_harness.py --json, 3 replicate runs
+        at this value) found EXPLAIN:2048 net-positive but noisy versus the prior
+        8192: one EXPLAIN probe (explain_live_path) went from always-broken to
+        passing in 2 of 3 runs; another (multiturn_config_systems) got
+        consistently worse. Total EXPLAIN-probe hits across 3 runs averaged 3.67
+        versus a single-run baseline of 2 at 8192. Tried 1024 first and reverted
+        it after it regressed every EXPLAIN and REFACTOR probe outright.
+        """
+        from packages.planning.plan import ContextPlan
+
+        symbols = [_make_symbol("App", "main.App", SymbolType.CLASS, "main.py")]
+        index = _make_index(symbols)
+        stage = RepositoryContextStage(
+            index=index,
+            max_context_tokens=4096,
+            intent_context_budgets={"EXPLAIN": 2048},
+        )
+
+        captured_queries = []
+
+        with patch(
+            "packages.pipeline.stages.repository_context.ContextBuilder"
+        ) as mock_builder:
+            builder = mock_builder.return_value
+
+            def _build(query):
+                captured_queries.append(query)
+                from packages.context.models import ContextResult
+
+                return ContextResult(candidates=[], selected_modules=[])
+
+            builder.build.side_effect = _build
+
+            context = _make_context()
+            context.set_metadata("context_plan", ContextPlan(intent="EXPLAIN"))
+            result = await stage.execute(context)
+
+        assert result.success is True
+        assert captured_queries[0].max_tokens == 2048
+        assert context.get_metadata("repository_context_max_tokens") == 2048
+        assert result.data["max_context_tokens"] == 2048
+
 
 # ------------------------------------------------------------------
 # Disabled feature skips stage

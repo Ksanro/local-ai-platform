@@ -3,7 +3,7 @@
 This file is the current runtime snapshot. It intentionally describes only
 what matters for the live gateway path and calls out dormant code explicitly.
 
-Last reviewed: 2026-08-08.
+Last reviewed: 2026-08-09.
 
 ## Product Shape
 
@@ -75,7 +75,7 @@ needed. Session logs record both `context.estimated_tokens` and
 provider prompt tokens.
 
 `APP_REPOSITORY_CONTEXT_INTENT_BUDGETS` can override the default by planner
-intent, for example `SEARCH:2048,TEST:2048,DEBUG:2048,EXPLAIN:8192`. Explicit
+intent, for example `SEARCH:2048,TEST:2048,DEBUG:2048,EXPLAIN:2048`. Explicit
 request metadata still wins over intent defaults. The current live tuning
 baseline uses `SEARCH:2048`; in a same-prompt Cline A/B it reduced median
 repository context from about `4013` to `2047` estimated tokens and median
@@ -89,6 +89,24 @@ same-prompt Cline validation preserved answer quality while reducing direct
 repository context from about `4095` to `2047` estimated tokens and median
 prompt tokens from about `17,580` to `15,880`. Latency remained noisy in the
 small samples.
+
+REFACTOR and EXPLAIN were measured on 2026-08-09 with
+`scripts/quality_harness.py --json --max-tokens 900` (the harness has no
+`--budget` flag; a budget A/B means two full `--json` runs at different
+`APP_REPOSITORY_CONTEXT_INTENT_BUDGETS` values, diffed by probe `id`).
+**REFACTOR** was tried at `2048` and `3072`, both reverted: 3 replicate runs at
+`3072` consistently missed the same required fact
+(`select_last_task_text`, replaced with a hallucinated but wrong
+`select_context_query_text`) that the `4096` default answers correctly every
+time - a real, repeatable regression, distinguished from noise by an
+unrelated control probe (budget untouched) that swung by 2 hits across the
+same runs. REFACTOR stays at the `4096` default. **EXPLAIN** moved to `2048`
+(from `8192`): 3 replicate runs averaged 3.67/9 combined hits across the three
+EXPLAIN probes versus a single-run baseline of 2/9 at `8192` - noisy (0 to 6
+across replicates) but net positive, driven by `explain_live_path` going from
+always-broken to passing in 2 of 3 runs; one other EXPLAIN probe
+(`multiturn_config_systems`) got consistently worse. `explain_live_path`
+prompt tokens dropped from `5136` to `1119-1975` across runs.
 
 ### History Capping
 
@@ -140,9 +158,9 @@ Builds the provider payload from `NormalizedRequest`, swaps `model` to
   tool/thinking chatter (`style_violations`, `style_ok`)
 - local-agent coding workflow catalog (`scripts/local_agent_coding.py`) for a
   staged Cline/qwen27B planning, Claude-extension/qwen35B implementation,
-  Claude CLI review/tests, and Codex coordination branch; `style_preamble_cleanup`
-  and `delta_context_live_smoke` are both complete, `context_budget_ranking`
-  is the active planning-first task for `REFACTOR`/`EXPLAIN` budget tuning
+  Claude CLI review/tests, and Codex coordination branch; `style_preamble_cleanup`,
+  `delta_context_live_smoke`, and `context_budget_ranking` (`REFACTOR`/`EXPLAIN`
+  budget tuning, measured 2026-08-09) are all complete
 - multi-turn Cline-like quality-harness probes (`QualityProbe.history`) -
   `multiturn_history_cap_budget`, `multiturn_config_systems`; prior
   user/assistant turns are sent before the scored final prompt
@@ -260,9 +278,10 @@ Recommended live-path checks:
   full latency lever. Configurable repository-context budget enforcement and
   targeted retrieval promotions now exist; recent quality-harness runs show
   `20/20` with context versus `2/20` without context on the fixed probe set.
-  `SEARCH`/`TEST`/`DEBUG` have measured budget overrides; `REFACTOR`/`EXPLAIN`
-  tuning is the active item, see `docs/roadmap.md` section 3 and the
-  `context_budget_ranking` local-agent-coding task.
+  `SEARCH`/`TEST`/`DEBUG`/`EXPLAIN` have measured budget overrides; `REFACTOR`
+  was measured and reverted to the shared default after a replicated
+  regression - see `docs/roadmap.md` section 3 and the "RepositoryContextStage"
+  section above for the measured numbers.
 - Token estimates still use `CHARS_PER_TOKEN = 4.0`, not model-specific
   tokenizers.
 - The model often includes reasoning/preamble despite terse system prompts; the

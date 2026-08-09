@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from scripts.local_agent_coding import TASKS, main
+from scripts.local_agent_coding import PLAN_GROUNDING_RULE, TASKS, main
 
 
 def test_task_catalog_has_fixed_first_local_coding_task() -> None:
@@ -19,6 +19,23 @@ def test_task_catalog_has_fixed_first_local_coding_task() -> None:
     assert "packages/providers/vllm.py" in task.expected_files
     assert [step.role for step in task.workflow] == ["plan", "code", "review", "coordinate"]
     assert "Do not activate dormant" in task.workflow[1].prompt
+
+
+def test_every_plan_step_carries_the_grounding_rule() -> None:
+    """Every plan-role step must tell the agent to cite file:line, not recall.
+
+    A live context_budget_ranking planning run (2026-08-08) fabricated ranking
+    weights, a config map, and CLI flags that were all plausible-sounding and all
+    wrong. This asserts the anti-fabrication instruction is attached to every
+    task's plan step, present and future, not just the one that broke.
+    """
+    plan_steps = [
+        (task.id, step) for task in TASKS for step in task.workflow if step.role == "plan"
+    ]
+
+    assert plan_steps, "expected at least one plan-role step across the task catalog"
+    for task_id, step in plan_steps:
+        assert PLAN_GROUNDING_RULE in step.prompt, f"{task_id} plan step is missing the rule"
 
 
 def test_list_outputs_task_ids(capsys: pytest.CaptureFixture[str]) -> None:
