@@ -747,7 +747,101 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         default="logs/sessions.jsonl",
         help="session JSONL file to inspect for --delta-context",
     )
+    parser.add_argument(
+        "--probe",
+        action="append",
+        default=None,
+        metavar="<id>",
+        help="run only the named fixed probe(s); may be repeated",
+    )
+    parser.add_argument(
+        "--repeat",
+        type=int,
+        default=1,
+        help=(
+            "repeat normal probe runs N times (default 1); "
+            "incompatible with --delta-context and --compare-context"
+        ),
+    )
     return parser.parse_args(argv)
+
+
+def _resolve_probes(probe_ids: list[str] | None) -> tuple[QualityProbe, ...]:
+    """Return the subset of PROBES matching *probe_ids*, or all PROBES if *probe_ids* is None/empty.
+
+    Duplicate ids are deduplicated while preserving first-requested order.
+    Raises ``ValueError`` for unknown ids.
+    """
+    if not probe_ids:
+        return PROBES
+    probe_map = {p.id: p for p in PROBES}
+    seen: set[str] = set()
+    selected: list[QualityProbe] = []
+    for pid in probe_ids:
+        if pid not in probe_map:
+            known = ", ".join(sorted(probe_map.keys()))
+            raise ValueError(f"unknown probe id: {pid!r}. Known: {known}")
+        if pid not in seen:
+            seen.add(pid)
+            selected.append(probe_map[pid])
+    return tuple(selected)
+
+
+def _run_probe_set(
+    probes: tuple[QualityProbe, ...],
+    *,
+    base_url: str,
+    model: str,
+    max_tokens: int,
+    timeout: float,
+    use_intent_overrides: bool,
+    context_enabled: bool,
+) -> list[QualityResult]:
+    """Run *probes* once and return the results in probe order."""
+    return [
+        run_probe(
+            probe,
+            base_url=base_url,
+            model=model,
+            max_tokens=max_tokens,
+            timeout=timeout,
+            use_intent_overrides=use_intent_overrides,
+            context_enabled=context_enabled,
+        )
+        for probe in probes
+    ]
+
+
+def _aggregate_repeat_runs(
+    probes: tuple[QualityProbe, ...],
+    runs: list[list[QualityResult]],
+) -> dict[str, dict[str, Any]]:
+    """Compute per-probe aggregates across repeated runs.
+
+    Returns a dict keyed by probe id with ``score_sum``, ``score_max``,
+    ``score_min``, and per-fact ``hit_rates`` (list of bool, one per run).
+    """
+    if not runs:
+        return {}
+    aggregate: dict[str, dict[str, Any]] = {}
+    for probe in probes:
+        scores: list[int] = []
+        all_facts = [f.label for f in probe.expect]
+        hit_rates: dict[str, list[bool]] = {f: [] for f in all_facts}
+        for run in runs:
+            r = next((x for x in run if x.id == probe.id), None)
+            if r is None:
+                continue
+            scores.append(r.score)
+            for f in all_facts:
+                hit_rates[f].append(f in r.hits)
+        aggregate[probe.id] = {
+            "score_sum": sum(scores),
+            "score_max": max(scores) if scores else 0,
+            "score_min": min(scores) if scores else 0,
+            "hit_rates": hit_rates,
+        }
+    return aggregate
 
 
 def main(argv: list[str]) -> int:
@@ -763,8 +857,41 @@ def main(argv: list[str]) -> int:
         )
         return 2
 
+    # --probe with --delta-context is disallowed
+    if args.probe and args.delta_context:
+        print(
+            "ERROR: --probe cannot be combined with --delta-context",
+            file=sys.stderr,
+        )
+        return 2
+
+    # --repeat validation
+    if args.repeat < 1:
+        print("ERROR: --repeat must be >= 1", file=sys.stderr)
+        return 2
+    if args.repeat > 1 and args.delta_context:
+        print(
+            "ERROR: --repeat cannot be combined with --delta-context",
+            file=sys.stderr,
+        )
+        return 2
+    if args.repeat > 1 and args.compare_context:
+        print(
+            "ERROR: --repeat cannot be combined with --compare-context",
+            file=sys.stderr,
+        )
+        return 2
+
+    # Resolve probe selection (may raise ValueError for unknown ids)
+    try:
+        selected_probes = _resolve_probes(args.probe)
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+
     use_intent_overrides = not args.no_intent_overrides
     context_enabled = not args.no_context
+    repeat_count = args.repeat
 
     if args.delta_context:
         delta_result = run_delta_context_probe(
@@ -818,30 +945,24 @@ def main(argv: list[str]) -> int:
         return 0 if delta_result.ok else 1
 
     if args.compare_context:
-        context_results = [
-            run_probe(
-                probe,
-                base_url=args.base_url,
-                model=args.model,
-                max_tokens=args.max_tokens,
-                timeout=args.timeout,
-                use_intent_overrides=use_intent_overrides,
-                context_enabled=True,
-            )
-            for probe in PROBES
-        ]
-        no_context_results = [
-            run_probe(
-                probe,
-                base_url=args.base_url,
-                model=args.model,
-                max_tokens=args.max_tokens,
-                timeout=args.timeout,
-                use_intent_overrides=use_intent_overrides,
-                context_enabled=False,
-            )
-            for probe in PROBES
-        ]
+        context_results = _run_probe_set(
+            selected_probes,
+            base_url=args.base_url,
+            model=args.model,
+            max_tokens=args.max_tokens,
+            timeout=args.timeout,
+            use_intent_overrides=use_intent_overrides,
+            context_enabled=True,
+        )
+        no_context_results = _run_probe_set(
+            selected_probes,
+            base_url=args.base_url,
+            model=args.model,
+            max_tokens=args.max_tokens,
+            timeout=args.timeout,
+            use_intent_overrides=use_intent_overrides,
+            context_enabled=False,
+        )
 
         if args.json:
             print(json.dumps({
@@ -865,9 +986,57 @@ def main(argv: list[str]) -> int:
                 return 1
         return 0
 
-    results = [
-        run_probe(
-            probe,
+    # Normal probe runs (with optional --repeat)
+    if repeat_count > 1:
+        all_runs: list[list[QualityResult]] = []
+        for _ in range(repeat_count):
+            run_results = _run_probe_set(
+                selected_probes,
+                base_url=args.base_url,
+                model=args.model,
+                max_tokens=args.max_tokens,
+                timeout=args.timeout,
+                use_intent_overrides=use_intent_overrides,
+                context_enabled=context_enabled,
+            )
+            all_runs.append(run_results)
+
+        if args.json:
+            aggregate = _aggregate_repeat_runs(selected_probes, all_runs)
+            print(json.dumps({
+                "repeat": repeat_count,
+                "runs": [[r.__dict__ for r in run] for run in all_runs],
+                "aggregate": aggregate,
+            }, indent=2))
+        else:
+            for run_idx, run_results in enumerate(all_runs, 1):
+                print(f"\nRUN {run_idx}/{repeat_count}")
+                print_table(run_results)
+                if args.verbose:
+                    print_verbose(run_results)
+            # Compact aggregate summary
+            aggregate = _aggregate_repeat_runs(selected_probes, all_runs)
+            print("\nAGGREGATE")
+            print("=" * 80)
+            for probe in selected_probes:
+                agg = aggregate.get(probe.id, {})
+                rates = ", ".join(
+                    f"{f}: {sum(v)}/{repeat_count}"
+                    for f, v in agg.get("hit_rates", {}).items()
+                )
+                print(
+                    f"{probe.id}: sum={agg.get('score_sum', 0)}  "
+                    f"max={agg.get('score_max', 0)}  "
+                    f"min={agg.get('score_min', 0)}  "
+                    f"{rates}"
+                )
+            print("=" * 80)
+
+        check_results = all_runs[-1] if all_runs else []
+    else:
+        # Single run (default behavior, with probe selection)
+        results = _run_probe_set(
+            selected_probes,
             base_url=args.base_url,
             model=args.model,
             max_tokens=args.max_tokens,
@@ -875,21 +1044,25 @@ def main(argv: list[str]) -> int:
             use_intent_overrides=use_intent_overrides,
             context_enabled=context_enabled,
         )
-        for probe in PROBES
-    ]
 
-    if args.json:
-        print(json.dumps([result.__dict__ for result in results], indent=2))
-    else:
-        print_table(results)
-        if args.verbose:
-            print_verbose(results)
+        if args.json:
+            print(json.dumps([result.__dict__ for result in results], indent=2))
+        else:
+            print_table(results)
+            if args.verbose:
+                print_verbose(results)
 
-    total_score = sum(result.score for result in results)
+        check_results = results
+
+    total_score = sum(result.score for result in check_results)
     if args.fail_under and total_score < args.fail_under:
         return 1
-    if any(result.error for result in results):
-        return 1
+    if repeat_count > 1:
+        if any(r.error for run in all_runs for r in run):
+            return 1
+    else:
+        if any(result.error for result in check_results):
+            return 1
     return 0
 
 
