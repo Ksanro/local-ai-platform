@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+import io
+import json
+import sys
 import unittest.mock
+
+import pytest
 
 from scripts.quality_harness import (
     DELTA_CONTEXT_PROBE,
@@ -15,10 +20,13 @@ from scripts.quality_harness import (
     _read_session_log_records,
     _read_session_log_records_with_retry,
     _record_for_last_user,
+    _resolve_probes,
     build_payload,
     detect_style_violations,
     extract_answer,
     fact,
+    main,
+    parse_args,
     print_comparison_table,
     run_delta_context_probe,
     score_answer,
@@ -493,3 +501,193 @@ def test_print_comparison_table_shows_context_delta(capsys) -> None:
     assert "dscore" in output
     assert "TOTAL" in output
     assert "   1" in output
+
+
+# ---------------------------------------------------------------------------
+# Probe selection (--probe) and --repeat tests
+# ---------------------------------------------------------------------------
+
+
+class TestProbeSelection:
+    """_resolve_probes filters PROBES without mutating the global tuple."""
+
+    def test_resolve_probes_none_returns_all(self) -> None:
+        assert _resolve_probes(None) is PROBES
+
+    def test_resolve_probes_empty_returns_all(self) -> None:
+        assert _resolve_probes([]) is PROBES
+
+    def test_resolve_probes_single_id(self) -> None:
+        result = _resolve_probes(["multiturn_history_cap_budget"])
+        assert len(result) == 1
+        assert result[0].id == "multiturn_history_cap_budget"
+
+    def test_resolve_probes_multiple_ids(self) -> None:
+        result = _resolve_probes(["search_answer_preview", "multiturn_history_cap_budget"])
+        assert len(result) == 2
+        ids = [p.id for p in result]
+        assert "search_answer_preview" in ids
+        assert "multiturn_history_cap_budget" in ids
+
+    def test_resolve_probes_unknown_id_raises(self, capsys) -> None:
+        with pytest.raises(ValueError, match="unknown probe id"):
+            _resolve_probes(["nonexistent_probe"])
+
+    def test_resolve_probes_preserves_first_request_order(self) -> None:
+        """Selection order follows the --probe argument order, not PROBES order."""
+        result = _resolve_probes(["multiturn_config_systems", "search_answer_preview"])
+        assert result[0].id == "multiturn_config_systems"
+        assert result[1].id == "search_answer_preview"
+
+    def test_resolve_probes_deduplicates(self) -> None:
+        """Duplicate --probe ids should not run duplicate probes."""
+        result = _resolve_probes(["search_answer_preview", "search_answer_preview"])
+        assert len(result) == 1
+        assert result[0].id == "search_answer_preview"
+
+
+class TestExistingBehaviorUnchanged:
+    """Prove that new flags do not change existing default behavior."""
+
+    def test_probe_set_covers_live_intents_unchanged(self) -> None:
+        """PROBES tuple must still cover all 6 live intents."""
+        intents = {probe.intent for probe in PROBES}
+        assert intents == {"SEARCH", "DEBUG", "TEST", "EXPLAIN", "REFACTOR", "IMPLEMENT"}
+
+    def test_probe_set_fixed_maximum_unchanged(self) -> None:
+        """Total expected-fact count must remain 20."""
+        total_maximum = sum(len(probe.expect) for probe in PROBES)
+        assert total_maximum == 20
+
+    def test_probe_tuple_length_unchanged(self) -> None:
+        """PROBES must still have 8 entries."""
+        assert len(PROBES) == 8
+
+
+class TestParseArgsProbe:
+    """parse_args handles --probe and --repeat correctly."""
+
+    def test_probe_single(self) -> None:
+        args = parse_args(["--probe", "multiturn_history_cap_budget"])
+        assert args.probe == ["multiturn_history_cap_budget"]
+
+    def test_probe_multiple(self) -> None:
+        args = parse_args(["--probe", "a", "--probe", "b"])
+        assert args.probe == ["a", "b"]
+
+    def test_repeat_default_is_one(self) -> None:
+        args = parse_args([])
+        assert args.repeat == 1
+
+    def test_repeat_value(self) -> None:
+        args = parse_args(["--repeat", "5"])
+        assert args.repeat == 5
+
+
+class TestInvalidFlagCombinations:
+    """Invalid flag combinations should return exit code 2."""
+
+    def test_probe_with_delta_context_returns_2(self, capsys) -> None:
+        rc = main(["--probe", "search_answer_preview", "--delta-context"])
+        assert rc == 2
+        _, err = capsys.readouterr()
+        assert "--probe cannot be combined with --delta-context" in err
+
+    def test_repeat_zero_returns_2(self, capsys) -> None:
+        rc = main(["--repeat", "0"])
+        assert rc == 2
+        _, err = capsys.readouterr()
+        assert "--repeat must be >= 1" in err
+
+    def test_repeat_gt1_with_delta_context_returns_2(self, capsys) -> None:
+        rc = main(["--repeat", "3", "--delta-context"])
+        assert rc == 2
+        _, err = capsys.readouterr()
+        assert "--repeat cannot be combined with --delta-context" in err
+
+    def test_repeat_gt1_with_compare_context_returns_2(self, capsys) -> None:
+        rc = main(["--repeat", "3", "--compare-context"])
+        assert rc == 2
+        _, err = capsys.readouterr()
+        assert "--repeat cannot be combined with --compare-context" in err
+
+    def test_unknown_probe_id_returns_2(self, capsys) -> None:
+        rc = main(["--probe", "nonexistent_probe"])
+        assert rc == 2
+        _, err = capsys.readouterr()
+        assert "unknown probe id" in err
+
+
+class TestRepeatJsonShape:
+    """Verify repeat mode JSON envelope is backward-compatible."""
+
+    _FAKE_RESPONSE = {
+        "choices": [{"message": {"role": "assistant", "content": "_apply_history_cap"}}],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12},
+    }
+
+    def test_repeat_one_produces_flat_array(self, monkeypatch) -> None:
+        """--repeat 1 must produce the same flat array as no --repeat."""
+        monkeypatch.setattr(
+            "scripts.quality_harness.post_json",
+            lambda *a, **kw: self._FAKE_RESPONSE,
+        )
+        captured = io.StringIO()
+        monkeypatch.setattr(sys, "stdout", captured)
+
+        main([
+            "--probe", "multiturn_history_cap_budget",
+            "--repeat", "1",
+            "--json",
+            "--base-url", "http://nowhere",
+        ])
+        output = json.loads(captured.getvalue())
+
+        assert isinstance(output, list)
+        assert len(output) == 1
+
+    def test_repeat_three_produces_envelope(self, monkeypatch) -> None:
+        """--repeat 3 must produce the new envelope shape."""
+        monkeypatch.setattr(
+            "scripts.quality_harness.post_json",
+            lambda *a, **kw: self._FAKE_RESPONSE,
+        )
+        captured = io.StringIO()
+        monkeypatch.setattr(sys, "stdout", captured)
+
+        main([
+            "--probe", "multiturn_history_cap_budget",
+            "--repeat", "3",
+            "--json",
+            "--base-url", "http://nowhere",
+        ])
+        output = json.loads(captured.getvalue())
+
+        assert isinstance(output, dict)
+        assert output["repeat"] == 3
+        assert len(output["runs"]) == 3
+        assert "aggregate" in output
+
+    def test_probe_with_compare_context_filters_both_sides(self, monkeypatch) -> None:
+        """--probe with --compare-context should filter both context and no_context results."""
+        monkeypatch.setattr(
+            "scripts.quality_harness.post_json",
+            lambda *a, **kw: self._FAKE_RESPONSE,
+        )
+        captured = io.StringIO()
+        monkeypatch.setattr(sys, "stdout", captured)
+
+        main([
+            "--probe", "multiturn_history_cap_budget",
+            "--compare-context",
+            "--json",
+            "--base-url", "http://nowhere",
+        ])
+        output = json.loads(captured.getvalue())
+
+        assert isinstance(output, dict)
+        assert "context" in output
+        assert "no_context" in output
+        assert len(output["context"]) == 1
+        assert len(output["no_context"]) == 1
+        assert output["context"][0]["id"] == "multiturn_history_cap_budget"
