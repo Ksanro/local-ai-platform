@@ -115,6 +115,30 @@ docstring and reworded the probe prompt to ask for the environment variable
 instead of the Python argument name. Verified live: 8/8 replicate runs (qwen27,
 --max-tokens 900) with zero misses.
 
+A Tokenizer Registry investigation (2026-08-10) was opened after
+`logs/quality_compare_qwen36_20260807*.json` (three saved `--compare-context`
+runs, filesystem-dated 2026-08-07 16:27-16:44) appeared to show EXPLAIN real
+token cost running 2.17x-3.43x the *current* 2048 nominal budget. That
+comparison was methodologically wrong: those files predate the EXPLAIN
+8192-to-2048 retune documented above (committed 2026-08-09 08:28, `0dcf2bf`),
+so EXPLAIN was still budgeted at 8192 when they were captured. The same real
+costs (4452-7030 tokens) divide to 0.54x-0.86x against 8192 - in line with
+every other intent's normal behavior, not a divergence. Two plan drafts
+(`logs/agent_handoffs/explain_token_estimate_correction_plan.md`, `_v2.md`)
+proposed `CHARS_PER_TOKEN` fixes based on the uncorrected comparison; both
+were rejected on review before implementation - v1's causal claim was
+contradicted by its own data (`implement_health_flag` promotes the same
+`apps/gateway/core/config.Settings` symbol without showing elevated
+divergence), and v2 additionally cited two `packages/context/builder.py`
+promotion functions that do not exist in the file. A fresh live
+`--compare-context` re-measurement on 2026-08-10 against the current 2048
+budget found EXPLAIN in the normal band (0.83x-1.00x, reproduced twice).
+`CHARS_PER_TOKEN = 4.0` is unchanged; no tokenizer-accuracy problem is
+currently measured. The real, smaller, still-open question is the run-to-run
+variance already noted above (`explain_live_path` ranged 1119-1975 tokens
+across 3 replicates at the same 2048 budget on 2026-08-09) - a
+context-selection determinism question, not a token-estimation-accuracy one.
+
 ### History Capping
 
 When `APP_HISTORY_CAP_ENABLED=true`, `PipelineEngine` caps non-system

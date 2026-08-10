@@ -151,6 +151,12 @@ dormant package as production runtime:
 `CHARS_PER_TOKEN = 4.0`. Add tokenizer-aware accounting when budget precision
 becomes a practical problem.
 
+Investigated 2026-08-10: an apparent 2.17x-3.43x EXPLAIN-intent divergence
+turned out to be a stale-budget comparison artifact (the source data predated
+an EXPLAIN budget retune by two days) rather than a real tokenizer-accuracy
+problem - see `docs/STATUS.md`'s RepositoryContextStage section for the full
+account. No fix implemented; the gate above remains unmet.
+
 ### Engineering Memory
 
 `packages.engineering_memory` has two active slices:
