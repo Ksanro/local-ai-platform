@@ -102,3 +102,34 @@ Blocked means:
 
 A missing log file before the first chat request is not a failure. The gateway
 creates and writes the file on completed `/v1/chat/completions` requests.
+
+## Focused Probe (--probe)
+
+`--probe <id>` runs only the named probe instead of the full fixed set.
+Multiple `--probe` flags are allowed; duplicate ids are deduplicated; unknown
+ids return exit code 2 with a list of known ids.
+
+```powershell
+.\uv.exe run python scripts\quality_harness.py --probe multiturn_history_cap_budget --json --max-tokens 900 --model qwen27
+```
+
+`--probe` is allowed with `--compare-context` (filters both sides) but
+disallowed with `--delta-context`.
+
+## Repeated Probe (--repeat)
+
+`--repeat N` runs the selected probes N times and reports per-run results
+plus an aggregate summary. Default is `--repeat 1` (single run, unchanged
+behavior). `--repeat N > 1` is disallowed with `--delta-context` and
+`--compare-context`.
+
+When `--json` is used with `--repeat 1`, output remains a flat list (backward
+compatible). When `--repeat N > 1` with `--json`, output is a repeat envelope:
+`{"repeat": N, "runs": [...], "aggregate": {...}}`.
+
+```powershell
+.\uv.exe run python scripts\quality_harness.py --probe multiturn_history_cap_budget --repeat 3 --json --max-tokens 900 --model qwen27
+```
+
+For qwen36 (a reasoning model), use `--max-tokens 2048` or higher; 900 tokens
+is insufficient for hidden reasoning tokens.
