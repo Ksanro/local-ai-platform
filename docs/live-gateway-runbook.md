@@ -110,7 +110,7 @@ Multiple `--probe` flags are allowed; duplicate ids are deduplicated; unknown
 ids return exit code 2 with a list of known ids.
 
 ```powershell
-.\uv.exe run python scripts\quality_harness.py --probe multiturn_history_cap_budget --json --max-tokens 900 --model qwen27
+.\uv.exe run python scripts\quality_harness.py --probe multiturn_history_cap_budget --json --max-tokens 900 --model local-model
 ```
 
 `--probe` is allowed with `--compare-context` (filters both sides) but
@@ -128,8 +128,10 @@ compatible). When `--repeat N > 1` with `--json`, output is a repeat envelope:
 `{"repeat": N, "runs": [...], "aggregate": {...}}`.
 
 ```powershell
-.\uv.exe run python scripts\quality_harness.py --probe multiturn_history_cap_budget --repeat 3 --json --max-tokens 900 --model qwen27
+.\uv.exe run python scripts\quality_harness.py --probe multiturn_history_cap_budget --repeat 3 --json --max-tokens 900 --model local-model
 ```
 
-For qwen36 (a reasoning model), use `--max-tokens 2048` or higher; 900 tokens
-is insufficient for hidden reasoning tokens.
+For reasoning-heavy models, configure warnings with
+`APP_QUALITY_REASONING_MODELS=model-a,model-b` or pass
+`--reasoning-model <model>`. Use `--max-tokens 2048` or higher when the model
+spends significant budget on hidden reasoning tokens.

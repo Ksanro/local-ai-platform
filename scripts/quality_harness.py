@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 import urllib.error
@@ -28,8 +29,11 @@ from pathlib import Path
 from typing import Any
 
 DEFAULT_BASE_URL = "http://127.0.0.1:8001/v1"
-DEFAULT_MODEL = "qwen36"
+DEFAULT_MODEL = os.environ.get("APP_DEFAULT_MODEL") or os.environ.get(
+    "DEFAULT_MODEL", "default-model"
+)
 DEFAULT_MAX_TOKENS = 400
+DEFAULT_REASONING_MIN_TOKENS = 2048
 QUALITY_SYSTEM_PROMPT = (
     "You are a repository fact oracle. Answer with only the requested "
     "repository facts: file paths, function names, variable names, or "
@@ -431,6 +435,68 @@ def post_json(url: str, payload: dict[str, Any], *, timeout: float) -> dict[str,
     return data
 
 
+def _split_model_list(value: str) -> tuple[str, ...]:
+    """Parse a comma-separated model list."""
+    return tuple(part.strip() for part in value.split(",") if part.strip())
+
+
+def _configured_reasoning_models(extra_models: list[str] | None = None) -> tuple[str, ...]:
+    """Return model names configured as reasoning-heavy for harness warnings."""
+    models = list(_split_model_list(os.environ.get("APP_QUALITY_REASONING_MODELS", "")))
+    if extra_models:
+        models.extend(extra_models)
+    seen: set[str] = set()
+    configured: list[str] = []
+    for model in models:
+        key = model.lower()
+        if key not in seen:
+            seen.add(key)
+            configured.append(model)
+    return tuple(configured)
+
+
+def _warn_low_reasoning_budget(
+    model: str,
+    max_tokens: int,
+    *,
+    reasoning_models: tuple[str, ...],
+    min_tokens: int = DEFAULT_REASONING_MIN_TOKENS,
+) -> None:
+    """Emit a stderr warning for configured reasoning models with low budgets.
+
+    Does not change exit code. Output goes to stderr so it cannot contaminate
+    machine-readable JSON stdout.
+    """
+    if not any(model.lower() == configured.lower() for configured in reasoning_models):
+        return
+    if max_tokens >= min_tokens:
+        return
+    print(
+        f"WARN: model {model!r} is configured as reasoning-heavy but "
+        f"max_tokens={max_tokens} is below {min_tokens}. Visible answer may be "
+        f"empty or truncated. Use --max-tokens {min_tokens} or higher for "
+        f"reliable quality scores.",
+        file=sys.stderr,
+    )
+
+
+def _compute_truncation_risk(
+    answer: str,
+    completion_tokens: int,
+    max_tokens: int,
+) -> bool:
+    """Return True when the model likely hit the completion budget before answering.
+
+    Truncation risk is flagged when the model consumed nearly the entire budget
+    (completion_tokens >= max_tokens - 1) but the visible answer is empty or
+    very short (fewer than 20 characters after stripping).
+    """
+    if completion_tokens >= max_tokens - 1:
+        if len(answer.strip()) < 20:
+            return True
+    return False
+
+
 def run_probe(
     probe: QualityProbe,
     *,
@@ -443,6 +509,8 @@ def run_probe(
 ) -> QualityResult:
     """Run one quality probe against the live gateway."""
     result = QualityResult(id=probe.id, intent=probe.intent)
+    result.metadata["max_tokens_requested"] = max_tokens
+    result.metadata["truncation_risk"] = False
     payload = build_payload(
         probe,
         model=model,
@@ -467,6 +535,9 @@ def run_probe(
     result.total_tokens = usage["total_tokens"]
     result.hits, result.misses = score_answer(result.answer, probe.expect)
     result.style_violations = detect_style_violations(result.answer)
+    result.metadata["truncation_risk"] = _compute_truncation_risk(
+        result.answer, result.completion_tokens, max_tokens
+    )
     return result
 
 
@@ -628,13 +699,13 @@ def run_delta_context_probe(
 
 
 def print_table(results: list[QualityResult]) -> None:
-    """Print a compact quality table."""
-    print("\n" + "=" * 100)
+    """Print a compact quality table with truncation-risk indicators."""
+    print("\n" + "=" * 106)
     print(
         f"{'id':<28}{'intent':<11}{'score':>8}{'style':>8}{'ptok':>9}"
-        f"{'ctok':>8}{'sec':>8}  misses"
+        f"{'ctok':>8}{'sec':>8}{'trunc':>6}  misses"
     )
-    print("-" * 100)
+    print("-" * 106)
     total_score = 0
     total_max = 0
     for result in results:
@@ -642,17 +713,18 @@ def print_table(results: list[QualityResult]) -> None:
         total_max += result.maximum
         score = f"{result.score}/{result.maximum}"
         style = "ok" if result.style_ok else "bad"
+        trunc = "!" if result.metadata.get("truncation_risk") else ""
         misses = ", ".join(result.misses) if result.misses else "-"
         if result.error:
             misses = result.error
         print(
             f"{result.id:<28}{result.intent:<11}{score:>8}{style:>8}"
             f"{result.prompt_tokens:>9}{result.completion_tokens:>8}"
-            f"{result.seconds:>8.1f}  {misses[:40]}"
+            f"{result.seconds:>8.1f}{trunc:>6}  {misses[:40]}"
         )
-    print("-" * 100)
+    print("-" * 106)
     print(f"{'TOTAL':<39}{f'{total_score}/{total_max}':>8}")
-    print("=" * 100)
+    print("=" * 106)
 
 
 def print_comparison_table(
@@ -761,6 +833,29 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help=(
             "repeat normal probe runs N times (default 1); "
             "incompatible with --delta-context and --compare-context"
+        ),
+    )
+    parser.add_argument(
+        "--reasoning-model",
+        action="append",
+        default=None,
+        metavar="<model>",
+        help=(
+            "mark a model as reasoning-heavy for low --max-tokens warnings; "
+            "may be repeated. APP_QUALITY_REASONING_MODELS also accepts a "
+            "comma-separated list"
+        ),
+    )
+    parser.add_argument(
+        "--reasoning-min-tokens",
+        type=int,
+        default=int(os.environ.get(
+            "APP_QUALITY_REASONING_MIN_TOKENS",
+            str(DEFAULT_REASONING_MIN_TOKENS),
+        )),
+        help=(
+            "minimum recommended --max-tokens for configured reasoning-heavy "
+            f"models (default {DEFAULT_REASONING_MIN_TOKENS})"
         ),
     )
     return parser.parse_args(argv)
@@ -892,6 +987,15 @@ def main(argv: list[str]) -> int:
     use_intent_overrides = not args.no_intent_overrides
     context_enabled = not args.no_context
     repeat_count = args.repeat
+
+    # Warn when a configured reasoning model is run with a low completion budget.
+    # This warning goes to stderr and does not affect exit code or JSON stdout.
+    _warn_low_reasoning_budget(
+        args.model,
+        args.max_tokens,
+        reasoning_models=_configured_reasoning_models(args.reasoning_model),
+        min_tokens=args.reasoning_min_tokens,
+    )
 
     if args.delta_context:
         delta_result = run_delta_context_probe(

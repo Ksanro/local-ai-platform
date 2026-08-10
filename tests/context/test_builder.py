@@ -121,7 +121,12 @@ def multi_module_index() -> RepositoryIndex:
     """
     symbols = [
         # Partial match for "authentication" → high score
-        _make_symbol("AuthenticationService", "auth.AuthenticationService", SymbolType.CLASS, "auth.py"),
+        _make_symbol(
+            "AuthenticationService",
+            "auth.AuthenticationService",
+            SymbolType.CLASS,
+            "auth.py",
+        ),
         # No match for "authentication" or "middleware"
         _make_symbol("App", "main.App", SymbolType.CLASS, "main.py"),
         _make_symbol("run", "main.App.run", SymbolType.METHOD, "main.py"),
@@ -546,3 +551,106 @@ class TestRankingIntegration:
         names = [c.qualified_name for c in result.candidates]
         # Should be ranked, not alphabetically sorted.
         assert names != sorted(names)
+
+
+# ------------------------------------------------------------------
+# Deterministic repeated builds (EXPLAIN-style queries)
+# ------------------------------------------------------------------
+
+
+class TestContextBuilderDeterminism:
+    """Context selection must be deterministic for the same index + query.
+
+    Repeated builds with identical RepositoryIndex + ContextQuery produce
+    identical candidate lists, scores, reasons, selected_modules, and
+    budget fields. This covers EXPLAIN-style request-path prompts.
+    """
+
+    def test_10_repeated_builds_identical_for_explain_query(
+        self, multi_module_index: RepositoryIndex
+    ) -> None:
+        """10 consecutive builds with an EXPLAIN-style query are identical."""
+        # EXPLAIN-style query: requesting explanation of a request path
+        explain_query = ContextQuery(
+            text="explain authentication middleware request path routing",
+            max_symbols=10,
+            max_modules=5,
+            max_tokens=2048,
+        )
+        builder = ContextBuilder(multi_module_index)
+        results = [builder.build(explain_query) for _ in range(10)]
+
+        first = results[0]
+        for i, result in enumerate(results[1:], start=2):
+            # Candidate qualified_names in order
+            names = [c.qualified_name for c in result.candidates]
+            first_names = [c.qualified_name for c in first.candidates]
+            assert names == first_names, f"Run {i}: candidate names differ"
+
+            # Scores
+            scores = [c.score for c in result.candidates]
+            first_scores = [c.score for c in first.candidates]
+            assert scores == first_scores, f"Run {i}: scores differ"
+
+            # Reasons
+            reasons = [list(c.reasons) for c in result.candidates]
+            first_reasons = [list(c.reasons) for c in first.candidates]
+            assert reasons == first_reasons, f"Run {i}: reasons differ"
+
+            # Selected modules
+            assert result.selected_modules == first.selected_modules, (
+                f"Run {i}: selected_modules differ"
+            )
+
+    def test_10_repeated_builds_identical_for_simple_query(
+        self, multi_module_index: RepositoryIndex
+    ) -> None:
+        """10 consecutive builds with a simple query are identical."""
+        query = ContextQuery(
+            text="authentication",
+            max_symbols=5,
+            max_modules=3,
+            max_tokens=4096,
+        )
+        builder = ContextBuilder(multi_module_index)
+        results = [builder.build(query) for _ in range(10)]
+
+        first = results[0]
+        for i, result in enumerate(results[1:], start=2):
+            assert [c.qualified_name for c in result.candidates] == [
+                c.qualified_name for c in first.candidates
+            ], f"Run {i}: names differ"
+            assert [c.score for c in result.candidates] == [
+                c.score for c in first.candidates
+            ], f"Run {i}: scores differ"
+            assert result.selected_modules == first.selected_modules, (
+                f"Run {i}: modules differ"
+            )
+
+    def test_10_repeated_builds_identical_budget_fields(
+        self, multi_module_index: RepositoryIndex
+    ) -> None:
+        """Budget-related fields are deterministic across repeated builds."""
+        query = ContextQuery(
+            text="middleware routing",
+            max_symbols=10,
+            max_modules=5,
+            max_tokens=2048,
+        )
+        builder = ContextBuilder(multi_module_index)
+        results = [builder.build(query) for _ in range(10)]
+
+        first = results[0]
+        for i, result in enumerate(results[1:], start=2):
+            # Total candidates count
+            assert len(result.candidates) == len(first.candidates), (
+                f"Run {i}: candidate count differs"
+            )
+            # Total modules count
+            assert len(result.selected_modules) == len(first.selected_modules), (
+                f"Run {i}: module count differs"
+            )
+            # Module set is identical
+            assert set(result.selected_modules) == set(first.selected_modules), (
+                f"Run {i}: module set differs"
+            )

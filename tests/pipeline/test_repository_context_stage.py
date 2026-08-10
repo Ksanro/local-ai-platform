@@ -664,6 +664,74 @@ class TestDeterministicExecution:
             assert package.metadata == first.metadata
 
     @pytest.mark.asyncio
+    async def test_10_repeated_explain_request_path_produces_identical_output(
+        self,
+    ) -> None:
+        """10 repeated executions for an EXPLAIN request-path prompt are identical.
+
+        This is the core determinism test: same index, same intent/budget,
+        same request messages, delta injection disabled, repeated 10 times.
+        Compare supporting_symbols, related_modules, metadata/context token fields.
+        """
+        from packages.planning.plan import ContextPlan
+
+        symbols = [
+            _make_symbol("App", "main.App", SymbolType.CLASS, "main.py"),
+            _make_symbol("run", "main.App.run", SymbolType.METHOD, "main.py"),
+            _make_symbol("MiddlewareRouter", "auth.MiddlewareRouter", SymbolType.CLASS, "auth.py"),
+            _make_symbol("authenticate", "auth.authenticate", SymbolType.FUNCTION, "auth.py"),
+            _make_symbol("helper", "utils.helper", SymbolType.FUNCTION, "utils.py"),
+        ]
+        index = _make_index(symbols)
+        stage = RepositoryContextStage(
+            index=index,
+            max_context_tokens=2048,
+            context_delta_injection=False,
+        )
+
+        # EXPLAIN-style request-path prompt
+        explain_messages = [
+            {
+                "role": "user",
+                "content": (
+                    "Explain how the authentication middleware request path "
+                    "routing works in this codebase."
+                ),
+            }
+        ]
+
+        packages = []
+        for _ in range(10):
+            context = _make_context(messages=explain_messages)
+            # Set EXPLAIN intent plan
+            plan = ContextPlan(intent="EXPLAIN")
+            context.set_metadata("context_plan", plan)
+            result = await stage.execute(context)
+            assert result.success is True
+            assert context.context_package is not None
+            packages.append(context.context_package)
+
+        first = packages[0]
+        for i, package in enumerate(packages[1:], start=2):
+            assert package is not None
+            # Supporting symbols (qualified names in order)
+            assert package.supporting_symbols == first.supporting_symbols, (
+                f"Run {i}: supporting_symbols differ"
+            )
+            # Related modules
+            assert package.related_modules == first.related_modules, (
+                f"Run {i}: related_modules differ"
+            )
+            # Primary symbol
+            assert package.primary_symbol == first.primary_symbol, (
+                f"Run {i}: primary_symbol differs"
+            )
+            # Metadata
+            assert package.metadata == first.metadata, (
+                f"Run {i}: metadata differs"
+            )
+
+    @pytest.mark.asyncio
     async def test_empty_repository_produces_no_package(self) -> None:
         """Verify empty repository produces no ContextPackage.
 

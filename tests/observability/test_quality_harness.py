@@ -10,6 +10,7 @@ import unittest.mock
 import pytest
 
 from scripts.quality_harness import (
+    DEFAULT_MAX_TOKENS,
     DELTA_CONTEXT_PROBE,
     PROBES,
     QUALITY_SYSTEM_PROMPT,
@@ -17,10 +18,13 @@ from scripts.quality_harness import (
     TOOL_CHATTER_MARKERS,
     QualityProbe,
     QualityResult,
+    _compute_truncation_risk,
+    _configured_reasoning_models,
     _read_session_log_records,
     _read_session_log_records_with_retry,
     _record_for_last_user,
     _resolve_probes,
+    _warn_low_reasoning_budget,
     build_payload,
     detect_style_violations,
     extract_answer,
@@ -29,6 +33,7 @@ from scripts.quality_harness import (
     parse_args,
     print_comparison_table,
     run_delta_context_probe,
+    run_probe,
     score_answer,
     turn,
 )
@@ -123,7 +128,7 @@ def test_build_payload_uses_quality_system_prompt() -> None:
 
     payload = build_payload(
         probe,
-        model="qwen36",
+        model="test-model",
         max_tokens=50,
         use_intent_overrides=True,
         context_enabled=True,
@@ -159,13 +164,13 @@ def test_build_payload_can_include_intent_override() -> None:
 
     payload = build_payload(
         probe,
-        model="qwen36",
+        model="test-model",
         max_tokens=50,
         use_intent_overrides=True,
         context_enabled=True,
     )
 
-    assert payload["model"] == "qwen36"
+    assert payload["model"] == "test-model"
     assert payload["max_tokens"] == 50
     assert payload["context_intent"] == "SEARCH"
     assert payload["repository_context_enabled"] is True
@@ -179,7 +184,7 @@ def test_build_payload_can_omit_intent_override() -> None:
 
     payload = build_payload(
         probe,
-        model="qwen36",
+        model="test-model",
         max_tokens=50,
         use_intent_overrides=False,
         context_enabled=False,
@@ -264,7 +269,7 @@ def test_build_payload_includes_history_before_final_prompt() -> None:
 
     payload = build_payload(
         probe,
-        model="qwen36",
+        model="test-model",
         max_tokens=50,
         use_intent_overrides=False,
         context_enabled=True,
@@ -283,7 +288,7 @@ def test_build_payload_without_history_matches_single_turn_shape() -> None:
 
     payload = build_payload(
         probe,
-        model="qwen36",
+        model="test-model",
         max_tokens=50,
         use_intent_overrides=False,
         context_enabled=True,
@@ -458,7 +463,7 @@ def test_delta_context_probe_reports_record_count_on_failure(tmp_path) -> None:
         result = run_delta_context_probe(
             DELTA_CONTEXT_PROBE,
             base_url="http://127.0.0.1:9999",
-            model="qwen36",
+            model="test-model",
             max_tokens=50,
             timeout=1.0,
             use_intent_overrides=True,
@@ -691,3 +696,205 @@ class TestRepeatJsonShape:
         assert len(output["context"]) == 1
         assert len(output["no_context"]) == 1
         assert output["context"][0]["id"] == "multiturn_history_cap_budget"
+
+
+# ---------------------------------------------------------------------------
+# Truncation-risk and reasoning-model budget warning tests
+# ---------------------------------------------------------------------------
+
+
+class TestDefaultMaxTokens:
+    """DEFAULT_MAX_TOKENS must remain 400."""
+
+    def test_default_max_tokens_is_400(self) -> None:
+        assert DEFAULT_MAX_TOKENS == 400
+
+
+class TestReasoningModelLowBudgetWarning:
+    """Reasoning-model warnings are configuration-driven, not model-name hardcoded."""
+
+    def test_configured_reasoning_model_below_min_emits_warning(self, capsys) -> None:
+        _warn_low_reasoning_budget(
+            "local-reasoner",
+            900,
+            reasoning_models=("local-reasoner",),
+            min_tokens=2048,
+        )
+        _, err = capsys.readouterr()
+        assert "local-reasoner" in err.lower()
+        assert "max_tokens=900" in err
+        assert "2048" in err
+
+    def test_configured_reasoning_model_at_min_no_warning(self, capsys) -> None:
+        _warn_low_reasoning_budget(
+            "local-reasoner",
+            2048,
+            reasoning_models=("local-reasoner",),
+            min_tokens=2048,
+        )
+        _, err = capsys.readouterr()
+        assert err.strip() == ""
+
+    def test_configured_reasoning_model_above_min_no_warning(self, capsys) -> None:
+        _warn_low_reasoning_budget(
+            "local-reasoner",
+            4096,
+            reasoning_models=("local-reasoner",),
+            min_tokens=2048,
+        )
+        _, err = capsys.readouterr()
+        assert err.strip() == ""
+
+    def test_unconfigured_model_below_min_no_warning(self, capsys) -> None:
+        _warn_low_reasoning_budget(
+            "ordinary-model",
+            900,
+            reasoning_models=("local-reasoner",),
+            min_tokens=2048,
+        )
+        _, err = capsys.readouterr()
+        assert err.strip() == ""
+
+    def test_case_insensitive_reasoning_model_match(self, capsys) -> None:
+        _warn_low_reasoning_budget(
+            "Local-Reasoner",
+            500,
+            reasoning_models=("local-reasoner",),
+            min_tokens=2048,
+        )
+        _, err = capsys.readouterr()
+        assert "2048" in err
+
+    def test_reasoning_models_can_come_from_env(self, monkeypatch) -> None:
+        monkeypatch.setenv("APP_QUALITY_REASONING_MODELS", "alpha, beta, alpha")
+        assert _configured_reasoning_models(["gamma"]) == ("alpha", "beta", "gamma")
+
+
+class TestComputeTruncationRisk:
+    """_compute_truncation_risk flags budget exhaustion with empty/short answers."""
+
+    def test_empty_answer_at_budget_is_risk(self) -> None:
+        assert _compute_truncation_risk("", 400, 400) is True
+
+    def test_short_answer_near_budget_is_risk(self) -> None:
+        assert _compute_truncation_risk("short", 399, 400) is True
+
+    def test_empty_answer_below_budget_is_not_risk(self) -> None:
+        assert _compute_truncation_risk("", 100, 400) is False
+
+    def test_normal_answer_at_budget_is_not_risk(self) -> None:
+        assert _compute_truncation_risk("This is a sufficiently long answer.", 400, 400) is False
+
+    def test_short_answer_well_below_budget_is_not_risk(self) -> None:
+        assert _compute_truncation_risk("short", 100, 400) is False
+
+    def test_answer_exactly_19_chars_at_budget_is_risk(self) -> None:
+        assert _compute_truncation_risk("1234567890123456789", 400, 400) is True
+
+    def test_answer_exactly_20_chars_at_budget_is_not_risk(self) -> None:
+        assert _compute_truncation_risk("12345678901234567890", 400, 400) is False
+
+
+class TestRunProbeTruncationMetadata:
+    """run_probe stores max_tokens_requested and truncation_risk in metadata."""
+
+    _FAKE_RESPONSE = {
+        "choices": [{"message": {"role": "assistant", "content": ""}}],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 400, "total_tokens": 410},
+    }
+
+    def test_run_probe_stores_max_tokens_requested(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            "scripts.quality_harness.post_json",
+            lambda *a, **kw: self._FAKE_RESPONSE,
+        )
+        probe = QualityProbe("p1", "SEARCH", "prompt", (fact("x"),))
+        result = run_probe(
+            probe,
+            base_url="http://nowhere",
+            model="test-model",
+            max_tokens=400,
+            timeout=1.0,
+            use_intent_overrides=True,
+            context_enabled=True,
+        )
+        assert result.metadata["max_tokens_requested"] == 400
+
+    def test_empty_answer_at_budget_marks_truncation_risk(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            "scripts.quality_harness.post_json",
+            lambda *a, **kw: self._FAKE_RESPONSE,
+        )
+        probe = QualityProbe("p1", "SEARCH", "prompt", (fact("x"),))
+        result = run_probe(
+            probe,
+            base_url="http://nowhere",
+            model="test-model",
+            max_tokens=400,
+            timeout=1.0,
+            use_intent_overrides=True,
+            context_enabled=True,
+        )
+        assert result.metadata["truncation_risk"] is True
+
+    def test_normal_answer_below_budget_no_truncation_risk(self, monkeypatch) -> None:
+        response = {
+            "choices": [
+                {"message": {"role": "assistant", "content": "This is a sufficiently long answer."}}
+            ],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 50, "total_tokens": 60},
+        }
+        monkeypatch.setattr(
+            "scripts.quality_harness.post_json",
+            lambda *a, **kw: response,
+        )
+        probe = QualityProbe("p1", "SEARCH", "prompt", (fact("x"),))
+        result = run_probe(
+            probe,
+            base_url="http://nowhere",
+            model="test-model",
+            max_tokens=400,
+            timeout=1.0,
+            use_intent_overrides=True,
+            context_enabled=True,
+        )
+        assert result.metadata["truncation_risk"] is False
+
+
+class TestJsonShapeCompatibility:
+    """JSON output must not have new top-level fields beyond metadata."""
+
+    _FAKE_RESPONSE = {
+        "choices": [{"message": {"role": "assistant", "content": "answer"}}],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+    }
+
+    def test_json_output_metadata_contains_truncation_fields(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            "scripts.quality_harness.post_json",
+            lambda *a, **kw: self._FAKE_RESPONSE,
+        )
+        captured = io.StringIO()
+        monkeypatch.setattr(sys, "stdout", captured)
+
+        main([
+            "--probe", "search_answer_preview",
+            "--json",
+            "--base-url", "http://nowhere",
+        ])
+        output = json.loads(captured.getvalue())
+
+        assert isinstance(output, list)
+        assert len(output) == 1
+        result = output[0]
+        # metadata is the existing field; new keys are inside it
+        assert "metadata" in result
+        assert "max_tokens_requested" in result["metadata"]
+        assert "truncation_risk" in result["metadata"]
+        # No new top-level keys beyond the existing set
+        expected_keys = {
+            "id", "intent", "ok", "answer", "prompt_tokens",
+            "completion_tokens", "total_tokens", "seconds",
+            "hits", "misses", "style_violations", "error", "metadata",
+        }
+        assert set(result.keys()) == expected_keys

@@ -53,10 +53,10 @@ Create or edit `.env`. A minimal local configuration looks like:
 VLLM_BASE_URL=http://localhost:8000/v1
 VLLM_API_KEY=empty
 REQUEST_TIMEOUT=120
-DEFAULT_MODEL=qwen36
+DEFAULT_MODEL=local-model
 
 APP_DEFAULT_PROVIDER=vllm
-APP_DEFAULT_MODEL=qwen36
+APP_DEFAULT_MODEL=local-model
 APP_REPOSITORY_PATH=.
 APP_REPOSITORY_CONTEXT_ENABLED=true
 APP_REPOSITORY_CONTEXT_MAX_TOKENS=4096
@@ -65,7 +65,9 @@ APP_CONTEXT_INTENT_RULES={}
 APP_SESSION_LOG_ENABLED=true
 APP_HISTORY_CAP_ENABLED=true
 APP_HISTORY_CAP_TOKENS=10000
-APP_MODELS_CONFIG=[{"model":"qwen36","backend_model":"backend/model/name","provider":"vllm","base_url":"http://localhost:8000/v1","context_window":131072,"max_output_tokens":8192}]
+APP_MODELS_CONFIG=[{"model":"local-model","backend_model":"backend/model/name","provider":"vllm","base_url":"http://localhost:8000/v1","context_window":131072,"max_output_tokens":8192}]
+APP_QUALITY_REASONING_MODELS=
+APP_QUALITY_REASONING_MIN_TOKENS=2048
 ```
 
 `DEFAULT_MODEL` and `APP_DEFAULT_MODEL` are different variables. In normal
