@@ -153,10 +153,19 @@ becomes a practical problem.
 
 ### Engineering Memory
 
-`packages.engineering_memory` exists but is not wired into the gateway. Revisit
-after session logs and repo-context budgeting are stable. The likely first
-useful version is not "semantic memory"; it is deterministic summaries of
-successful/failed live sessions.
+`packages.engineering_memory` has two active slices:
+- **Quality-harness records:** `quality_harness_records.py` persists evaluation
+  runs; `quality_history.py` + `scripts/quality_history.py` summarize them.
+- **Session-log records:** `session_log_records.py` ingests `logs/sessions.jsonl`
+  into EngineeringMemory; `session_log_history.py` + `scripts/session_log_history.py`
+  produce deterministic success/failure summaries (timing, intent distribution,
+  error breakdown, history-cap rate).
+
+Both slices share the same `memory_v1.json` storage file, distinguished by
+`workflow_name` ("quality_harness" vs "gateway_session").
+
+Remaining dormant: controller/execution/verification wiring, semantic memory,
+packages.session/packages.controller integration.
 
 ### Git Integration
 
