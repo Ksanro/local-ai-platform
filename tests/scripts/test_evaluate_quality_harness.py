@@ -10,11 +10,12 @@ from __future__ import annotations
 import io
 import json
 from pathlib import Path
+from subprocess import CalledProcessError
 
 import pytest
 
 from packages.engineering_memory.memory import EngineeringMemory
-from scripts.evaluate_quality_harness import main
+from scripts.evaluate_quality_harness import _resolve_gateway_commit, main
 
 
 def _write(tmp_path: Path, name: str, payload: object) -> str:
@@ -348,3 +349,231 @@ class TestQualityRun:
         main([run_path, "--quality-run", "--model", "qwen36"])
 
         assert not storage_path.exists()
+
+
+class TestResolveGatewayCommit:
+    """Unit tests for the `_resolve_gateway_commit` helper."""
+
+    def test_explicit_commit_is_preserved(self) -> None:
+        assert _resolve_gateway_commit("abc123") == "abc123"
+
+    def test_explicit_commit_non_empty_wins_over_git(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Even when git would succeed, explicit value must win."""
+        monkeypatch.setattr(
+            "subprocess.run",
+            lambda *a, **k: _fake_run("deadbeef0123456789abcdef"),
+        )
+        assert _resolve_gateway_commit("abc123") == "abc123"
+
+    def test_missing_commit_uses_git_output(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(
+            "subprocess.run",
+            lambda *a, **k: _fake_run("c8f6b27ceb09881243dbb21c9dad52c30fd36665"),
+        )
+        assert _resolve_gateway_commit("") == "c8f6b27ceb09881243dbb21c9dad52c30fd36665"
+
+    def test_git_os_error_returns_empty_string(self) -> None:
+        """When git binary is not found, fall back to empty string."""
+        import scripts.evaluate_quality_harness as mod
+
+        original_subprocess = mod.subprocess
+
+        def fake_run_raises(*a, **k):
+            raise OSError("No such file")
+
+        mod.subprocess.run = fake_run_raises
+        try:
+            assert _resolve_gateway_commit("") == ""
+        finally:
+            mod.subprocess.run = original_subprocess.run
+
+    def test_git_called_process_error_returns_empty_string(self) -> None:
+        """When git command fails (e.g., not a repo), fall back to empty."""
+        import scripts.evaluate_quality_harness as mod
+
+        original_run = mod.subprocess.run
+
+        def fake_run_raises(*a, **k):
+            raise CalledProcessError(1, "git", output="", stderr="fatal: not a git repo")
+
+        mod.subprocess.run = fake_run_raises
+        try:
+            assert _resolve_gateway_commit("") == ""
+        finally:
+            mod.subprocess.run = original_run
+
+
+class TestAutoDetectGatewayCommitIntegration:
+    """Integration tests: main() auto-populates gateway_commit from git."""
+
+    def test_plain_json_report_does_not_auto_detect_commit(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        payload = [_result("a", hits=["f1"])]
+        run_path = _write(tmp_path, "run.json", payload)
+
+        def fail_if_called(*args: object, **kwargs: object) -> object:
+            raise AssertionError("git should not be called for plain reports")
+
+        monkeypatch.setattr("subprocess.run", fail_if_called)
+
+        exit_code = main([run_path, "--json"])
+
+        assert exit_code == 0
+        out = json.loads(capsys.readouterr().out)
+        assert out["total_score"] == 1
+
+    def test_persist_record_receives_auto_detected_commit(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        payload = [_result("a", hits=["f1"])]
+        run_path = _write(tmp_path, "run.json", payload)
+        storage_path = str(tmp_path / "memory.json")
+
+        monkeypatch.setattr(
+            "subprocess.run",
+            lambda *a, **k: _fake_run("auto-git-abc123"),
+        )
+
+        exit_code = main(
+            [
+                run_path,
+                "--persist",
+                "--model",
+                "qwen36",
+                "--storage-path",
+                storage_path,
+            ]
+        )
+
+        assert exit_code == 0
+        memory = EngineeringMemory(storage_path=storage_path)
+        memory.reload()
+        sessions = memory.list_sessions()
+        assert len(sessions) == 1
+        assert sessions[0].metadata["gateway_commit"] == "auto-git-abc123"
+
+    def test_quality_run_output_receives_auto_detected_commit(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        payload = [_result("a", hits=["f1"])]
+        run_path = _write(tmp_path, "run.json", payload)
+
+        monkeypatch.setattr(
+            "subprocess.run",
+            lambda *a, **k: _fake_run("auto-git-def456"),
+        )
+
+        exit_code = main([run_path, "--quality-run", "--model", "qwen36"])
+
+        assert exit_code == 0
+        out = json.loads(capsys.readouterr().out)
+        assert out["gateway_commit"] == "auto-git-def456"
+
+    def test_explicit_gateway_commit_overrides_auto_detection_in_persist(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Explicit --gateway-commit must still win over auto-detection."""
+        payload = [_result("a", hits=["f1"])]
+        run_path = _write(tmp_path, "run.json", payload)
+        storage_path = str(tmp_path / "memory.json")
+
+        monkeypatch.setattr(
+            "subprocess.run",
+            lambda *a, **k: _fake_run("should-not-appear"),
+        )
+
+        exit_code = main(
+            [
+                run_path,
+                "--persist",
+                "--model",
+                "qwen36",
+                "--gateway-commit",
+                "explicit-xyz",
+                "--storage-path",
+                storage_path,
+            ]
+        )
+
+        assert exit_code == 0
+        memory = EngineeringMemory(storage_path=storage_path)
+        memory.reload()
+        sessions = memory.list_sessions()
+        assert sessions[0].metadata["gateway_commit"] == "explicit-xyz"
+
+    def test_git_failure_does_not_break_quality_run(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """When git fails and no explicit commit, gateway_commit is empty but run succeeds."""
+        payload = [_result("a", hits=["f1"])]
+        run_path = _write(tmp_path, "run.json", payload)
+
+        monkeypatch.setattr(
+            "subprocess.run",
+            lambda *a, **k: (_raise_called_process_error()),
+        )
+
+        exit_code = main([run_path, "--quality-run", "--model", "qwen36"])
+
+        assert exit_code == 0
+        out = json.loads(capsys.readouterr().out)
+        assert out["gateway_commit"] == ""
+
+    def test_comparison_quality_run_receives_auto_detected_commit(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        payload = {
+            "context": [_result("a", hits=["f1", "f2"], prompt_tokens=150)],
+            "no_context": [_result("a", hits=["f1"], misses=["f2"], prompt_tokens=50)],
+        }
+        run_path = _write(tmp_path, "cmp.json", payload)
+
+        monkeypatch.setattr(
+            "subprocess.run",
+            lambda *a, **k: _fake_run("compare-git-789"),
+        )
+
+        exit_code = main([run_path, "--quality-run", "--model", "qwen36"])
+
+        assert exit_code == 0
+        out = json.loads(capsys.readouterr().out)
+        assert out["gateway_commit"] == "compare-git-789"
+
+
+# -----------------------------------------------------------------------
+# Helpers for fake subprocess responses
+# -----------------------------------------------------------------------
+
+
+def _fake_run(commit: str):
+    """Return a fake subprocess result with the given commit hash."""
+    class _Result:
+        stdout = commit + "\n"
+    return _Result()
+
+
+def _raise_called_process_error():
+    raise CalledProcessError(1, "git", output="", stderr="fatal: not a git repo")

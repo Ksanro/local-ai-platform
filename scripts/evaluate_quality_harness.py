@@ -33,6 +33,7 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -57,6 +58,26 @@ from packages.evaluation.quality_run import (  # noqa: E402
     build_quality_run,
     build_quality_run_from_comparison,
 )
+
+
+def _resolve_gateway_commit(explicit: str) -> str:
+    """Return the explicit commit hash, or auto-detect via `git rev-parse HEAD`.
+
+    Falls back to `""` when *git* is unavailable, the command fails, or the
+    repository does not exist.  Never raises.
+    """
+    if explicit:
+        return explicit
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return result.stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return ""
 
 
 def _read_payload(path: str) -> object:
@@ -183,6 +204,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 def main(argv: list[str]) -> int:
     """Evaluate quality-harness JSON output."""
     args = parse_args(argv)
+    if args.persist or args.quality_run:
+        args.gateway_commit = _resolve_gateway_commit(args.gateway_commit)
     payload = _read_payload(args.input)
 
     has_error: bool
