@@ -2,7 +2,7 @@
 
 This roadmap is based on the current live gateway, not on dormant scaffolding.
 
-Last reviewed: 2026-08-09.
+Last reviewed: 2026-08-22.
 
 ## Done Enough For Now
 
@@ -120,6 +120,11 @@ Done in this pass:
   noise by running the same unchanged-budget control probe alongside each
   test - a probe with an untouched budget still swung by 2 hits run to run,
   which is the noise floor these results were checked against
+- 2026-08-22: confirmed context-selection determinism on qwen38-27b/SGLang +
+  `EXPLAIN:4096` - 3 EXPLAIN probes x 3 in-process repeats and a post-restart
+  re-run reproduced identical prompt_tokens / estimated_tokens / primary
+  symbols; remaining run-to-run variance is model-side sampling, so no code
+  change is needed (numbers in `docs/STATUS.md`)
 
 Next:
 

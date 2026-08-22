@@ -146,6 +146,26 @@ currently measured. The real, smaller, still-open question is the run-to-run
 variance already noted above (`explain_live_path` ranged 1119-1975 tokens
 across 3 replicates at the same 2048 budget on 2026-08-09) - a
 context-selection determinism question, not a token-estimation-accuracy one.
+That question was closed on 2026-08-22 (see the determinism note below).
+
+The context-selection determinism question was closed on 2026-08-22 on the
+current stack (qwen38-27b via SGLang, `EXPLAIN:4096`):
+
+- Phase 1 (in-process): 3 EXPLAIN probes x 3 repeats produced byte-identical
+  context fields on every repeat - `explain_live_path` prompt_tokens=4132,
+  estimated_tokens=4036, primary `apps/gateway/main.lifespan`;
+  `multiturn_history_cap_budget` 3997 / 3892, primary
+  `packages/pipeline/engine._apply_history_cap`; `multiturn_config_systems`
+  4443 / 3861, primary `packages/providers/vllm._get_vllm_config`.
+- Phase 2 (across restart): after a full gateway stop/restart on an
+  unchanged repo and `.env`, re-runs of `explain_live_path` and
+  `multiturn_config_systems` matched Phase 1 exactly.
+
+Conclusion: on the current repo and `.env`, qwen38/SGLang + `EXPLAIN:4096`
+context selection is deterministic within a gateway process and across
+gateway restarts. Remaining run-to-run variance is model-side sampling
+(answer wording, `completion_tokens`, wall-clock seconds). No code fix was
+warranted.
 
 ### History Capping
 

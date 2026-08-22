@@ -133,6 +133,12 @@ When `--json` is used with `--repeat 1`, output remains a flat list (backward
 compatible). When `--repeat N > 1` with `--json`, output is a repeat envelope:
 `{"repeat": N, "runs": [...], "aggregate": {...}}`.
 
+Interpreting repeats: with an unchanged repo and `.env`, context fields and
+`prompt_tokens` are expected to be identical across repeats (verified
+2026-08-22 on qwen38-27b/SGLang with `EXPLAIN:4096`); differences in answer
+wording, `completion_tokens`, hits, or seconds between repeats are model-side
+sampling variance, not context-selection drift.
+
 ```powershell
 .\uv.exe run python scripts\quality_harness.py --probe multiturn_history_cap_budget --repeat 3 --json --max-tokens 900 --model local-model
 ```
