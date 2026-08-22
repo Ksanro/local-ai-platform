@@ -213,6 +213,7 @@ class ContextBuilder:
         candidates = self._promote_config_system_symbols(candidates, query.text)
         candidates = self._promote_referenced_modules(candidates, query.text)
         candidates = self._promote_shared_helper_imports(candidates, query.text)
+        candidates = self._promote_history_cap_symbols(candidates, query.text)
 
         # Apply max_symbols limit (0 means no candidates).
         if query.max_symbols > 0:
@@ -410,13 +411,11 @@ class ContextBuilder:
         if not self._query_targets_history_cap(query_text):
             return candidates
 
+        targets = self._history_cap_target_order(query_text)
+        candidates = self._ensure_named_candidates(candidates, targets)
         return self._promote_named_symbols(
             candidates,
-            (
-                "packages/pipeline/engine._apply_history_cap",
-                "apps/gateway/core/config.Settings",
-                "packages/pipeline/engine.PipelineEngine.execute",
-            ),
+            targets,
         )
 
     def _promote_config_system_symbols(
@@ -428,13 +427,12 @@ class ContextBuilder:
         if not self._query_targets_config_systems(query_text):
             return candidates
 
-        return self._promote_named_symbols(
-            candidates,
-            (
-                "packages/providers/vllm._get_vllm_config",
-                "apps/gateway/core/config.Settings",
-            ),
+        targets = (
+            "packages/providers/vllm._get_vllm_config",
+            "apps/gateway/core/config.Settings",
         )
+        candidates = self._ensure_named_candidates(candidates, targets)
+        return self._promote_named_symbols(candidates, targets)
 
     @staticmethod
     def _promote_named_symbols(
@@ -462,6 +460,35 @@ class ContextBuilder:
             if candidate.qualified_name not in seen_symbols
         )
         return promoted
+
+    def _ensure_named_candidates(
+        self,
+        candidates: list[ContextCandidate],
+        ordered_targets: tuple[str, ...],
+    ) -> list[ContextCandidate]:
+        """Append exact target symbols from the index when ranking missed them."""
+        existing = {candidate.qualified_name for candidate in candidates}
+        missing = [target for target in ordered_targets if target not in existing]
+        if not missing:
+            return candidates
+
+        by_name = {symbol.qualified_name: symbol for symbol in self._index.symbols()}
+        extended = list(candidates)
+        for target in missing:
+            symbol = by_name.get(target)
+            if symbol is None:
+                continue
+            extended.append(ContextCandidate(
+                symbol_id=symbol.id,
+                qualified_name=symbol.qualified_name,
+                module=symbol.module,
+                symbol_type=(
+                    symbol.symbol_type.value
+                    if hasattr(symbol.symbol_type, "value")
+                    else str(symbol.symbol_type)
+                ),
+            ))
+        return extended
 
     def _find_importers_of_modules(self, module_refs: list[str]) -> list[str]:
         """Return modules importing any explicitly referenced module."""
@@ -626,8 +653,55 @@ class ContextBuilder:
         return (
             "history capping" in lowered
             or "history cap" in lowered
+            or ("caps" in lowered and "chat history" in lowered)
+            or ("caps" in lowered and "history" in lowered and "token budget" in lowered)
+            or ("cap_history" in lowered)
             or "capping logic" in lowered
             or "app_history_cap_tokens" in lowered
+        )
+
+    @staticmethod
+    def _history_cap_target_order(query_text: str) -> tuple[str, ...]:
+        """Return the preferred exact-symbol order for history-cap queries."""
+        lowered = query_text.lower()
+        helper_followup = (
+            "cap_history" in lowered
+            and "helper" in lowered
+            and (
+                "grouping" in lowered
+                or "_build_cap_groups" in lowered
+                or "tool-call groups" in lowered
+            )
+        )
+        apply_cap = "applies the cap" in lowered
+        if helper_followup:
+            return (
+                "packages/pipeline/history._build_cap_groups",
+                "packages/pipeline/history._message_token_count",
+                "packages/pipeline/history._estimate_tokens",
+                "packages/pipeline/history.cap_history",
+                "packages/pipeline/engine._apply_history_cap",
+                "apps/gateway/core/config.Settings",
+                "packages/pipeline/engine.PipelineEngine.execute",
+            )
+        if apply_cap:
+            return (
+                "packages/pipeline/engine._apply_history_cap",
+                "apps/gateway/core/config.Settings",
+                "packages/pipeline/engine.PipelineEngine.execute",
+                "packages/pipeline/history.cap_history",
+                "packages/pipeline/history._message_token_count",
+                "packages/pipeline/history._estimate_tokens",
+                "packages/pipeline/history._build_cap_groups",
+            )
+        return (
+            "packages/pipeline/history.cap_history",
+            "packages/pipeline/history._message_token_count",
+            "packages/pipeline/history._estimate_tokens",
+            "packages/pipeline/history._build_cap_groups",
+            "packages/pipeline/engine._apply_history_cap",
+            "apps/gateway/core/config.Settings",
+            "packages/pipeline/engine.PipelineEngine.execute",
         )
 
     @staticmethod
@@ -863,6 +937,11 @@ class ContextBuilder:
 
     def _primary_source_budget_for_query(self, query: ContextQuery) -> int:
         """Reserve more room for supporting files in explicit comparisons."""
+        if self._query_targets_history_cap(query.text):
+            return min(
+                self._primary_symbol_max_tokens,
+                max(1280, (query.max_tokens * 5) // 8),
+            )
         if len(self._referenced_module_paths(query.text)) < 2:
             return self._primary_symbol_max_tokens
         return min(
@@ -872,6 +951,11 @@ class ContextBuilder:
 
     def _supporting_source_budget_for_query(self, query: ContextQuery) -> int:
         """Allow several named files to contribute source previews."""
+        if self._query_targets_history_cap(query.text):
+            return max(
+                self._supporting_symbol_max_tokens,
+                query.max_tokens // 2,
+            )
         if len(self._referenced_module_paths(query.text)) < 2:
             return self._supporting_symbol_max_tokens
         return max(
@@ -881,6 +965,8 @@ class ContextBuilder:
 
     def _supporting_candidate_budget_for_query(self, query: ContextQuery) -> int | None:
         """Limit each support preview so explicit comparisons keep breadth."""
+        if self._query_targets_history_cap(query.text):
+            return 128
         if len(self._referenced_module_paths(query.text)) < 2:
             return None
         return 512

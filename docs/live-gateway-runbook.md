@@ -14,6 +14,12 @@ Important: `apps/gateway/main.py` loads `.env` with `override=True`. Values in
 gateway. Before live probes, check `.env` for `APP_SESSION_LOG_PATH` and either
 use that same path in `--session-log-path` or update `.env` for the run.
 
+Current local backend: SGLang serves `qwen3.8-27b` at
+`http://100.106.236.88:30000/v1`, exposed through the gateway as
+`qwen38-27b` with provider `openai`. The Codex sandbox may fail direct TCP
+checks to this port with `Bad access`; retry endpoint checks with approved
+unsandboxed `curl.exe` before treating SGLang as unavailable.
+
 ## Start Gateway
 
 From the repo root, in a terminal that will stay open:
@@ -96,7 +102,7 @@ Pass means:
 Blocked means:
 
 - gateway unavailable
-- vLLM unavailable or crashed
+- backend unavailable or crashed (SGLang, vLLM, or other OpenAI-compatible)
 - backend timeout/API 500/context-size error
 - `session_log_records_not_found` after the harness completes
 
@@ -135,3 +141,39 @@ For reasoning-heavy models, configure warnings with
 `APP_QUALITY_REASONING_MODELS=model-a,model-b` or pass
 `--reasoning-model <model>`. Use `--max-tokens 2048` or higher when the model
 spends significant budget on hidden reasoning tokens.
+
+## Intent Context Budgets
+
+The current `.env` uses
+`APP_REPOSITORY_CONTEXT_INTENT_BUDGETS=SEARCH:2048,TEST:2048,DEBUG:2048,REFACTOR:4096,IMPLEMENT:4096,EXPLAIN:4096`.
+EXPLAIN is `4096`: the `2048` budget dropped
+`apps/gateway/core/config.Settings` from EXPLAIN context assembly and caused a
+repeatable `multiturn_config_systems` miss. Restart the gateway after changing
+`.env` so new budgets apply.
+
+## Full Quality Baseline
+
+Run the fixed 8-probe set against the current local backend:
+
+```powershell
+.\uv.exe run python scripts\quality_harness.py --json --model qwen38-27b --max-tokens 8192 --reasoning-model qwen38-27b > logs\quality_baseline_qwen38_27b_after_fixes.json
+```
+
+Use `--model qwen38-27b` (gateway alias for SGLang `qwen3.8-27b`) and
+`--max-tokens 8192`; the model spends budget on hidden reasoning, so smaller
+limits risk empty or truncated answers. Evaluate the saved JSON:
+
+```powershell
+.\uv.exe run python scripts\evaluate_quality_harness.py logs\quality_baseline_qwen38_27b_after_fixes.json --model qwen38-27b
+```
+
+Persist only on a clean pass (all expected facts, style clean, no errors or
+timeouts):
+
+```powershell
+.\uv.exe run python scripts\evaluate_quality_harness.py logs\quality_baseline_qwen38_27b_after_fixes.json --model qwen38-27b --persist --notes "SGLang qwen3.8-27b full quality baseline after retrieval and EXPLAIN budget fixes"
+```
+
+The 2026-08-22 baseline scored a clean TOTAL 20/20 with style 8/8 ok
+(28013 prompt tokens, 144.6 seconds) and was persisted as session
+`quality_harness-20260821T214629502370-6d519523`.

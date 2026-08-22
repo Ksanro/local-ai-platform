@@ -314,37 +314,6 @@ class RepositoryContextStage(PipelineStage):
                     context_result.candidates.clear()
                     context_result.candidates.extend(filtered)
 
-                # If only the primary remains (already sent), treat as
-                # "no new symbols" — do not re-inject.
-                if symbols_new == 1 and symbols_suppressed > 0:
-                    elapsed_ms = (time.perf_counter() - start_time) * 1000
-                    logger.info(
-                        "repository_context request_id=%s context_enabled=%s "
-                        "context_status=no_new_symbols symbols_new=%d "
-                        "symbols_suppressed=%d conversation_key=%s "
-                        "duration_ms=%.1f",
-                        request_id,
-                        context_enabled,
-                        symbols_new,
-                        symbols_suppressed,
-                        conv_key[:8],
-                        elapsed_ms,
-                    )
-                    context.context_package = None
-
-                    # Total candidates before delta suppression (primary + remaining).
-                    symbols_selected = symbols_new + symbols_suppressed
-                    return PipelineStageResult(
-                        stage_name=self.name,
-                        success=True,
-                        data={
-                            "symbols_selected": symbols_selected,
-                            "symbols_new": symbols_new,
-                            "symbols_suppressed": symbols_suppressed,
-                            "max_context_tokens": max_context_tokens,
-                        },
-                    )
-
             # Compose the final package.
             composer = ContextComposer()
             package = composer.compose(context_result)

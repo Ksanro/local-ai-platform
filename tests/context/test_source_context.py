@@ -763,6 +763,16 @@ class AuthMiddleware:
         """History-cap follow-ups should lead with the live pipeline cap helper."""
         candidates = [
             ContextCandidate(
+                symbol_id="packages/pipeline/history.cap_history",
+                qualified_name="packages/pipeline/history.cap_history",
+                module="packages/pipeline/history",
+            ),
+            ContextCandidate(
+                symbol_id="packages/pipeline/history._message_token_count",
+                qualified_name="packages/pipeline/history._message_token_count",
+                module="packages/pipeline/history",
+            ),
+            ContextCandidate(
                 symbol_id="packages/context/models.ContextBudgetResult",
                 qualified_name="packages/context/models.ContextBudgetResult",
                 module="packages/context/models",
@@ -790,9 +800,159 @@ class AuthMiddleware:
         )
 
         assert [candidate.qualified_name for candidate in promoted[:2]] == [
+            "packages/pipeline/history.cap_history",
+            "packages/pipeline/history._message_token_count",
+        ]
+
+    def test_history_cap_target_recognizes_delta_primer_wording(self):
+        """The delta smoke primer says "caps the chat history", not "history cap"."""
+        assert ContextBuilder._query_targets_history_cap(
+            "Which function caps the chat history to a token budget?"
+        )
+
+    def test_promotes_history_cap_helpers_for_delta_followup_prompt(self):
+        """Delta smoke follow-ups should lead with cap_history and its helpers."""
+        candidates = [
+            ContextCandidate(
+                symbol_id="packages/pipeline/engine._apply_history_cap",
+                qualified_name="packages/pipeline/engine._apply_history_cap",
+                module="packages/pipeline/engine",
+            ),
+            ContextCandidate(
+                symbol_id="packages/pipeline/history._build_cap_groups",
+                qualified_name="packages/pipeline/history._build_cap_groups",
+                module="packages/pipeline/history",
+            ),
+            ContextCandidate(
+                symbol_id="packages/pipeline/history._estimate_tokens",
+                qualified_name="packages/pipeline/history._estimate_tokens",
+                module="packages/pipeline/history",
+            ),
+            ContextCandidate(
+                symbol_id="packages/pipeline/history.cap_history",
+                qualified_name="packages/pipeline/history.cap_history",
+                module="packages/pipeline/history",
+            ),
+            ContextCandidate(
+                symbol_id="packages/pipeline/history._message_token_count",
+                qualified_name="packages/pipeline/history._message_token_count",
+                module="packages/pipeline/history",
+            ),
+        ]
+        builder = ContextBuilder(_make_index([]))
+
+        promoted = builder._promote_history_cap_symbols(
+            candidates,
+            (
+                "In packages/pipeline/history.py, cap_history delegates token "
+                "counting through one per-message helper that calls one string "
+                "estimator helper, and uses one grouping helper for atomic "
+                "tool-call groups. Name those three helper functions."
+            ),
+        )
+
+        assert [candidate.qualified_name for candidate in promoted[:4]] == [
+            "packages/pipeline/history._build_cap_groups",
+            "packages/pipeline/history._message_token_count",
+            "packages/pipeline/history._estimate_tokens",
+            "packages/pipeline/history.cap_history",
+        ]
+        assert promoted[4].qualified_name == "packages/pipeline/engine._apply_history_cap"
+
+    def test_history_cap_promotion_adds_ranked_out_helpers_from_index(self):
+        """Exact history-cap helpers should be restored when generic ranking misses them."""
+        symbols = [
+            _make_symbol(
+                "packages/pipeline/history.cap_history",
+                "packages/pipeline/history",
+            ),
+            _make_symbol(
+                "packages/pipeline/history._message_token_count",
+                "packages/pipeline/history",
+            ),
+            _make_symbol(
+                "packages/pipeline/history._estimate_tokens",
+                "packages/pipeline/history",
+            ),
+            _make_symbol(
+                "packages/pipeline/history._build_cap_groups",
+                "packages/pipeline/history",
+            ),
+        ]
+        builder = ContextBuilder(_make_index([
+            _make_module("packages/pipeline/history", symbols)
+        ]))
+
+        promoted = builder._promote_history_cap_symbols(
+            [
+                ContextCandidate(
+                    symbol_id="packages/pipeline/history.cap_history",
+                    qualified_name="packages/pipeline/history.cap_history",
+                    module="packages/pipeline/history",
+                )
+            ],
+            "cap_history delegates token counting and tool-call grouping helpers.",
+        )
+
+        assert [candidate.qualified_name for candidate in promoted[:4]] == [
+            "packages/pipeline/history._build_cap_groups",
+            "packages/pipeline/history._message_token_count",
+            "packages/pipeline/history._estimate_tokens",
+            "packages/pipeline/history.cap_history",
+        ]
+
+    def test_promotes_apply_history_cap_for_budget_followup_prompt(self):
+        """Normal history-cap budget follow-ups should lead with the engine cap application."""
+        candidates = [
+            ContextCandidate(
+                symbol_id="packages/pipeline/history.cap_history",
+                qualified_name="packages/pipeline/history.cap_history",
+                module="packages/pipeline/history",
+            ),
+            ContextCandidate(
+                symbol_id="packages/pipeline/history._message_token_count",
+                qualified_name="packages/pipeline/history._message_token_count",
+                module="packages/pipeline/history",
+            ),
+            ContextCandidate(
+                symbol_id="packages/pipeline/engine._apply_history_cap",
+                qualified_name="packages/pipeline/engine._apply_history_cap",
+                module="packages/pipeline/engine",
+            ),
+            ContextCandidate(
+                symbol_id="apps/gateway/core/config.Settings",
+                qualified_name="apps/gateway/core/config.Settings",
+                module="apps/gateway/core/config",
+            ),
+        ]
+        builder = ContextBuilder(_make_index([]))
+
+        promoted = builder._promote_history_cap_symbols(
+            candidates,
+            (
+                "For that capping logic: name the function that applies the cap, "
+                "its file, and the APP_ environment variable used to force a "
+                "specific history-cap token budget."
+            ),
+        )
+
+        assert [candidate.qualified_name for candidate in promoted[:3]] == [
             "packages/pipeline/engine._apply_history_cap",
             "apps/gateway/core/config.Settings",
+            "packages/pipeline/history.cap_history",
         ]
+
+    def test_history_cap_query_reserves_room_for_supporting_helpers(self):
+        """History-cap probes need helper symbols, not only one full primary body."""
+        builder = ContextBuilder(_make_index([]))
+        query = ContextQuery(
+            text="Which function caps the chat history to a token budget?",
+            max_tokens=2048,
+        )
+
+        assert builder._primary_source_budget_for_query(query) == 1280
+        assert builder._supporting_source_budget_for_query(query) == 1024
+        assert builder._supporting_candidate_budget_for_query(query) == 128
 
     def test_promotes_config_system_symbols_for_default_model_prompt(self):
         """Config split prompts should lead with live provider and gateway config."""
@@ -831,6 +991,39 @@ class AuthMiddleware:
             "packages/providers/vllm._get_vllm_config",
             "apps/gateway/core/config.Settings",
         ]
+
+    def test_config_system_promotion_restores_settings_from_index(self):
+        """Config split prompts should restore the gateway Settings when ranking missed it."""
+        symbols = [
+            _make_symbol(
+                "apps/gateway/core/config.Settings",
+                "apps/gateway/core/config",
+                symbol_type=SymbolType.CLASS,
+            ),
+            _make_symbol(
+                "packages/providers/vllm._get_vllm_config",
+                "packages/providers/vllm",
+            ),
+        ]
+        builder = ContextBuilder(_make_index([
+            _make_module("apps/gateway/core/config", [symbols[0]]),
+            _make_module("packages/providers/vllm", [symbols[1]]),
+        ]))
+
+        promoted = builder._promote_config_system_symbols(
+            [
+                ContextCandidate(
+                    symbol_id="packages/providers/vllm._get_vllm_config",
+                    qualified_name="packages/providers/vllm._get_vllm_config",
+                    module="packages/providers/vllm",
+                ),
+            ],
+            "Which file defines the raw-env DEFAULT_MODEL and APP_DEFAULT_MODEL?",
+        )
+
+        names = [candidate.qualified_name for candidate in promoted]
+        assert names[0] == "packages/providers/vllm._get_vllm_config"
+        assert names[1] == "apps/gateway/core/config.Settings"
 
     def test_build_enriches_supporting_symbols(self):
         """Supporting symbols should get signature and preview."""

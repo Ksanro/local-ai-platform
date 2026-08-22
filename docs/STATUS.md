@@ -3,14 +3,14 @@
 This file is the current runtime snapshot. It intentionally describes only
 what matters for the live gateway path and calls out dormant code explicitly.
 
-Last reviewed: 2026-08-09.
+Last reviewed: 2026-08-22.
 
 ## Product Shape
 
 Local AI Platform is an OpenAI-compatible gateway for coding agents. It sits
-between agents and a self-hosted vLLM backend, injects ranked repository
-context, optionally caps forwarded chat history, and records session logs for
-measurement.
+between agents and a self-hosted OpenAI-compatible backend, injects ranked
+repository context, optionally caps forwarded chat history, and records
+session logs for measurement.
 
 ## Live Request Path
 
@@ -24,7 +24,7 @@ FastAPI /v1/chat/completions
   -> RepositoryContextStage
   -> PipelineEngine history cap
   -> ProviderStage
-  -> vLLM
+  -> vLLM / OpenAI-compatible backend (SGLang)
 ```
 
 ### ModelResolutionStage
@@ -75,7 +75,7 @@ needed. Session logs record both `context.estimated_tokens` and
 provider prompt tokens.
 
 `APP_REPOSITORY_CONTEXT_INTENT_BUDGETS` can override the default by planner
-intent, for example `SEARCH:2048,TEST:2048,DEBUG:2048,EXPLAIN:2048`. Explicit
+intent, for example `SEARCH:2048,TEST:2048,DEBUG:2048,EXPLAIN:4096`. Explicit
 request metadata still wins over intent defaults. The current live tuning
 baseline uses `SEARCH:2048`; in a same-prompt Cline A/B it reduced median
 repository context from about `4013` to `2047` estimated tokens and median
@@ -114,6 +114,14 @@ facts"), which added `APP_HISTORY_CAP_TOKENS` to `_apply_history_cap`'s
 docstring and reworded the probe prompt to ask for the environment variable
 instead of the Python argument name. Verified live: 8/8 replicate runs (qwen27,
 --max-tokens 900) with zero misses.
+
+`multiturn_config_systems` had a repeatable 16/17 miss at the `2048` EXPLAIN
+budget: the context trim dropped `apps/gateway/core/config.Settings`, so
+`apps/gateway/core/config.py` never reached the answer. It was resolved on
+2026-08-22 with two fixes - retrieval/promotion support for history-cap/config
+symbols, and the EXPLAIN repository-context intent budget raised from `2048` to
+`4096`. The probe now scores 2/2 consistently; the gateway log records
+`modules_selected=9` and `estimated_tokens=3861` for the scored EXPLAIN turn.
 
 A Tokenizer Registry investigation (2026-08-10) was opened after
 `logs/quality_compare_qwen36_20260807*.json` (three saved `--compare-context`
@@ -162,13 +170,35 @@ Measured result with Cline/vLLM:
 Builds the provider payload from `NormalizedRequest`, swaps `model` to
 `backend_model`, preserves protocol fields, and calls the resolved provider.
 
-Two live backends are configured in `APP_MODELS_CONFIG` (no empty-string
-fallback mode):
+The current local `.env` routes one live backend through `APP_MODELS_CONFIG`
+(no empty-string fallback mode):
 
 | client model | provider | base_url | backend_model | context_window | notes |
 |---|---|---|---|---|---|
-| qwen36 | vllm | http://100.106.236.88:8000/v1 | qwen36 | 180000 | reasoning model |
-| qwen27 | openai | http://100.106.236.88:8080/v1 | /models/Qwen3.6-27B-NVFP4-MTP-GGUF.gguf | 131072 | llama.cpp server (owned_by: "llamacpp") |
+| qwen38-27b | openai | http://100.106.236.88:30000/v1 | qwen3.8-27b | 262144 | SGLang server (owned_by: "sglang") |
+
+SGLang routing was configured and live-smoked on 2026-08-20. The gateway
+exposed `qwen38-27b` and
+`scripts/quality_harness.py --delta-context --json --model qwen38-27b
+--max-tokens 8192 --session-log-path logs\implement_budget_A_4096_20260801.jsonl`
+returned `ok: true`. Primer context selected
+`packages/pipeline/history.cap_history` with 1843 estimated context tokens;
+follow-up context selected `packages/pipeline/history._build_cap_groups` with
+1844 estimated context tokens and `symbols_suppressed=1`. Both answers scored
+all expected facts with no style violations.
+
+qwen38-27b via SGLang is the current validated backend. Its full quality
+baseline was completed on 2026-08-22
+(`scripts/quality_harness.py --json --model qwen38-27b --max-tokens 8192
+--reasoning-model qwen38-27b`): clean TOTAL 20/20 expected facts, style 8/8
+ok, 28013 prompt tokens, 144.6 seconds, saved at
+`logs\quality_baseline_qwen38_27b_after_fixes.json` and persisted as
+engineering-memory session `quality_harness-20260821T214629502370-6d519523`.
+
+Previous measured backends included `qwen36` on vLLM at
+`http://100.106.236.88:8000/v1` and `qwen27` on llama.cpp at
+`http://100.106.236.88:8080/v1`; keep older measurements labeled with their
+actual model/backend.
 
 Live smoke: `quality_harness.py --probe multiturn_history_cap_budget --json
 --max-tokens 900 --model qwen27` scored 3/3 routed through OpenAIProvider to

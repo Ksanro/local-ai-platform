@@ -546,8 +546,8 @@ class TestStageIntegration:
         await stage.execute(ctx1)
         assert ctx1.context_package is not None
 
-        # Turn 2: same history, same symbols -> primary already sent,
-        # supporting suppressed -> no_new_symbols
+        # Turn 2: same history, same symbols -> primary is preserved,
+        # supporting is suppressed.
         ctx2 = self._make_context(
             messages=[
                 {"role": "user", "content": "what is App"},
@@ -560,9 +560,11 @@ class TestStageIntegration:
         with self._capture_log(logger_name) as log_lines:
             await stage.execute(ctx2)
 
-        # Check that the log contains no_new_symbols
-        found = any("no_new_symbols" in line for line in log_lines)
-        assert found, "Expected log line with 'no_new_symbols'"
+        found = any(
+            "context_status=ok" in line and "symbols_suppressed=1" in line
+            for line in log_lines
+        )
+        assert found, "Expected ok log line with suppressed supporting symbol"
 
     @pytest.mark.asyncio
     async def test_two_conversations_no_leak(self) -> None:
@@ -817,8 +819,8 @@ class TestStageIntegration:
             assert len(ctx1.context_package.supporting_symbols) == 0
 
             # Turn 2: with history, old_supporting_A is in already_sent and
-            # suppressed. The stage sets context_package = None and returns
-            # early with symbols_suppressed in data.
+            # suppressed. The stage keeps the primary context while reporting
+            # symbols_suppressed in data.
             ctx2 = self._make_context(
                 messages=[
                     {"role": "user", "content": "what is primary_A"},
@@ -829,9 +831,11 @@ class TestStageIntegration:
             result2 = await stage.execute(ctx2)
 
         assert result2.success is True
-        # When only supporting symbols are suppressed (primary remains),
-        # the stage sets context_package = None and returns early.
-        assert ctx2.context_package is None
+        # When only supporting symbols are suppressed, the primary remains
+        # available so the model is not sent into the follow-up without
+        # repository context.
+        assert ctx2.context_package is not None
+        assert ctx2.context_package.primary_symbol == "primary_A"
         # Verify the stage data records the suppression count.
         data = result2.data or {}
         assert int(data.get("symbols_suppressed", 0)) >= 1

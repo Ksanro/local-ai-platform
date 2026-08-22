@@ -122,6 +122,32 @@ def test_quality_system_prompt_covers_tool_chatter_markers() -> None:
         assert marker_name in prompt
 
 
+def test_tool_call_markers_tracked() -> None:
+    """Literal tool_call wrappers should be tracked style markers."""
+    lt, gt = chr(60), chr(62)
+
+    assert lt + "tool_call" + gt in TOOL_CHATTER_MARKERS
+    assert lt + "/tool_call" + gt in TOOL_CHATTER_MARKERS
+
+
+def test_detect_style_violations_flags_tool_call_chatter() -> None:
+    """An answer containing a tool_call wrapper should be flagged as chatter."""
+    lt, gt = chr(60), chr(62)
+    answer = (
+        "Result: " + lt + "tool_call" + gt + " inspect_files " + lt + "/tool_call" + gt
+    )
+
+    assert detect_style_violations(answer) == ("tool_chatter",)
+
+
+def test_quality_system_prompt_forbids_tool_call_wrappers() -> None:
+    """The prompt should forbid tool_call wrappers and fake tool calls."""
+    prompt = QUALITY_SYSTEM_PROMPT.lower()
+
+    assert "tool_call" in prompt
+    assert "fake tool call" in prompt
+
+
 def test_build_payload_uses_quality_system_prompt() -> None:
     """Gateway payloads should carry the strengthened quality system prompt."""
     probe = QualityProbe("p1", "SEARCH", "Find the thing", (fact("thing"),))

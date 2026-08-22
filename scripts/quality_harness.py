@@ -43,6 +43,8 @@ QUALITY_SYSTEM_PROMPT = (
     "\"The user\", \"We need to\", or \"First,\". Do not emit XML tags "
     "such as <thinking>, <read_file>, <search_files>, <list_files>, "
     "<execute_command>, <attempt_completion>, or closing thinking tags. "
+    "Do not emit <tool_call> or </tool_call> wrappers, "
+    "fake tool calls, or JSON tool invocations. "
     "Begin directly with the answer."
 )
 REASONING_PREAMBLE_PREFIXES: tuple[str, ...] = (
@@ -63,6 +65,8 @@ TOOL_CHATTER_MARKERS: tuple[str, ...] = (
     "<list_files>",
     "<execute_command>",
     "<attempt_completion>",
+    "<tool_call>",
+    "</tool_call>",
 )
 
 
