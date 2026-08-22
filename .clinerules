@@ -1,0 +1,59 @@
+# Cline Rules for local-ai-platform
+
+## Core Protocol
+
+- Read these rules before making changes.
+- Treat the latest user-provided known state as authoritative over older context.
+- Keep changes scoped to the requested files and task.
+- At the top of every report, state changed files.
+- If a task says planning-only, do not edit files.
+- If a task says docs-only, source/test/env/log/memory files are read-only unless explicitly allowed.
+
+## Windows Commands
+
+- Use PowerShell on Windows.
+- Prefer short, separate commands over dense chained one-liners.
+- Do not use very long PowerShell replacement commands; command transport may wrap them and inject newlines.
+- If a command fails twice, stop and report:
+  - exact command
+  - exit code
+  - stdout
+  - stderr
+  - known state after failure
+- Do not silently invent fallback strategies after repeated failure.
+
+## File Edits
+
+- Prefer the normal edit tool for small edits.
+- If an edit tool returns `undefined`, `EISDIR`, "SEARCH does not match" despite freshly-read matching content, or "User closed text editor", treat it as tool failure.
+- Retry once with a smaller exact block.
+- If it fails again, stop and ask for guidance.
+- Avoid broad scripted rewrites.
+- Preserve existing line endings. Follow `.editorconfig`.
+- Use ASCII unless the file already contains or requires Unicode.
+- After edits, run:
+  - `git diff --check`
+  - `git diff -- <changed-files>`
+
+## Gateway / Backend
+
+- Gateway runs locally on port `8001` with `apps.gateway.main:create_app`.
+- SGLang backend is remote at `http://100.106.236.88:30000/v1`.
+- Do not stop SGLang or anything on port `30000` while managing the gateway.
+- If source code or `.env` changed, restart the gateway before live probes.
+- Before stopping gateway processes, list candidates and match command lines.
+- Stop only processes whose command line contains both `uvicorn` and `apps.gateway.main:create_app`.
+- If no gateway process is found and health fails, do not investigate further; start the gateway.
+
+## Live Quality Probes
+
+- Run only the requested probes.
+- Write JSON outputs to requested paths.
+- Do not persist to engineering memory unless explicitly instructed and clean-pass criteria are met.
+- If gateway was not restarted after source/env changes, report that before running probes.
+
+## Reporting
+
+- Report exact commands run and exact verification output.
+- Separate current-task changes from pre-existing uncommitted changes.
+- Do not claim a clean state unless `git status --short` supports it.
