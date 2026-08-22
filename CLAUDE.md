@@ -5,8 +5,9 @@ Context for AI agents working in this repository. Read this before making change
 ## What this project is
 
 An OpenAI-compatible gateway that injects ranked repository context into prompts before forwarding
-them to a self-hosted vLLM backend. Clients (Claude Code, Cline, curl) point at the gateway instead
-of vLLM and get repo-aware responses without changing their own configuration.
+them to a self-hosted OpenAI-compatible backend. Clients (Claude Code, Cline, curl) point at the
+gateway instead of the backend and get repo-aware responses without changing their own
+configuration.
 
 ## What actually runs
 
@@ -98,8 +99,8 @@ upstream. They are deliberately different — clients keep a stable name while t
 changes.
 
 ```json
-[{"model":"qwen36","backend_model":"unsloth/Qwen3.6-35B-A3B-NVFP4","provider":"vllm",
-  "base_url":"http://100.106.236.88:8001/v1","context_window":231072}]
+[{"model":"qwen38-27b","backend_model":"qwen3.8-27b","provider":"openai",
+  "base_url":"http://100.106.236.88:30000/v1","context_window":262144}]
 ```
 
 Empty `models_config` falls back to single-provider mode, where any model string resolves.

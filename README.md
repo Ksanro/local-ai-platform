@@ -2,7 +2,7 @@
 
 Local AI Platform is an OpenAI-compatible gateway for coding agents.
 Agents such as Cline, Claude Code, and curl point at this gateway instead
-of talking directly to vLLM. The gateway resolves the requested model,
+of talking directly to the backend. The gateway resolves the requested model,
 adds ranked repository context, optionally caps forwarded chat history,
 and forwards the request to the backend provider.
 
@@ -21,7 +21,7 @@ FastAPI /v1/chat/completions
   -> RepositoryContextStage
   -> history capping in PipelineEngine
   -> ProviderStage
-  -> vLLM
+  -> OpenAI-compatible backend (SGLang)
 ```
 
 Large parts of `packages/` are future scaffolding and are not reachable
@@ -38,8 +38,8 @@ what runs and what is dormant.
 - deterministic planning and intent detection
 - ranked repository-context injection
 - normalized request boundary preserving OpenAI protocol fields
-- optional history capping to reduce vLLM prefill latency
-- JSONL session logging and analyzer for real Cline/vLLM measurements
+- optional history capping to reduce backend prefill latency
+- JSONL session logging and analyzer for real Cline measurements
 
 ## Setup
 
@@ -50,28 +50,28 @@ what runs and what is dormant.
 Create or edit `.env`. A minimal local configuration looks like:
 
 ```env
-VLLM_BASE_URL=http://localhost:8000/v1
-VLLM_API_KEY=empty
+OPENAI_BASE_URL=http://100.106.236.88:30000/v1
+OPENAI_API_KEY=empty
 REQUEST_TIMEOUT=120
-DEFAULT_MODEL=local-model
 
-APP_DEFAULT_PROVIDER=vllm
-APP_DEFAULT_MODEL=local-model
+APP_DEFAULT_PROVIDER=openai
+APP_DEFAULT_MODEL=qwen38-27b
 APP_REPOSITORY_PATH=.
 APP_REPOSITORY_CONTEXT_ENABLED=true
 APP_REPOSITORY_CONTEXT_MAX_TOKENS=4096
-APP_REPOSITORY_CONTEXT_INTENT_BUDGETS=SEARCH:2048,TEST:2048,DEBUG:2048,REFACTOR:4096,IMPLEMENT:4096,EXPLAIN:8192
+APP_REPOSITORY_CONTEXT_INTENT_BUDGETS=SEARCH:2048,TEST:2048,DEBUG:2048,REFACTOR:4096,IMPLEMENT:4096,EXPLAIN:4096
 APP_CONTEXT_INTENT_RULES={}
 APP_SESSION_LOG_ENABLED=true
 APP_HISTORY_CAP_ENABLED=true
 APP_HISTORY_CAP_TOKENS=10000
-APP_MODELS_CONFIG=[{"model":"local-model","backend_model":"backend/model/name","provider":"vllm","base_url":"http://localhost:8000/v1","context_window":131072,"max_output_tokens":8192}]
-APP_QUALITY_REASONING_MODELS=
+APP_MODELS_CONFIG=[{"model":"qwen38-27b","backend_model":"qwen3.8-27b","provider":"openai","base_url":"http://100.106.236.88:30000/v1","context_window":262144,"max_output_tokens":8192}]
+APP_QUALITY_REASONING_MODELS=qwen38-27b
 APP_QUALITY_REASONING_MIN_TOKENS=2048
 ```
 
-`DEFAULT_MODEL` and `APP_DEFAULT_MODEL` are different variables. In normal
-local use they should usually agree.
+Provider raw env vars (for example `OPENAI_BASE_URL` for the `openai`
+provider) and the `APP_` gateway settings are different systems. When
+`APP_MODELS_CONFIG` is set, routing comes from that JSON model definition.
 
 ## Run The Gateway
 

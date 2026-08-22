@@ -11,15 +11,13 @@ Last reviewed: 2026-08-22.
 - OpenAI-compatible provider (`packages/providers/openai.py`, registered as "openai")
 - provider registry and factory
 - model registry
-- True Multi-Provider (live, two backends):
-  - model "qwen36" -> provider "vllm" -> http://100.106.236.88:8000/v1
-    (backend_model "qwen36", context_window 180000)
-  - model "qwen27" -> provider "openai" -> http://100.106.236.88:8080/v1
-    (backend_model "/models/Qwen3.6-27B-NVFP4-MTP-GGUF.gguf", llama.cpp server,
-    context_window 131072)
-  - Live smoke: `quality_harness.py --probe multiturn_history_cap_budget --json
-    --max-tokens 900 --model qwen27` scored 3/3 routed through OpenAIProvider to
-    the real llama.cpp backend
+- True Multi-Provider (live):
+  - model "qwen38-27b" -> provider "openai" -> http://100.106.236.88:30000/v1
+    (SGLang backend_model "qwen3.8-27b", context_window 262144)
+  - Previous measured backends: model "qwen36" via vLLM
+    (http://100.106.236.88:8000/v1) and model "qwen27" via llama.cpp
+    (http://100.106.236.88:8080/v1); keep older measurements labeled with their
+    model/backend.
 - model router
 - client `model` to upstream `backend_model` mapping
 - normalized request boundary
@@ -32,7 +30,7 @@ Last reviewed: 2026-08-22.
 - structured session logs
 - session analyzer
 - history capping
-- measured Cline/vLLM A/B flow proving capping can reduce latency
+- measured Cline A/B flow proving capping can reduce latency
 - explicit per-request context intent override
 - configurable custom context intent rules
 - live quality harness with context-on/context-off comparison
@@ -58,9 +56,10 @@ Remaining dormant packages stay on hold per `docs/dormant-code-backlog.md`'s
 
 ### 2. Quality Harness Expansion
 
-The fixed probe set now proves repository context adds answer-quality signal
-(`20/20` with context versus `2/20` without context in the latest qwen36
-`--compare-context` run, including the 2 multi-turn probes).
+The fixed probe set proves repository context adds answer-quality signal
+(`20/20` with context versus `2/20` without context in the qwen36
+`--compare-context` run, including the 2 multi-turn probes). The current
+qwen38-27b/SGLang full baseline is clean at `20/20` with style `8/8`.
 
 Done in this area:
 
@@ -89,8 +88,8 @@ Done in this area:
 - live-path CI realignment for gateway/pipeline/provider/planning/context/
   repository tests, lint, and type checks
 - multi-turn follow-up retrieval now carries recent clean user task text for
-  anaphoric prompts and promotes live history-cap/config-system symbols; latest
-  qwen36 live comparison scores `20/20` with context versus `2/20` without
+  anaphoric prompts and promotes live history-cap/config-system symbols; the
+  qwen36 live comparison scored `20/20` with context versus `2/20` without
 
 Next improvements:
 
@@ -132,8 +131,8 @@ Next:
   ("Clarify history cap budget probe facts"): two root causes —
   `APP_HISTORY_CAP_TOKENS` was missing from `_apply_history_cap`'s docstring,
   and the probe prompt asked for the Python argument name
-  (`max_tokens_override`) instead of the environment variable. Verified live:
-  8/8 replicate runs (3 + 5, qwen27, --max-tokens 900) scored 3/3 with zero
+  (`max_tokens_override`) instead of the environment variable. Historical live
+  check (qwen27, --max-tokens 900): 8/8 replicate runs scored 3/3 with zero
   misses.
 - add tokenizer-aware estimates when the current character estimate becomes a
   practical blocker

@@ -220,9 +220,9 @@ Previous measured backends included `qwen36` on vLLM at
 `http://100.106.236.88:8080/v1`; keep older measurements labeled with their
 actual model/backend.
 
-Live smoke: `quality_harness.py --probe multiturn_history_cap_budget --json
---max-tokens 900 --model qwen27` scored 3/3 routed through OpenAIProvider to
-the real llama.cpp backend.
+Historical smoke: `quality_harness.py --probe multiturn_history_cap_budget
+--json --max-tokens 900 --model qwen27` scored 3/3 routed through
+OpenAIProvider to the llama.cpp backend.
 
 **qwen36 max-tokens consideration:** qwen36 is a reasoning model that spends
 significant tokens on hidden reasoning before the visible answer. Measured
@@ -266,9 +266,9 @@ runs should use `--max-tokens 2048` or higher.
 - multi-turn Cline-like quality-harness probes (`QualityProbe.history`) -
   `multiturn_history_cap_budget`, `multiturn_config_systems`; prior
   user/assistant turns are sent before the scored final prompt
-- latest qwen36 live `scripts/quality_harness.py --compare-context` run scores
-  `20/20` with repository context versus `2/20` without context across the
-  full 8-probe set, including the multi-turn probes
+- qwen36 live `scripts/quality_harness.py --compare-context` run (previous
+  backend) scored `20/20` with repository context versus `2/20` without
+  context across the full 8-probe set, including the multi-turn probes
 - delta-context quality-harness smoke probe (`scripts/quality_harness.py
   --delta-context`) that sends two sequential live requests and verifies the
   follow-up session record reports suppressed repeated symbols; the live run
@@ -389,8 +389,10 @@ Recommended live-path checks:
 
 - Repository context can dominate prompt size; history capping alone is not the
   full latency lever. Configurable repository-context budget enforcement and
-  targeted retrieval promotions now exist; recent quality-harness runs show
-  `20/20` with context versus `2/20` without context on the fixed probe set.
+  targeted retrieval promotions now exist; the current qwen38-27b/SGLang full
+  baseline is clean at `20/20` with style `8/8`, while the qwen36
+  `--compare-context` run showed `20/20` with context versus `2/20` without
+  context on the fixed probe set.
   `SEARCH`/`TEST`/`DEBUG`/`EXPLAIN` have measured budget overrides; `REFACTOR`
   was measured and reverted to the shared default after a replicated
   regression - see `docs/roadmap.md` section 3 and the "RepositoryContextStage"
@@ -399,5 +401,6 @@ Recommended live-path checks:
   quality harness now records deterministic style violations separately from
   required-fact score.
 - Token estimates still use `CHARS_PER_TOKEN = 4.0`, not model-specific
-  tokenizers. True multi-provider is now live (vLLM + OpenAI-compatible to
-  llama.cpp); tokenizer-aware accounting remains the next precision improvement.
+  tokenizers. The current validated backend is qwen38-27b via SGLang
+  (provider `openai`); tokenizer-aware accounting remains the next precision
+  improvement.
