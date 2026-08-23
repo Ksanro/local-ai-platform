@@ -3,7 +3,7 @@
 This file is the current runtime snapshot. It intentionally describes only
 what matters for the live gateway path and calls out dormant code explicitly.
 
-Last reviewed: 2026-08-22.
+Last reviewed: 2026-08-23.
 
 ## Product Shape
 
@@ -237,6 +237,10 @@ runs should use `--max-tokens 2048` or higher.
 
 - FastAPI gateway endpoints: `/health`, `/version`, `/v1/models`,
   `/v1/chat/completions`
+- read-only `GET /debug/runtime-context` introspection endpoint: live and
+  read-only, it returns settings-driven context flags, `routing_mode`,
+  `models[]` (whitelisted, no `api_key`), `repository_context_intent_budget_map`,
+  a persisted `quality_baseline`, and a persisted `gateway_session_summary`
 - vLLM provider
 - vLLM/OpenAI-compatible provider response cleanup for leading empty
   `<think></think>` blocks emitted by some llama.cpp/Qwen chat templates

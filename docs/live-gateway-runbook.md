@@ -60,6 +60,36 @@ powershell.exe -NoProfile -Command "curl http://127.0.0.1:8001/health; curl http
 If `/health` fails, the gateway is not running. If `/v1/models` fails, the
 gateway may be running but the provider/model path is not ready.
 
+## Runtime Context Introspection
+
+When the gateway is running, inspect the live runtime configuration without
+reading `.env` or the docs. This is a read-only, non-liveness debug endpoint
+that never mutates settings, state, or storage:
+
+```powershell
+curl http://127.0.0.1:8001/debug/runtime-context
+```
+
+For an agent shell in Bash/Git Bash:
+
+```bash
+powershell.exe -NoProfile -Command "curl http://127.0.0.1:8001/debug/runtime-context"
+```
+
+Inspect:
+
+- `default_model` / `default_provider` - the settings-driven routing defaults
+- `routing_mode` - `models_config`, `fallback`, or `none`
+- `models[].base_url` and `models[].backend_model` - where each alias routes
+- `repository_context_intent_budget_map` - per-intent context budgets
+- `quality_baseline.available` and `quality_baseline.latest_score` - persisted
+  quality-harness history (empty until a run is stored)
+- `gateway_session_summary.available`, `gateway_session_summary.success_rate`,
+  and `gateway_session_summary.recent_errors` - persisted gateway session-log
+  summary (empty until records are ingested)
+
+Provider secrets such as `api_key` are never serialized.
+
 ## Integration Test Note
 
 `tests/integration/test_gateway_to_vllm.py` skips itself unless

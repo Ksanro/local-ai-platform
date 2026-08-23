@@ -85,6 +85,16 @@ Check it:
 curl http://localhost:8001/v1/models
 ```
 
+For live debugging, inspect the read-only runtime context (routing, model
+aliases, context flags, and persisted quality/session summaries):
+
+```powershell
+curl http://localhost:8001/debug/runtime-context
+```
+
+See the "Runtime Context Introspection" section in
+`docs/live-gateway-runbook.md` for what to inspect.
+
 Point Cline or another OpenAI-compatible client at:
 
 ```text
