@@ -60,6 +60,14 @@ powershell.exe -NoProfile -Command "curl http://127.0.0.1:8001/health; curl http
 If `/health` fails, the gateway is not running. If `/v1/models` fails, the
 gateway may be running but the provider/model path is not ready.
 
+## Integration Test Note
+
+`tests/integration/test_gateway_to_vllm.py` skips itself unless
+`DEFAULT_MODEL` appears in the gateway's `/v1/models` list. To run it live,
+make `DEFAULT_MODEL` visible to pytest with a served alias such as
+`qwen38-27b`. For full-suite runs that import gateway settings, keep `.env`
+aligned too because `load_dotenv(override=True)` can override shell values.
+
 ## Delta Context Smoke
 
 Use the same session log path that the gateway was started with. If `.env`

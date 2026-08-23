@@ -1,14 +1,17 @@
-"""Integration tests: gateway communicates with a real vLLM instance.
+"""Integration tests: gateway communicates with a real OpenAI-compatible backend.
 
 These tests require:
-- An actual vLLM server (``VLLM_BASE_URL``)
+- An OpenAI-compatible backend (vLLM, SGLang, or similar) reachable through
+  the gateway
 - A running gateway server (``GATEWAY_HOST:GATEWAY_PORT``)
+- ``DEFAULT_MODEL`` matching a model actually served by the gateway
 
 Environment variables
 ---------------------
 GATEWAY_HOST   - Gateway host (default ``localhost``)
 GATEWAY_PORT   - Gateway port  (default ``8001``)
-VLLM_BASE_URL  - vLLM server URL (required for integration tests)
+VLLM_BASE_URL  - Backend URL (must be set for the tests to run; the gateway
+                 itself must reach the backend)
 DEFAULT_MODEL  - Model name to use (default ``default-model``)
 REQUEST_TIMEOUT - Request timeout in seconds (default ``30``)
 """
@@ -35,9 +38,31 @@ def _gateway_reachable() -> bool:
         return False
 
 
+def _model_served() -> bool:
+    """Check whether ``DEFAULT_MODEL`` is served by the gateway.
+
+    Queries ``GET /v1/models`` and returns True only when ``DEFAULT_MODEL``
+    appears in the ``data[].id`` list. Any error, non-200 response, or
+    unexpected body counts as "not served", so the tests skip instead of
+    failing on a misconfigured model alias.
+    """
+    try:
+        with httpx.Client() as client:
+            response = client.get(f"http://{BASE_URL}:{PORT}/v1/models", timeout=2)
+            if response.status_code != 200:
+                return False
+            models = response.json().get("data", [])
+            return any(model.get("id") == DEFAULT_MODEL for model in models)
+    except Exception:
+        return False
+
+
 pytestmark = pytest.mark.skipif(
-    not VLLM_BASE_URL or not _gateway_reachable(),
-    reason="VLLM_BASE_URL not set or gateway not reachable – skipping integration tests",
+    not VLLM_BASE_URL or not _gateway_reachable() or not _model_served(),
+    reason=(
+        "VLLM_BASE_URL not set, gateway not reachable, or DEFAULT_MODEL not "
+        "served by the gateway - skipping integration tests"
+    ),
 )
 
 

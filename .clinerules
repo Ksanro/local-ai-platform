@@ -35,6 +35,19 @@
   - `git diff --check`
   - `git diff -- <changed-files>`
 
+## Tool Transport Failures
+
+- Do not narrate or emit internal tool-call XML/JSON syntax in user-facing reports.
+- If a tool reports a missing required parameter, empty command, empty path, or malformed invocation, treat it as a tool transport/formatting failure, not a repository failure.
+- Retry once with the smallest valid invocation.
+- For `attempt_completion` and final reports, keep retries compact. Long final reports may be dropped or malformed by transport.
+- If the same tool transport failure happens twice, stop and report:
+  - intended action
+  - exact tool error
+  - whether files were modified
+  - `git status --short`
+- Avoid broad searches that can flood context. Scope grep/search to the requested files first; broaden only if needed.
+
 ## Gateway / Backend
 
 - Gateway runs locally on port `8001` with `apps.gateway.main:create_app`.
