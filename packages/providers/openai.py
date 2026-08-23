@@ -211,7 +211,8 @@ class OpenAIProvider(Provider):
             else:
                 response = await client.post("/chat/completions", json=kwargs)
                 response.raise_for_status()
-                return response.json()
+                result: dict[str, Any] = response.json()
+                return result
         except httpx.HTTPStatusError as exc:
             status_code = exc.response.status_code
             if status_code == 401:

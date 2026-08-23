@@ -21,6 +21,7 @@ from fastapi.responses import JSONResponse
 from apps.gateway.api.chat import router as chat_router
 from apps.gateway.api.health import router as health_router
 from apps.gateway.api.models import router as models_router
+from apps.gateway.api.runtime_context import router as runtime_context_router
 from apps.gateway.api.version import router as version_router
 from apps.gateway.core.config import get_settings
 from apps.gateway.core.logging import setup_logging
@@ -239,6 +240,7 @@ def create_app() -> FastAPI:
     app.include_router(version_router)
     app.include_router(chat_router)
     app.include_router(models_router)
+    app.include_router(runtime_context_router)
 
     return app
 
