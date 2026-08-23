@@ -58,11 +58,8 @@ from packages.evaluation.metrics import (
     compute_context_compression_ratio,
     compute_context_utilization,
     compute_diagnostics_collected,
-    compute_execution_consistency,
     compute_execution_duration_ms,
-    compute_identifier_stability,
     compute_selected_modules_count,
-    compute_selected_relationships_count,
     compute_selected_symbols_count,
     compute_throughput,
     compute_total_tokens,
@@ -74,7 +71,6 @@ from packages.evaluation.models import (
     EvaluationScore,
 )
 from packages.evaluation.scoring import (
-    CATEGORY_DEFINITIONS,
     CATEGORY_WEIGHTS,
     calculate_category_score,
     calculate_overall_score,
@@ -664,7 +660,7 @@ def _get_workflow_name(
     """
     name = getattr(workflow_plan, "workflow_name", None)
     if name:
-        return name
+        return str(name)
     return getattr(execution_report, "workflow_name", "unknown")
 
 
@@ -692,7 +688,7 @@ def _get_provider(provider_response: Any) -> str:
         Provider name string.
     """
     if isinstance(provider_response, dict):
-        return provider_response.get("provider", "unknown")
+        return str(provider_response.get("provider", "unknown"))
     return "unknown"
 
 
@@ -706,5 +702,5 @@ def _get_model(provider_response: Any) -> str:
         Model name string.
     """
     if isinstance(provider_response, dict):
-        return provider_response.get("model", "unknown")
+        return str(provider_response.get("model", "unknown"))
     return "unknown"
