@@ -2,11 +2,14 @@
 
 Covers the default no-router behavior, the models_config router, the
 fallback single-provider router, settings-field reflection, that provider
-secrets are never serialized, and the read-only ``quality_baseline``
-summary (available, empty-history, and loader-exception cases).
+secrets are never serialized, the read-only ``quality_baseline`` summary
+(available, empty-history, and loader-exception cases), and the read-only
+``gateway_session_summary`` (success, empty-history, loader-exception, and
+summarizer-exception cases).
 
-The quality-history loader (``EngineeringMemory`` imported into
-``apps.gateway.api.runtime_context``) is patched in every test so no real
+Both history loaders (``EngineeringMemory`` and
+``build_session_log_summary`` imported into
+``apps.gateway.api.runtime_context``) are patched in every test so no real
 memory storage file is ever read.
 """
 
@@ -22,6 +25,7 @@ from starlette.testclient import TestClient
 from apps.gateway.core.config import Settings
 from apps.gateway.main import create_app
 from packages.engineering_memory.models import EngineeringSessionRecord
+from packages.observability.session_log_history import SessionLogSummary
 from packages.providers.registry_models import ModelRegistry
 from packages.providers.router import FallbackModelRouter, ModelRouter
 
@@ -91,11 +95,13 @@ def _quality_record(
 
 @contextmanager
 def patch_quality_history(records: list[EngineeringSessionRecord]) -> Iterator[None]:
-    """Patch the EngineeringMemory class used by the endpoint.
+    """Patch the history loaders used by the endpoint.
 
     Replaces ``apps.gateway.api.runtime_context.EngineeringMemory`` with a
     stub whose ``reload()`` is a no-op and whose ``list_sessions()`` yields
     the given records, so tests never read the real memory storage file.
+    Also pins ``build_session_log_summary`` to an empty summary so the
+    gateway-session path stays deterministic unless a test overrides it.
     """
 
     class _MemoryStub:
@@ -108,8 +114,17 @@ def patch_quality_history(records: list[EngineeringSessionRecord]) -> Iterator[N
         def list_sessions(self) -> tuple[EngineeringSessionRecord, ...]:
             return tuple(records)
 
+        def find_by_workflow(
+            self, workflow_name: str
+        ) -> tuple[EngineeringSessionRecord, ...]:
+            return tuple(r for r in records if r.workflow_name == workflow_name)
+
     with patch("apps.gateway.api.runtime_context.EngineeringMemory", _MemoryStub):
-        yield
+        with patch(
+            "apps.gateway.api.runtime_context.build_session_log_summary",
+            return_value=SessionLogSummary(),
+        ):
+            yield
 
 
 CONFIG_KEYS = [
@@ -126,6 +141,7 @@ CONFIG_KEYS = [
     "routing_mode",
     "models",
     "quality_baseline",
+    "gateway_session_summary",
 ]
 
 UNAVAILABLE_QUALITY_BASELINE = {
@@ -135,6 +151,19 @@ UNAVAILABLE_QUALITY_BASELINE = {
     "latest_session_id": None,
     "latest_model": None,
     "recent_missing_facts": [],
+}
+
+UNAVAILABLE_GATEWAY_SESSION_SUMMARY = {
+    "available": False,
+    "total_records": 0,
+    "success_rate": None,
+    "failure_count": 0,
+    "avg_total_ms": None,
+    "avg_provider_wait_ms": None,
+    "history_cap_rate": None,
+    "intent_distribution": {},
+    "model_distribution": {},
+    "recent_errors": [],
 }
 
 
@@ -189,6 +218,7 @@ def test_no_router_returns_none_and_empty_models() -> None:
     assert body["history_cap_enabled"] is True
     assert body["history_cap_tokens"] == 10000
     assert body["quality_baseline"] == UNAVAILABLE_QUALITY_BASELINE
+    assert body["gateway_session_summary"] == UNAVAILABLE_GATEWAY_SESSION_SUMMARY
     assert patched.call_count == 1
 
 
@@ -232,6 +262,7 @@ def test_models_config_router() -> None:
         # api_key is never serialized.
         assert "api_key" not in response.text
         assert "top-secret-key" not in response.text
+        assert body["gateway_session_summary"] == UNAVAILABLE_GATEWAY_SESSION_SUMMARY
     finally:
         import asyncio
 
@@ -262,6 +293,7 @@ def test_fallback_router() -> None:
         }
     ]
     assert body["quality_baseline"] == UNAVAILABLE_QUALITY_BASELINE
+    assert body["gateway_session_summary"] == UNAVAILABLE_GATEWAY_SESSION_SUMMARY
 
 
 def test_quality_baseline_summary() -> None:
@@ -309,6 +341,8 @@ def test_quality_baseline_summary() -> None:
             }
         ],
     }
+    # No gateway-session records, so the gateway summary stays unavailable.
+    assert response.json()["gateway_session_summary"] == UNAVAILABLE_GATEWAY_SESSION_SUMMARY
 
 
 def test_quality_baseline_missing_history_unavailable() -> None:
@@ -321,6 +355,7 @@ def test_quality_baseline_missing_history_unavailable() -> None:
             response = client.get("/debug/runtime-context")
     assert response.status_code == 200
     assert response.json()["quality_baseline"] == UNAVAILABLE_QUALITY_BASELINE
+    assert response.json()["gateway_session_summary"] == UNAVAILABLE_GATEWAY_SESSION_SUMMARY
 
 
 def test_quality_baseline_loader_exception_unavailable() -> None:
@@ -340,6 +375,7 @@ def test_quality_baseline_loader_exception_unavailable() -> None:
             response = client.get("/debug/runtime-context")
     assert response.status_code == 200
     assert response.json()["quality_baseline"] == UNAVAILABLE_QUALITY_BASELINE
+    assert response.json()["gateway_session_summary"] == UNAVAILABLE_GATEWAY_SESSION_SUMMARY
 
 
 def test_quality_baseline_summarizer_exception_unavailable() -> None:
@@ -366,3 +402,128 @@ def test_quality_baseline_summarizer_exception_unavailable() -> None:
                 response = client.get("/debug/runtime-context")
     assert response.status_code == 200
     assert response.json()["quality_baseline"] == UNAVAILABLE_QUALITY_BASELINE
+    assert response.json()["gateway_session_summary"] == UNAVAILABLE_GATEWAY_SESSION_SUMMARY
+
+
+def test_gateway_session_summary_success() -> None:
+    """gateway_session_summary maps a populated summary, capping/sorting errors."""
+    summary = SessionLogSummary(
+        total_records=9,
+        success_count=2,
+        failure_count=7,
+        success_rate=0.222222,
+        error_breakdown={
+            "Connection timeout: backend": 3,
+            "Rate limit exceeded": 2,
+            "Provider 500 error": 1,
+            "Provider 502 error": 1,
+            "Bad gateway downstream": 1,
+            "Invalid API key": 1,
+        },
+        avg_total_ms=200.0,
+        avg_provider_wait_ms=40.0,
+        intent_distribution={"SEARCH": 2, "DEBUG": 2, "REPAIR": 5},
+        history_cap_rate=0.333333,
+        model_distribution={"qwen38-27b": 5, "qwen36": 4},
+        recent_records=[
+            {
+                "session_id": "gw-secret-1",
+                "model": "qwen38-27b",
+                "intent": "SEARCH",
+                "status": "ok",
+                "completed_at": "2026-07-01T00:00:00+00:00",
+            },
+        ],
+    )
+    client = _client(model_router=None, settings=_settings())
+    with patch_quality_history([]):
+        with patch(
+            "apps.gateway.api.runtime_context.build_session_log_summary",
+            return_value=summary,
+        ):
+            with patch(
+                "apps.gateway.api.runtime_context.get_settings",
+                return_value=_settings(),
+            ):
+                response = client.get("/debug/runtime-context")
+    assert response.status_code == 200
+    body = response.json()
+    # Counts, timing, distributions and the history-cap rate are reflected.
+    assert body["gateway_session_summary"] == {
+        "available": True,
+        "total_records": 9,
+        "success_rate": 0.222222,
+        "failure_count": 7,
+        "avg_total_ms": 200.0,
+        "avg_provider_wait_ms": 40.0,
+        "history_cap_rate": 0.333333,
+        "intent_distribution": {"SEARCH": 2, "DEBUG": 2, "REPAIR": 5},
+        "model_distribution": {"qwen38-27b": 5, "qwen36": 4},
+        # Capped to 5, sorted by count desc, ties broken by prefix asc; the
+        # sixth error ("Provider 502 error") is dropped.
+        "recent_errors": [
+            {"error": "Connection timeout: backend", "count": 3},
+            {"error": "Rate limit exceeded", "count": 2},
+            {"error": "Bad gateway downstream", "count": 1},
+            {"error": "Invalid API key", "count": 1},
+            {"error": "Provider 500 error", "count": 1},
+        ],
+    }
+    # Raw session-log records (recent_records) are never exposed.
+    assert "gw-secret-1" not in response.text
+
+
+def test_gateway_session_empty_history_unavailable() -> None:
+    """A zero-record summary yields available=false with 200."""
+    client = _client(model_router=None, settings=_settings())
+    with patch_quality_history([]):
+        with patch(
+            "apps.gateway.api.runtime_context.build_session_log_summary",
+            return_value=SessionLogSummary(),
+        ):
+            with patch(
+                "apps.gateway.api.runtime_context.get_settings",
+                return_value=_settings(),
+            ):
+                response = client.get("/debug/runtime-context")
+    assert response.status_code == 200
+    assert response.json()["gateway_session_summary"] == UNAVAILABLE_GATEWAY_SESSION_SUMMARY
+
+
+def test_gateway_session_loader_exception_unavailable() -> None:
+    """A memory loader exception yields available=false and still returns 200."""
+
+    class _ExplodingMemory:
+        def __init__(self, storage_path: str | None = None, in_memory_only: bool = False) -> None:
+            raise RuntimeError("memory storage unavailable")
+
+    client = _client(model_router=None, settings=_settings())
+    with patch("apps.gateway.api.runtime_context.EngineeringMemory", _ExplodingMemory):
+        with patch(
+            "apps.gateway.api.runtime_context.build_session_log_summary",
+            side_effect=AssertionError("summarizer must not run when memory fails"),
+        ):
+            with patch(
+                "apps.gateway.api.runtime_context.get_settings",
+                return_value=_settings(),
+            ):
+                response = client.get("/debug/runtime-context")
+    assert response.status_code == 200
+    assert response.json()["gateway_session_summary"] == UNAVAILABLE_GATEWAY_SESSION_SUMMARY
+
+
+def test_gateway_session_summarizer_exception_unavailable() -> None:
+    """A build_session_log_summary exception yields available=false and 200."""
+    client = _client(model_router=None, settings=_settings())
+    with patch_quality_history([]):
+        with patch(
+            "apps.gateway.api.runtime_context.build_session_log_summary",
+            side_effect=ValueError("malformed session history"),
+        ):
+            with patch(
+                "apps.gateway.api.runtime_context.get_settings",
+                return_value=_settings(),
+            ):
+                response = client.get("/debug/runtime-context")
+    assert response.status_code == 200
+    assert response.json()["gateway_session_summary"] == UNAVAILABLE_GATEWAY_SESSION_SUMMARY

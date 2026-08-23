@@ -20,6 +20,7 @@ from apps.gateway.core.config import get_settings
 from packages.engineering_memory.memory import EngineeringMemory
 from packages.engineering_memory.quality_harness_records import WORKFLOW_NAME
 from packages.observability.quality_history import summarize_quality_history
+from packages.observability.session_log_history import build_session_log_summary
 from packages.providers.models import ModelDefinition
 from packages.providers.router import ModelRouter
 
@@ -61,6 +62,22 @@ def _unavailable_quality_baseline() -> dict[str, Any]:
         "latest_session_id": None,
         "latest_model": None,
         "recent_missing_facts": [],
+    }
+
+
+def _unavailable_gateway_session_summary() -> dict[str, Any]:
+    """Return the empty gateway-session summary shape when no history is usable."""
+    return {
+        "available": False,
+        "total_records": 0,
+        "success_rate": None,
+        "failure_count": 0,
+        "avg_total_ms": None,
+        "avg_provider_wait_ms": None,
+        "history_cap_rate": None,
+        "intent_distribution": {},
+        "model_distribution": {},
+        "recent_errors": [],
     }
 
 
@@ -145,6 +162,59 @@ def _quality_baseline() -> dict[str, Any]:
         return _unavailable_quality_baseline()
 
 
+def _gateway_session_summary() -> dict[str, Any]:
+    """Build a read-only gateway session-log summary from persisted history.
+
+    Reads ``gateway_session`` records from Engineering Memory via
+    ``build_session_log_summary`` and exposes aggregate counts, timing
+    averages, intent/model distributions, the history-cap rate, and the most
+    frequent error prefixes (capped at 5, sorted by count descending).
+
+    This is strictly read-only and never raises. A missing, empty, unreadable,
+    or malformed history file, or a history with zero gateway-session records,
+    yields the empty summary (``available=False``) so the endpoint still
+    returns 200. Raw session-log records, prompts, completions, and request
+    payloads are never exposed.
+
+    Returns:
+        A dict with the keys ``available``, ``total_records``,
+        ``success_rate``, ``failure_count``, ``avg_total_ms``,
+        ``avg_provider_wait_ms``, ``history_cap_rate``,
+        ``intent_distribution``, ``model_distribution`` and
+        ``recent_errors``.
+    """
+    try:
+        memory = EngineeringMemory()
+        memory.reload()
+        summary = build_session_log_summary(memory)
+
+        if summary.total_records <= 0:
+            return _unavailable_gateway_session_summary()
+
+        recent_errors = [
+            {"error": prefix, "count": count}
+            for prefix, count in sorted(
+                summary.error_breakdown.items(),
+                key=lambda item: (-item[1], item[0]),
+            )[:5]
+        ]
+
+        return {
+            "available": True,
+            "total_records": summary.total_records,
+            "success_rate": summary.success_rate,
+            "failure_count": summary.failure_count,
+            "avg_total_ms": summary.avg_total_ms,
+            "avg_provider_wait_ms": summary.avg_provider_wait_ms,
+            "history_cap_rate": summary.history_cap_rate,
+            "intent_distribution": dict(summary.intent_distribution),
+            "model_distribution": dict(summary.model_distribution),
+            "recent_errors": recent_errors,
+        }
+    except Exception:
+        return _unavailable_gateway_session_summary()
+
+
 @router.get("/runtime-context")
 async def runtime_context(request: Request) -> dict[str, Any]:
     """Return the live runtime-context configuration.
@@ -158,7 +228,9 @@ async def runtime_context(request: Request) -> dict[str, Any]:
         available (pre-lifespan or no usable config), ``routing_mode`` is
         ``"none"`` and ``models`` is empty rather than raising. Also includes
         a read-only ``quality_baseline`` summary derived from persisted
-        quality-harness history.
+        quality-harness history, and a read-only
+        ``gateway_session_summary`` derived from persisted gateway session-log
+        records.
     """
     settings = get_settings()
     model_router = getattr(request.app.state, "model_router", None)
@@ -199,4 +271,5 @@ async def runtime_context(request: Request) -> dict[str, Any]:
         "routing_mode": routing_mode,
         "models": models,
         "quality_baseline": _quality_baseline(),
+        "gateway_session_summary": _gateway_session_summary(),
     }
