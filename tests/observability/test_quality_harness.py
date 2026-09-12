@@ -11,6 +11,7 @@ import pytest
 
 from scripts.quality_harness import (
     DEFAULT_MAX_TOKENS,
+    DEFAULT_TIMEOUT,
     DELTA_CONTEXT_PROBE,
     PROBES,
     QUALITY_SYSTEM_PROMPT,
@@ -24,6 +25,7 @@ from scripts.quality_harness import (
     _read_session_log_records_with_retry,
     _record_for_last_user,
     _resolve_probes,
+    _warn_default_timeout_for_reasoning_model,
     _warn_low_reasoning_budget,
     build_payload,
     detect_style_violations,
@@ -532,6 +534,149 @@ def test_print_comparison_table_shows_context_delta(capsys) -> None:
     assert "dscore" in output
     assert "TOTAL" in output
     assert "   1" in output
+    # Clean comparisons must not gain error/invalid noise.
+    assert "ERRORS:" not in output
+    assert "delta invalid" not in output
+    assert "ERR" not in output
+
+
+def test_print_comparison_table_marks_arm_errors_and_prints_footer(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Errored arms must render as ERR with an ERRORS footer, not as 0/0."""
+    context_results = [
+        QualityResult(
+            id="implement_health_flag",
+            intent="IMPLEMENT",
+            ok=True,
+            prompt_tokens=4000,
+            seconds=10.0,
+            hits=("a", "b"),
+            misses=(),
+        )
+    ]
+    no_context_results = [
+        QualityResult(
+            id="implement_health_flag",
+            intent="IMPLEMENT",
+            seconds=120.0,
+            error=(
+                "TimeoutError: timed out after 120.0s "
+                "(harness client timeout; gateway/SGLang may still be generating)"
+            ),
+        )
+    ]
+
+    print_comparison_table(context_results, no_context_results)
+
+    output = capsys.readouterr().out
+    assert "ERR" in output
+    assert "0/0" not in output
+    assert "delta invalid" in output
+    assert "ERRORS:" in output
+    assert (
+        "no_context:implement_health_flag -> TimeoutError: timed out after 120.0s"
+        in output
+    )
+
+
+def test_run_probe_timeout_records_descriptive_error_and_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A harness client timeout must be tagged, not look like a plain miss."""
+
+    def failing_post_json(*_args, **_kwargs):
+        raise TimeoutError("timed out")
+
+    monkeypatch.setattr("scripts.quality_harness.post_json", failing_post_json)
+    probe = QualityProbe("p1", "IMPLEMENT", "prompt", (fact("x"),))
+    result = run_probe(
+        probe,
+        base_url="http://nowhere",
+        model="test-model",
+        max_tokens=400,
+        timeout=300.0,
+        use_intent_overrides=True,
+        context_enabled=False,
+    )
+
+    assert result.ok is False
+    assert result.error == (
+        "TimeoutError: timed out after 300.0s "
+        "(harness client timeout; gateway/SGLang may still be generating)"
+    )
+    assert result.metadata["timed_out"] is True
+    assert result.metadata["timeout_seconds"] == 300.0
+    assert result.hits == ()
+    assert result.misses == ()
+
+
+def test_run_probe_non_timeout_error_keeps_plain_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Non-timeout errors keep the legacy '<ExcType>: <msg>' shape and no tags."""
+
+    def failing_post_json(*_args, **_kwargs):
+        raise ValueError("gateway returned non-object JSON")
+
+    monkeypatch.setattr("scripts.quality_harness.post_json", failing_post_json)
+    probe = QualityProbe("p1", "SEARCH", "prompt", (fact("x"),))
+    result = run_probe(
+        probe,
+        base_url="http://nowhere",
+        model="test-model",
+        max_tokens=400,
+        timeout=1.0,
+        use_intent_overrides=True,
+        context_enabled=True,
+    )
+
+    assert result.ok is False
+    assert result.error == "ValueError: gateway returned non-object JSON"
+    assert "timed_out" not in result.metadata
+    assert "timeout_seconds" not in result.metadata
+
+
+def test_warn_default_timeout_for_reasoning_model_prints_hint(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Reasoning models on the default timeout get a stderr hint."""
+    _warn_default_timeout_for_reasoning_model(
+        "qwen38-27b",
+        DEFAULT_TIMEOUT,
+        reasoning_models=("qwen38-27b",),
+    )
+
+    err = capsys.readouterr().err
+    assert "--timeout 300" in err
+    assert "REQUEST_TIMEOUT=300" in err
+    assert "restart the gateway" in err.lower()
+
+
+def test_warn_default_timeout_for_reasoning_model_silent_when_overridden(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A non-default --timeout suppresses the hint."""
+    _warn_default_timeout_for_reasoning_model(
+        "qwen38-27b",
+        300.0,
+        reasoning_models=("qwen38-27b",),
+    )
+
+    assert capsys.readouterr().err == ""
+
+
+def test_warn_default_timeout_for_reasoning_model_silent_for_other_models(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Non-reasoning models never get the hint."""
+    _warn_default_timeout_for_reasoning_model(
+        "other-model",
+        120.0,
+        reasoning_models=("qwen38-27b",),
+    )
+
+    assert capsys.readouterr().err == ""
 
 
 # ---------------------------------------------------------------------------
@@ -924,3 +1069,37 @@ class TestJsonShapeCompatibility:
             "hits", "misses", "style_violations", "error", "metadata",
         }
         assert set(result.keys()) == expected_keys
+
+    def test_json_output_metadata_contains_timeout_fields(self, monkeypatch) -> None:
+        """Timeouts add metadata keys only; top-level result keys stay fixed."""
+
+        def failing_post_json(*_args, **_kwargs):
+            raise TimeoutError("timed out")
+
+        monkeypatch.setattr(
+            "scripts.quality_harness.post_json",
+            failing_post_json,
+        )
+        captured = io.StringIO()
+        monkeypatch.setattr(sys, "stdout", captured)
+
+        main([
+            "--probe", "search_answer_preview",
+            "--json",
+            "--base-url", "http://nowhere",
+            "--timeout", "55.5",
+        ])
+        output = json.loads(captured.getvalue())
+
+        assert isinstance(output, list)
+        assert len(output) == 1
+        result = output[0]
+        expected_keys = {
+            "id", "intent", "ok", "answer", "prompt_tokens",
+            "completion_tokens", "total_tokens", "seconds",
+            "hits", "misses", "style_violations", "error", "metadata",
+        }
+        assert set(result.keys()) == expected_keys
+        assert result["error"].startswith("TimeoutError: timed out after 55.5s")
+        assert result["metadata"]["timed_out"] is True
+        assert result["metadata"]["timeout_seconds"] == 55.5

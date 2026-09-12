@@ -34,6 +34,7 @@ DEFAULT_MODEL = os.environ.get("APP_DEFAULT_MODEL") or os.environ.get(
 )
 DEFAULT_MAX_TOKENS = 400
 DEFAULT_REASONING_MIN_TOKENS = 2048
+DEFAULT_TIMEOUT = 120.0
 QUALITY_SYSTEM_PROMPT = (
     "You are a repository fact oracle. Answer with only the requested "
     "repository facts: file paths, function names, variable names, or "
@@ -484,6 +485,34 @@ def _warn_low_reasoning_budget(
     )
 
 
+def _warn_default_timeout_for_reasoning_model(
+    model: str,
+    timeout: float,
+    *,
+    reasoning_models: tuple[str, ...],
+) -> None:
+    """Emit a one-per-invocation stderr hint for reasoning models on the default timeout.
+
+    No-context probes on reasoning-heavy models can exceed the default
+    per-probe timeout; the hint suggests raising both the harness client
+    timeout and the gateway/provider REQUEST_TIMEOUT. Does not change the
+    effective timeout or exit code. Output goes to stderr so it cannot
+    contaminate machine-readable JSON stdout.
+    """
+    if not any(model.lower() == configured.lower() for configured in reasoning_models):
+        return
+    if timeout != DEFAULT_TIMEOUT:
+        return
+    print(
+        f"WARN: model {model!r} is configured as reasoning-heavy but uses the "
+        f"default per-probe timeout of {DEFAULT_TIMEOUT:g}s. No-context probes "
+        f"can exceed it; consider --timeout 300 plus a matching gateway "
+        f"REQUEST_TIMEOUT=300 in .env (restart the gateway after changing "
+        f".env).",
+        file=sys.stderr,
+    )
+
+
 def _compute_truncation_risk(
     answer: str,
     completion_tokens: int,
@@ -528,7 +557,15 @@ def run_probe(
         response = post_json(url, payload, timeout=timeout)
     except (OSError, TimeoutError, urllib.error.URLError, ValueError, json.JSONDecodeError) as exc:
         result.seconds = time.perf_counter() - start
-        result.error = f"{type(exc).__name__}: {exc}"
+        if isinstance(exc, TimeoutError):
+            result.error = (
+                f"TimeoutError: timed out after {timeout}s "
+                f"(harness client timeout; gateway/SGLang may still be generating)"
+            )
+            result.metadata["timed_out"] = True
+            result.metadata["timeout_seconds"] = timeout
+        else:
+            result.error = f"{type(exc).__name__}: {exc}"
         return result
 
     result.seconds = time.perf_counter() - start
@@ -731,11 +768,27 @@ def print_table(results: list[QualityResult]) -> None:
     print("=" * 106)
 
 
+def _comparison_score_cell(result: QualityResult) -> str:
+    """Return the score cell for one arm of the comparison table.
+
+    Errored probes render as ERR so a timeout does not read like a normal
+    0/0 comparison result.
+    """
+    if result.error:
+        return "ERR"
+    return f"{result.score}/{result.maximum}"
+
+
 def print_comparison_table(
     context_results: list[QualityResult],
     no_context_results: list[QualityResult],
 ) -> None:
-    """Print a side-by-side context-on/context-off quality table."""
+    """Print a side-by-side context-on/context-off quality table.
+
+    When an arm errors, its score cell shows ERR, that probe's delta is
+    marked invalid with ``*``, and an ``ERRORS:`` footer lists every arm
+    error. Clean comparisons print without the extra lines.
+    """
     print("\n" + "=" * 110)
     print(
         f"{'id':<28}{'intent':<11}{'ctx':>8}{'raw':>8}"
@@ -746,13 +799,22 @@ def print_comparison_table(
     total_ctx = 0
     total_raw = 0
     total_max = 0
+    errors: list[str] = []
     for ctx, raw in zip(context_results, no_context_results, strict=True):
         total_ctx += ctx.score
         total_raw += raw.score
         total_max += ctx.maximum
+        if ctx.error:
+            errors.append(f"context:{ctx.id} -> {ctx.error}")
+        if raw.error:
+            errors.append(f"no_context:{raw.id} -> {raw.error}")
+        delta = ctx.score - raw.score
+        delta_cell = f"{delta:>7}*" if ctx.error or raw.error else f"{delta:>8}"
         print(
-            f"{ctx.id:<28}{ctx.intent:<11}{ctx.score:>4}/{ctx.maximum:<3}"
-            f"{raw.score:>4}/{raw.maximum:<3}{ctx.score - raw.score:>8}"
+            f"{ctx.id:<28}{ctx.intent:<11}"
+            f"{_comparison_score_cell(ctx):>8}"
+            f"{_comparison_score_cell(raw):>8}"
+            f"{delta_cell}"
             f"{ctx.prompt_tokens:>10}{raw.prompt_tokens:>10}"
             f"{ctx.seconds:>9.1f}{raw.seconds:>9.1f}"
         )
@@ -762,6 +824,14 @@ def print_comparison_table(
         f"{'TOTAL':<39}{total_ctx:>4}/{total_max:<3}"
         f"{total_raw:>4}/{total_max:<3}{total_ctx - total_raw:>8}"
     )
+    if errors:
+        print(
+            "* delta invalid: an arm errored; the other arm remains a valid "
+            "standalone result"
+        )
+        print("ERRORS:")
+        for line in errors:
+            print(f"  {line}")
     print("=" * 110)
 
 
@@ -791,7 +861,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--base-url", default=DEFAULT_BASE_URL)
     parser.add_argument("--model", default=DEFAULT_MODEL)
     parser.add_argument("--max-tokens", type=int, default=DEFAULT_MAX_TOKENS)
-    parser.add_argument("--timeout", type=float, default=120.0)
+    parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT)
     parser.add_argument("--fail-under", type=int, default=0)
     parser.add_argument("--json", action="store_true", help="emit machine-readable JSON")
     parser.add_argument("--verbose", action="store_true", help="print answer previews")
@@ -999,6 +1069,14 @@ def main(argv: list[str]) -> int:
         args.max_tokens,
         reasoning_models=_configured_reasoning_models(args.reasoning_model),
         min_tokens=args.reasoning_min_tokens,
+    )
+
+    # One-per-invocation stderr hint: reasoning models on the default timeout
+    # are the common source of confusing no-context probe timeouts.
+    _warn_default_timeout_for_reasoning_model(
+        args.model,
+        args.timeout,
+        reasoning_models=_configured_reasoning_models(args.reasoning_model),
     )
 
     if args.delta_context:

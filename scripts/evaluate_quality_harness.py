@@ -125,6 +125,20 @@ def _print_comparison_report(comparison: ComparisonReport) -> None:
         f"{comparison.total_prompt_token_delta:>9}"
     )
     print("=" * 90)
+
+    invalid = [
+        f"{probe.id} - context: {probe.error}"
+        for probe in comparison.with_context.probes
+        if probe.error
+    ] + [
+        f"{probe.id} - no_context: {probe.error}"
+        for probe in comparison.without_context.probes
+        if probe.error
+    ]
+    if invalid:
+        print("\nINVALID COMPARISONS (arm error)")
+        for line in invalid:
+            print(f"  {line}")
     print("\nWITH CONTEXT")
     _print_single_report(comparison.with_context)
     print("\nWITHOUT CONTEXT")

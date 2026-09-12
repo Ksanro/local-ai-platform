@@ -157,6 +157,36 @@ class TestComparisonRun:
         assert exit_code == 0
         assert "WITH CONTEXT" in out
         assert "WITHOUT CONTEXT" in out
+        # Clean comparisons must not gain an invalid-comparisons section.
+        assert "INVALID COMPARISONS" not in out
+
+    def test_table_output_lists_invalid_comparisons_for_arm_errors(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        payload = {
+            "context": [
+                _result("a", hits=["f1", "f2"], prompt_tokens=150),
+                _result(
+                    "b",
+                    ok=False,
+                    error="TimeoutError: timed out after 120.0s",
+                ),
+            ],
+            "no_context": [
+                _result("a", hits=["f1"], misses=["f2"], prompt_tokens=50),
+                _result("b"),
+            ],
+        }
+        path = _write(tmp_path, "cmp.json", payload)
+
+        exit_code = main([path])
+
+        out = capsys.readouterr().out
+        assert exit_code == 1
+        assert "INVALID COMPARISONS (arm error)" in out
+        assert "b - context: TimeoutError: timed out after 120.0s" in out
 
     def test_error_in_either_side_causes_nonzero_exit(self, tmp_path: Path) -> None:
         payload = {

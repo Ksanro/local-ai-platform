@@ -221,3 +221,37 @@ timeouts):
 The 2026-08-22 baseline scored a clean TOTAL 20/20 with style 8/8 ok
 (28013 prompt tokens, 144.6 seconds) and was persisted as session
 `quality_harness-20260821T214629502370-6d519523`.
+
+## Interpreting long runs, timeouts, and failed execution
+
+Three independent timeout layers can each produce a failure report. Identify
+which layer fired before re-running anything:
+
+| Layer | Where it is set | What a failure looks like |
+|---|---|---|
+| Agent command transport | agent/IDE dependent | "failed execution" report while the harness process may still be running |
+| Harness per-probe client | `--timeout` (default `120`) | probe `error: TimeoutError: timed out after 120.0s (harness client timeout; gateway/SGLang may still be generating)` and `seconds ~= 120` |
+| Gateway/provider | `REQUEST_TIMEOUT` in `.env` | gateway aborts the provider call; the harness records an HTTP error instead |
+
+- Expected wall time for a full `--compare-context` on qwen38-27b/SGLang is
+  roughly 5-15 minutes (16 probes; the no-context reasoning probes are the
+  slow ones and are the ones that can hit the per-probe timeout).
+- Prefer foreground harness runs with the JSON redirected to an artifact
+  (`> logs\quality_compare_<tag>.json`). Do not run the harness detached.
+- If the agent reports "failed execution" for a long harness command, check
+  whether the JSON artifact was written and whether the harness process is
+  still running before re-running. Re-running immediately doubles the probe
+  load on the shared backend.
+- For reasoning models, run with `--timeout 300` and set a matching
+  `REQUEST_TIMEOUT=300` in `.env` so the gateway/provider layer does not abort
+  the request at its own shorter limit. Restart the gateway after changing
+  `.env` so the new value applies.
+- A single timed-out probe can be re-run on its own instead of the full set:
+
+  ```powershell
+  .\uv.exe run python scripts\quality_harness.py --probe implement_health_flag --no-context --timeout 300 --json --max-tokens 8192 --reasoning-model qwen38-27b
+  ```
+
+- In comparison output, an errored arm shows as `ERR` and its delta is marked
+  `*`: the delta for that probe is invalid, but the other arm's result remains
+  a valid standalone measurement.
