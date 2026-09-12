@@ -547,3 +547,68 @@ class TestNoForbiddenImports:
         source = inspect.getsource(packages.repository.index.models)
         assert "llm" not in source.lower()
         assert "inference" not in source.lower()
+
+
+# ------------------------------------------------------------------
+# get_symbol_source_excerpts chars_per_token
+# ------------------------------------------------------------------
+
+_EXCERPT_MARKER = "\n    # ... (truncated)"
+
+
+class TestSourceExcerptsCharsPerToken:
+    """Tests for the optional chars_per_token ratio on source excerpts."""
+
+    def _make_source_index(self, source: str) -> RepositoryIndex:
+        sym = _make_symbol("helper", "mod.helper", SymbolType.FUNCTION, module="mod.py")
+        mod = Module(path="mod.py", source=source)
+        mod.symbols.append(sym)
+        return RepositoryIndex(
+            modules={"mod.py": mod},
+            _symbols=[sym],
+            _relationships=[],
+        )
+
+    def test_default_ratio_matches_legacy_behavior(self) -> None:
+        """Without a ratio, excerpts cap at max_tokens * 4 characters."""
+        source = "x" * 1000
+        index = self._make_source_index(source)
+        result = index.get_symbol_source_excerpts("mod.helper", max_tokens=100)
+        assert result == source[:400] + _EXCERPT_MARKER
+
+    def test_custom_smaller_ratio_truncates_sooner(self) -> None:
+        """chars_per_token=2.0 caps the excerpt at half the default size."""
+        source = "x" * 1000
+        index = self._make_source_index(source)
+        result = index.get_symbol_source_excerpts(
+            "mod.helper", max_tokens=100, chars_per_token=2.0
+        )
+        assert result == source[:200] + _EXCERPT_MARKER
+
+    def test_custom_larger_ratio_truncates_later(self) -> None:
+        """chars_per_token=8.0 doubles the excerpt cap."""
+        source = "x" * 1000
+        index = self._make_source_index(source)
+        result = index.get_symbol_source_excerpts(
+            "mod.helper", max_tokens=100, chars_per_token=8.0
+        )
+        assert result == source[:800] + _EXCERPT_MARKER
+
+    def test_custom_ratio_no_truncation_when_within_cap(self) -> None:
+        """A short source is returned unchanged when it fits the cap."""
+        source = "x" * 100
+        index = self._make_source_index(source)
+        result = index.get_symbol_source_excerpts(
+            "mod.helper", max_tokens=100, chars_per_token=2.0
+        )
+        assert result == source
+
+    def test_unknown_symbol_returns_none_with_custom_ratio(self) -> None:
+        """Missing symbols still return None when a ratio is passed."""
+        index = self._make_source_index("x" * 100)
+        assert (
+            index.get_symbol_source_excerpts(
+                "mod.missing", max_tokens=10, chars_per_token=2.0
+            )
+            is None
+        )

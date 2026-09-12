@@ -64,7 +64,7 @@ APP_CONTEXT_INTENT_RULES={}
 APP_SESSION_LOG_ENABLED=true
 APP_HISTORY_CAP_ENABLED=true
 APP_HISTORY_CAP_TOKENS=10000
-APP_MODELS_CONFIG=[{"model":"qwen38-27b","backend_model":"qwen3.8-27b","provider":"openai","base_url":"http://100.106.236.88:30000/v1","context_window":262144,"max_output_tokens":8192}]
+APP_MODELS_CONFIG=[{"model":"qwen38-27b","backend_model":"qwen3.8-27b","provider":"openai","base_url":"http://100.106.236.88:30000/v1","context_window":262144,"max_output_tokens":8192,"chars_per_token":3.5}]
 APP_QUALITY_REASONING_MODELS=qwen38-27b
 APP_QUALITY_REASONING_MIN_TOKENS=2048
 ```

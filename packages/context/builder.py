@@ -88,6 +88,7 @@ class ContextBuilder:
         _supporting_symbol_max_tokens: Shared budget for supporting symbols.
         _maximum_supporting_symbols: Max supporting symbols to include.
         _maximum_module_descriptions: Max module descriptions to include.
+        _chars_per_token: Characters-per-token ratio for estimation math.
     """
 
     def __init__(
@@ -97,6 +98,7 @@ class ContextBuilder:
         supporting_symbol_max_tokens: int = 512,
         maximum_supporting_symbols: int = 20,
         maximum_module_descriptions: int = 10,
+        chars_per_token: float = CHARS_PER_TOKEN,
     ) -> None:
         """Initialise the builder.
 
@@ -111,12 +113,17 @@ class ContextBuilder:
                 to include.
             maximum_module_descriptions: Maximum number of module descriptions
                 to include.
+            chars_per_token: Characters-per-token ratio used for source
+                budgeting and token estimation.  Callers may pass a
+                model-calibrated ratio; the platform default is
+                ``CHARS_PER_TOKEN``.
         """
         self._index = index
         self._primary_symbol_max_tokens = primary_symbol_max_tokens
         self._supporting_symbol_max_tokens = supporting_symbol_max_tokens
         self._maximum_supporting_symbols = maximum_supporting_symbols
         self._maximum_module_descriptions = maximum_module_descriptions
+        self._chars_per_token = chars_per_token
 
     def build(
         self,
@@ -756,7 +763,12 @@ class ContextBuilder:
         """
         budget_engine = ContextBudget()
         effective_max = max_tokens if max_tokens > 0 else 4096
-        budget = budget_engine.estimate(candidates, selected_modules, effective_max)
+        budget = budget_engine.estimate(
+            candidates,
+            selected_modules,
+            effective_max,
+            chars_per_token=self._chars_per_token,
+        )
         if budget.within_budget:
             return candidates, selected_modules, budget
 
@@ -764,7 +776,12 @@ class ContextBuilder:
         while len(trimmed) > 1:
             trimmed.pop()
             modules = self._select_modules_for_candidates(trimmed, selected_modules)
-            budget = budget_engine.estimate(trimmed, modules, effective_max)
+            budget = budget_engine.estimate(
+                trimmed,
+                modules,
+                effective_max,
+                chars_per_token=self._chars_per_token,
+            )
             if budget.within_budget:
                 return trimmed, modules, budget
 
@@ -773,7 +790,12 @@ class ContextBuilder:
             self._trim_candidate_content_to_budget(trimmed[0], modules, effective_max)
 
         modules = self._select_modules_for_candidates(trimmed, selected_modules)
-        budget = budget_engine.estimate(trimmed, modules, effective_max)
+        budget = budget_engine.estimate(
+            trimmed,
+            modules,
+            effective_max,
+            chars_per_token=self._chars_per_token,
+        )
         return trimmed, modules, budget
 
     @staticmethod
@@ -785,14 +807,14 @@ class ContextBuilder:
         candidate_modules = {candidate.module for candidate in candidates}
         return [module for module in selected_modules if module in candidate_modules]
 
-    @staticmethod
     def _trim_candidate_content_to_budget(
+        self,
         candidate: ContextCandidate,
         selected_modules: list[str],
         max_tokens: int,
     ) -> None:
         """Trim verbose candidate fields to fit approximately within budget."""
-        max_chars = max(0, (max_tokens * 4) - 4)
+        max_chars = max(0, int(max_tokens * self._chars_per_token) - 4)
         fixed_chars = (
             len(candidate.qualified_name)
             + len(candidate.module)
@@ -891,7 +913,9 @@ class ContextBuilder:
                 candidate.signature = signature or ""
                 candidate.docstring = docstring or ""
                 candidate.decorators = decorators or []
-                max_source_chars = max(0, primary_source_max_tokens * 4)
+                max_source_chars = max(
+                    0, int(primary_source_max_tokens * self._chars_per_token)
+                )
                 candidate.source = (
                     source[:max_source_chars]
                     if source and len(source) > max_source_chars
@@ -918,13 +942,14 @@ class ContextBuilder:
                     preview = self._index.get_symbol_source_excerpts(
                         candidate.qualified_name,
                         max_tokens=preview_tokens,
+                        chars_per_token=self._chars_per_token,
                     )
                     if preview:
                         candidate.source_preview = preview
                         # Count source lines for implementation size scoring.
                         candidate.source_lines = len(source.splitlines()) if source else 0
                         # Deduct from remaining budget.
-                        estimated_tokens = len(preview) // 4
+                        estimated_tokens = int(len(preview) / self._chars_per_token)
                         remaining_support_tokens = max(
                             0,
                             remaining_support_tokens - estimated_tokens,
@@ -981,7 +1006,7 @@ class ContextBuilder:
 
         full_context = self._index.get_symbol_full_context(candidate.qualified_name)
         if full_context is None:
-            return max(1, int(total_chars / CHARS_PER_TOKEN))
+            return max(1, int(total_chars / self._chars_per_token))
 
         signature = full_context.get("signature", "")
         docstring = full_context.get("docstring", "")
@@ -994,13 +1019,17 @@ class ContextBuilder:
 
         if is_primary:
             if isinstance(source, str):
-                total_chars += min(len(source), self._primary_symbol_max_tokens * 4)
+                total_chars += min(
+                    len(source),
+                    int(self._primary_symbol_max_tokens * self._chars_per_token),
+                )
         else:
             preview = self._index.get_symbol_source_excerpts(
                 candidate.qualified_name,
                 max_tokens=self._supporting_symbol_max_tokens,
+                chars_per_token=self._chars_per_token,
             )
             if preview:
                 total_chars += len(preview)
 
-        return max(1, int(total_chars / CHARS_PER_TOKEN))
+        return max(1, int(total_chars / self._chars_per_token))

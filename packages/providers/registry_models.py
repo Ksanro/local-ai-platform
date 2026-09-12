@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 
 from packages.providers.models import ModelDefinition
 
@@ -125,6 +126,26 @@ class ModelRegistry:
                     "got {!r} at index {}".format(timeout, idx)
                 )
 
+            # Validate chars_per_token (optional calibrated estimation ratio)
+            chars_per_token = entry.get("chars_per_token", 4.0)
+            if isinstance(chars_per_token, bool) or not isinstance(
+                chars_per_token, (int, float)
+            ):
+                raise ValueError(
+                    "chars_per_token must be an int or float for model '{}', "
+                    "got {!r}".format(model, chars_per_token)
+                )
+            if not math.isfinite(chars_per_token):
+                raise ValueError(
+                    "chars_per_token must be a finite number for model '{}', "
+                    "got {!r}".format(model, chars_per_token)
+                )
+            if not 0.5 <= chars_per_token <= 20.0:
+                raise ValueError(
+                    "chars_per_token must be between 0.5 and 20.0 for model "
+                    "'{}', got {!r}".format(model, chars_per_token)
+                )
+
             supports_streaming = entry.get("supports_streaming", True)
             supports_tools = entry.get("supports_tools", False)
             supports_reasoning = entry.get("supports_reasoning", False)
@@ -155,6 +176,7 @@ class ModelRegistry:
                 supports_tools=supports_tools,
                 supports_reasoning=supports_reasoning,
                 supports_json=supports_json,
+                chars_per_token=chars_per_token,
             )
 
         return cls(definitions)

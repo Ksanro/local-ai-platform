@@ -41,6 +41,9 @@ Formula::
 Where total_content_chars includes source code, signatures, docstrings,
 and module paths from all candidates.
 
+Callers may pass a model-calibrated ``chars_per_token`` ratio to
+``estimate``; the platform default remains 4.0.
+
 Constraints
 -----------
 
@@ -85,6 +88,7 @@ class ContextBudget:
         candidates: list[ContextCandidate],
         modules: list[str],
         max_tokens: int,
+        chars_per_token: float = CHARS_PER_TOKEN,
     ) -> ContextBudgetResult:
         """Estimate whether the context fits within the token budget.
 
@@ -99,6 +103,10 @@ class ContextBudget:
             candidates: Ranked candidate symbols (enriched with source data).
             modules: Unique module names selected for the context.
             max_tokens: Maximum allowed token count.
+            chars_per_token: Characters-per-token ratio used to convert the
+                content character count into estimated tokens.  Defaults to
+                the platform-wide ``CHARS_PER_TOKEN``; pass a model-calibrated
+                ratio when available.
 
         Returns:
             A ``ContextBudgetResult`` with estimates and budget status.
@@ -131,7 +139,7 @@ class ContextBudget:
 
         # Convert characters to estimated tokens.
         estimated_tokens = (
-            int(total_chars / CHARS_PER_TOKEN) if total_chars > 0 else 0
+            int(total_chars / chars_per_token) if total_chars > 0 else 0
         )
 
         # Count unique symbols.

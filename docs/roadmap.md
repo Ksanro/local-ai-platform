@@ -2,7 +2,7 @@
 
 This roadmap is based on the current live gateway, not on dormant scaffolding.
 
-Last reviewed: 2026-08-22.
+Last reviewed: 2026-09-09.
 
 ## Done Enough For Now
 
@@ -34,6 +34,9 @@ Last reviewed: 2026-08-22.
 - explicit per-request context intent override
 - configurable custom context intent rules
 - live quality harness with context-on/context-off comparison
+- per-model chars-per-token calibration for repository-context accounting
+  (default 4.0; qwen38-27b 3.5, live-validated 2026-09-09: 5/8 -> 0/8 measured
+  context-cost overages, no quality/style regression)
 
 ## Immediate Goals
 
@@ -134,8 +137,10 @@ Next:
   (`max_tokens_override`) instead of the environment variable. Historical live
   check (qwen27, --max-tokens 900): 8/8 replicate runs scored 3/3 with zero
   misses.
-- add tokenizer-aware estimates when the current character estimate becomes a
-  practical blocker
+- per-model chars-per-token calibration is implemented and live-validated
+  (2026-09-09, qwen38-27b at 3.5); a true tokenizer-aware estimate remains
+  deferred unless future measurements justify it (see "Tokenizer Registry"
+  under "Next After That")
 
 ### 4. CI Realignment - DONE
 
@@ -149,11 +154,19 @@ dormant package as production runtime:
 
 ## Next After That
 
-### Tokenizer Registry
+### Tokenizer Registry - deferred; calibrated ratio in place
 
-`ModelDefinition.tokenizer` exists as metadata only. Token estimates still use
-`CHARS_PER_TOKEN = 4.0`. Add tokenizer-aware accounting when budget precision
-becomes a practical problem.
+Per-model token accounting is implemented as a calibrated characters-per-token
+ratio: `ModelDefinition.chars_per_token` (default `4.0`) drives
+repository-context budget estimation, validated live on qwen38-27b/SGLang at
+`3.5` on 2026-09-09: measured context-cost overages went 5/8 at 4.0 -> 0/8 at
+3.5, with no quality/style regression (run files
+`logs\quality_compare_qwen38_token_estimate_20260909.json` and
+`logs\quality_compare_qwen38_chars_per_token_3_5_20260909.json`). History
+capping still uses the platform default estimate.
+
+`ModelDefinition.tokenizer` exists as metadata only; the true tokenizer
+registry stays deferred unless future measurements justify it.
 
 Investigated 2026-08-10: an apparent 2.17x-3.43x EXPLAIN-intent divergence
 turned out to be a stale-budget comparison artifact (the source data predated

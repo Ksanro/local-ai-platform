@@ -27,6 +27,9 @@ class ModelDefinition:
         supports_tools: Whether tool use is supported.
         supports_reasoning: Whether reasoning is supported.
         supports_json: Whether JSON mode is supported.
+        chars_per_token: Calibrated characters-per-token ratio used for
+            context size estimation.  Callers may supply a model-specific
+            value; the platform default is 4.0.
     """
 
     model: str
@@ -42,6 +45,7 @@ class ModelDefinition:
     supports_reasoning: bool = False
     supports_json: bool = False
     backend_model: str | None = None
+    chars_per_token: float = 4.0
 
 
 @dataclass(frozen=True, slots=True)

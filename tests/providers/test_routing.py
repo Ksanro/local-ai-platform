@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from packages.providers.exceptions import UnknownModelError
@@ -32,6 +34,7 @@ class TestModelDefinition:
         assert d.supports_tools is False
         assert d.supports_reasoning is False
         assert d.supports_json is False
+        assert d.chars_per_token == 4.0
 
     def test_full_definition(self) -> None:
         """All fields are set correctly."""
@@ -71,6 +74,97 @@ class TestModelDefinition:
         )
         with pytest.raises(Exception):
             d.model = "other"  # type: ignore[misc]
+
+
+class TestModelDefinitionCharsPerToken:
+    """Tests for the optional chars_per_token field on ModelDefinition."""
+
+    def test_default_chars_per_token(self) -> None:
+        """chars_per_token defaults to 4.0 when omitted."""
+        d = ModelDefinition(
+            model="test",
+            provider="vllm",
+            base_url="http://localhost:8000/v1",
+        )
+        assert d.chars_per_token == 4.0
+
+    def test_explicit_chars_per_token(self) -> None:
+        """An explicit chars_per_token value is preserved."""
+        d = ModelDefinition(
+            model="qwen38-27b",
+            provider="vllm",
+            base_url="http://localhost:8000/v1",
+            chars_per_token=3.5,
+        )
+        assert d.chars_per_token == 3.5
+
+
+class TestModelRegistryCharsPerToken:
+    """Tests for chars_per_token parsing and validation in from_json()."""
+
+    def _raw(self, value: object | None) -> str:
+        """Build a single-entry JSON array, optionally with chars_per_token."""
+        entry = {
+            "model": "qwen38-27b",
+            "provider": "vllm",
+            "base_url": "http://a/v1",
+        }
+        if value is not None:
+            entry["chars_per_token"] = value
+        return json.dumps([entry])
+
+    def test_default_when_key_absent(self) -> None:
+        """Omitting chars_per_token yields the 4.0 default."""
+        reg = ModelRegistry.from_json(self._raw(None))
+        assert reg.get("qwen38-27b").chars_per_token == 4.0
+
+    def test_explicit_float(self) -> None:
+        """An explicit float ratio is parsed into the definition."""
+        reg = ModelRegistry.from_json(self._raw(3.5))
+        assert reg.get("qwen38-27b").chars_per_token == 3.5
+
+    def test_explicit_int(self) -> None:
+        """An explicit int ratio is accepted."""
+        reg = ModelRegistry.from_json(self._raw(5))
+        assert reg.get("qwen38-27b").chars_per_token == 5
+
+    def test_boundary_values_accepted(self) -> None:
+        """0.5 and 20.0 are accepted boundary values."""
+        low = ModelRegistry.from_json(self._raw(0.5))
+        high = ModelRegistry.from_json(self._raw(20.0))
+        assert low.get("qwen38-27b").chars_per_token == 0.5
+        assert high.get("qwen38-27b").chars_per_token == 20.0
+
+    def test_rejects_string(self) -> None:
+        """A non-numeric string is rejected, naming the model."""
+        with pytest.raises(ValueError, match="chars_per_token"):
+            ModelRegistry.from_json(self._raw("3.5"))
+        with pytest.raises(ValueError, match="qwen38-27b"):
+            ModelRegistry.from_json(self._raw("3.5"))
+
+    def test_rejects_bool(self) -> None:
+        """Booleans are rejected despite being int subclasses."""
+        with pytest.raises(ValueError, match="chars_per_token"):
+            ModelRegistry.from_json(self._raw(True))
+
+    def test_rejects_below_range(self) -> None:
+        """Values below 0.5 are rejected."""
+        with pytest.raises(ValueError, match="between 0.5 and 20.0"):
+            ModelRegistry.from_json(self._raw(0.4))
+
+    def test_rejects_above_range(self) -> None:
+        """Values above 20.0 are rejected."""
+        with pytest.raises(ValueError, match="between 0.5 and 20.0"):
+            ModelRegistry.from_json(self._raw(20.1))
+
+    def test_rejects_non_finite(self) -> None:
+        """NaN is rejected as a non-finite value."""
+        raw = (
+            '[{"model": "qwen38-27b", "provider": "vllm",'
+            ' "base_url": "http://a/v1", "chars_per_token": NaN}]'
+        )
+        with pytest.raises(ValueError, match="finite"):
+            ModelRegistry.from_json(raw)
 
 
 class TestModelRegistry:

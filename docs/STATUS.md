@@ -3,7 +3,7 @@
 This file is the current runtime snapshot. It intentionally describes only
 what matters for the live gateway path and calls out dormant code explicitly.
 
-Last reviewed: 2026-08-23.
+Last reviewed: 2026-09-09.
 
 ## Product Shape
 
@@ -141,8 +141,9 @@ divergence), and v2 additionally cited two `packages/context/builder.py`
 promotion functions that do not exist in the file. A fresh live
 `--compare-context` re-measurement on 2026-08-10 against the current 2048
 budget found EXPLAIN in the normal band (0.83x-1.00x, reproduced twice).
-`CHARS_PER_TOKEN = 4.0` is unchanged; no tokenizer-accuracy problem is
-currently measured. The real, smaller, still-open question is the run-to-run
+At that point `CHARS_PER_TOKEN = 4.0` was unchanged; no tokenizer-accuracy
+problem was measured. The real, smaller question that remained open was the
+run-to-run
 variance already noted above (`explain_live_path` ranged 1119-1975 tokens
 across 3 replicates at the same 2048 budget on 2026-08-09) - a
 context-selection determinism question, not a token-estimation-accuracy one.
@@ -166,6 +167,19 @@ context selection is deterministic within a gateway process and across
 gateway restarts. Remaining run-to-run variance is model-side sampling
 (answer wording, `completion_tokens`, wall-clock seconds). No code fix was
 warranted.
+
+On 2026-09-09 repository-context token accounting moved from the global
+`CHARS_PER_TOKEN = 4.0` to per-model calibration: `ModelDefinition.chars_per_token`
+(default `4.0`) is resolved from the request's resolved model and drives the
+repository-context budget estimate. `qwen38-27b` is calibrated to `3.5`.
+Live validation on qwen38-27b/SGLang (`--compare-context` with context): the
+`4.0` baseline had 5 of 8 probes with measured context cost over their intent
+budget; with `3.5` it is 0 of 8, with no fact misses and no style regressions.
+Baseline run: `logs\quality_compare_qwen38_token_estimate_20260909.json`;
+calibrated run: `logs\quality_compare_qwen38_chars_per_token_3_5_20260909.json`.
+History capping is not affected and still uses the platform default
+`CHARS_PER_TOKEN = 4.0` estimate. True tokenizer integration remains out of
+scope (deferred).
 
 ### History Capping
 
@@ -404,7 +418,9 @@ Recommended live-path checks:
 - The model often includes reasoning/preamble despite terse system prompts; the
   quality harness now records deterministic style violations separately from
   required-fact score.
-- Token estimates still use `CHARS_PER_TOKEN = 4.0`, not model-specific
-  tokenizers. The current validated backend is qwen38-27b via SGLang
-  (provider `openai`); tokenizer-aware accounting remains the next precision
-  improvement.
+- Repository-context token estimates now use a per-model calibrated
+  characters-per-token ratio (`ModelDefinition.chars_per_token`, default
+  `4.0`; qwen38-27b `3.5`), live-validated 2026-09-09: measured context-cost
+  overages went 5/8 at 4.0 -> 0/8 at 3.5 with no quality or style regression.
+  History capping still uses the platform default estimate. True tokenizer
+  integration is out of scope/deferred.

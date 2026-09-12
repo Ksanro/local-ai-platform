@@ -357,6 +357,66 @@ class TestContextBudgetResult:
 # ------------------------------------------------------------------
 
 
+class TestCustomCharsPerToken:
+    """Tests for the optional chars_per_token parameter on estimate()."""
+
+    def test_default_matches_explicit_constant(self) -> None:
+        """Omitting chars_per_token is equivalent to passing 4.0."""
+        engine = ContextBudget()
+        candidates = [_make_candidate("a", "main.a", "main.py", source="x" * 400)]
+        default_result = engine.estimate(candidates, [], max_tokens=4096)
+        explicit_result = engine.estimate(
+            candidates, [], max_tokens=4096, chars_per_token=CHARS_PER_TOKEN
+        )
+        assert default_result == explicit_result
+
+    def test_smaller_ratio_increases_estimate(self) -> None:
+        """chars_per_token=2.0 doubles the token estimate for identical content."""
+        engine = ContextBudget()
+        candidates = [_make_candidate("a", "main.a", "main.py", source="x" * 400)]
+        default_result = engine.estimate(candidates, [], max_tokens=4096)
+        custom_result = engine.estimate(
+            candidates, [], max_tokens=4096, chars_per_token=2.0
+        )
+        assert custom_result.estimated_tokens == default_result.estimated_tokens * 2
+
+    def test_larger_ratio_decreases_estimate(self) -> None:
+        """chars_per_token=8.0 halves the token estimate for identical content."""
+        engine = ContextBudget()
+        candidates = [_make_candidate("a", "main.a", "main.py", source="x" * 400)]
+        default_result = engine.estimate(candidates, [], max_tokens=4096)
+        custom_result = engine.estimate(
+            candidates, [], max_tokens=4096, chars_per_token=8.0
+        )
+        assert custom_result.estimated_tokens == default_result.estimated_tokens // 2
+
+    def test_custom_ratio_budget_boundary(self) -> None:
+        """A larger ratio can flip content from over budget to within budget."""
+        engine = ContextBudget()
+        # Total chars: 400 (source) + 6 (qn) + 7 (module) = 413.
+        # Default estimate: int(413 / 4.0) = 103 tokens.
+        # Custom estimate:  int(413 / 8.0) = 51 tokens.
+        candidates = [_make_candidate("a", "main.a", "main.py", source="x" * 400)]
+
+        default_result = engine.estimate(candidates, [], max_tokens=60)
+        assert default_result.within_budget is False
+        assert default_result.truncated is True
+
+        custom_result = engine.estimate(
+            candidates, [], max_tokens=60, chars_per_token=8.0
+        )
+        assert custom_result.estimated_tokens == 51
+        assert custom_result.within_budget is True
+        assert custom_result.truncated is False
+
+    def test_zero_content_with_custom_ratio(self) -> None:
+        """Empty content estimates zero tokens under any ratio."""
+        engine = ContextBudget()
+        result = engine.estimate([], [], max_tokens=4096, chars_per_token=2.0)
+        assert result.estimated_tokens == 0
+        assert result.within_budget is True
+
+
 class TestConstraints:
     """Tests verifying the budget engine respects constraints."""
 

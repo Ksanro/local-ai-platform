@@ -390,6 +390,201 @@ class AuthMiddleware:
         assert len(result.candidates) == 1
         assert len(result.candidates[0].source) <= 16 * CHARS_PER_TOKEN
 
+    def test_build_caps_primary_source_with_custom_chars_per_token(self):
+        """Primary source cap scales with a custom chars_per_token ratio."""
+        source = "def large():\n" + ("    value = 1\n" * 200)
+        sym_large = _make_symbol(
+            "mod.large",
+            "mod.py",
+            lineno=1,
+            symbol_type=SymbolType.FUNCTION,
+            source="mod.py",
+        )
+        mod = _make_module("mod.py", [sym_large], source=source)
+        index = _make_index([mod])
+
+        query = ContextQuery(
+            text="large",
+            max_symbols=1,
+            max_modules=1,
+            max_tokens=4096,
+        )
+
+        default_builder = ContextBuilder(index=index, primary_symbol_max_tokens=16)
+        default_result = default_builder.build(query)
+
+        custom_builder = ContextBuilder(
+            index=index, primary_symbol_max_tokens=16, chars_per_token=2.0
+        )
+        custom_result = custom_builder.build(query)
+
+        assert len(default_result.candidates[0].source) == int(16 * CHARS_PER_TOKEN)
+        assert len(custom_result.candidates[0].source) == int(16 * 2.0)
+        assert len(custom_result.candidates[0].source) < len(default_result.candidates[0].source)
+
+    def test_build_uses_custom_chars_per_token_for_budget_enforcement(self):
+        """Budget enforcement trims more aggressively with a smaller ratio."""
+        source = "def large():\n" + ("    value = 1\n" * 100)  # 1413 chars
+        sym_large = _make_symbol(
+            "mod.large",
+            "mod.py",
+            lineno=1,
+            symbol_type=SymbolType.FUNCTION,
+            source="mod.py",
+        )
+        mod = _make_module("mod.py", [sym_large], source=source)
+        index = _make_index([mod])
+
+        query = ContextQuery(
+            text="large",
+            max_symbols=1,
+            max_modules=1,
+            max_tokens=400,
+        )
+
+        default_builder = ContextBuilder(index=index)
+        custom_builder = ContextBuilder(index=index, chars_per_token=2.0)
+
+        default_result = default_builder.build(query)
+        custom_result = custom_builder.build(query)
+
+        # Total content is 1446 chars: 1413 source + 12 signature + 9 qn
+        # + 6 module + 6 selected module. Default estimate
+        # int(1446 / 4.0) = 361 <= 400, so the default result keeps the
+        # full source. Custom estimate int(1446 / 2.0) = 723 > 400, so
+        # the source is trimmed to fit (1446 - 400 * 2 = 46 chars over,
+        # leaving a 763-char source).
+        assert default_result.budget.estimated_tokens == 361
+        assert default_result.budget.within_budget is True
+        assert len(default_result.candidates[0].source) == 1413
+
+        assert custom_result.budget.estimated_tokens == 398
+        assert custom_result.budget.within_budget is True
+        assert len(custom_result.candidates[0].source) == 763
+
+    def test_build_stores_custom_chars_per_token(self):
+        """The builder stores the ratio for downstream use."""
+        index = _make_index([])
+        default_builder = ContextBuilder(index)
+        custom_builder = ContextBuilder(index, chars_per_token=3.5)
+        assert default_builder._chars_per_token == CHARS_PER_TOKEN
+        assert custom_builder._chars_per_token == 3.5
+
+    def test_trim_candidate_content_uses_custom_ratio(self):
+        """_trim_candidate_content_to_budget resizes with the builder's ratio."""
+        index = _make_index([])
+
+        def _make_target_candidate() -> ContextCandidate:
+            return ContextCandidate(
+                symbol_id="mod.target",
+                qualified_name="mod.target",
+                module="mod.py",
+                symbol_type=SymbolType.FUNCTION,
+                source="s" * 500,
+                signature="def target():",
+                docstring="d" * 200,
+            )
+
+        default_builder = ContextBuilder(index)
+        default_candidate = _make_target_candidate()
+        default_builder._trim_candidate_content_to_budget(
+            default_candidate, ["mod.py"], 50
+        )
+        # max_chars = int(50 * 4.0) - 4 = 196;
+        # fixed = 10 (qn) + 6 (module) + 13 (signature) + 6 (module list) = 35
+        # available = 196 - 35 = 161
+        assert default_candidate.source == "s" * 161
+        assert default_candidate.source_preview == ""
+        assert default_candidate.docstring == ""
+
+        custom_builder = ContextBuilder(index, chars_per_token=2.0)
+        custom_candidate = _make_target_candidate()
+        custom_builder._trim_candidate_content_to_budget(
+            custom_candidate, ["mod.py"], 50
+        )
+        # max_chars = int(50 * 2.0) - 4 = 96; available = 96 - 35 = 61
+        assert custom_candidate.source == "s" * 61
+
+        # Docstring-only candidate: source stays empty, docstring is trimmed.
+        doc_candidate = ContextCandidate(
+            symbol_id="mod.doc",
+            qualified_name="mod.doc",
+            module="mod.py",
+            symbol_type=SymbolType.FUNCTION,
+            source="",
+            signature="sig",
+            docstring="d" * 300,
+        )
+        custom_builder._trim_candidate_content_to_budget(doc_candidate, ["mod.py"], 100)
+        # max_chars = int(100 * 2.0) - 4 = 196;
+        # fixed = 7 (qn) + 6 (module) + 3 (signature) + 6 (module list) = 22
+        # available = 196 - 22 = 174
+        assert doc_candidate.source == ""
+        assert doc_candidate.docstring == "d" * 174
+        assert doc_candidate.source_preview == ""
+
+    def test_ranking_token_estimate_uses_custom_ratio(self):
+        """Candidate ranking uses the ratio-aware token estimate."""
+        source = "def helper():\n" + "x" * 2500  # 2514 chars
+        sym = _make_symbol(
+            "mod.helper",
+            "mod.py",
+            symbol_type=SymbolType.FUNCTION,
+            source="mod.py",
+        )
+        mod = _make_module("mod.py", [sym], source=source)
+        index = _make_index([mod])
+
+        primary = ContextCandidate(
+            symbol_id="mod.helper",
+            qualified_name="mod.helper",
+            module="mod.py",
+            symbol_type=SymbolType.FUNCTION,
+            source=source,
+        )
+        supporting = ContextCandidate(
+            symbol_id="mod.helper",
+            qualified_name="mod.helper",
+            module="mod.py",
+            symbol_type=SymbolType.FUNCTION,
+        )
+
+        default_builder = ContextBuilder(index)
+        custom_builder = ContextBuilder(index, chars_per_token=2.0)
+
+        # Primary: qn(10) + module(6) + signature(13) + source(2514) = 2543 chars.
+        # The source fits under the primary cap at both ratios.
+        assert (
+            default_builder._estimate_candidate_tokens_for_ranking(primary, True)
+            == int(2543 / 4.0)
+        )
+        assert (
+            custom_builder._estimate_candidate_tokens_for_ranking(primary, True)
+            == int(2543 / 2.0)
+        )
+
+        # Supporting: preview is capped at int(512 * ratio), which the custom
+        # ratio shrinks. The estimate must reflect the ratio in both the
+        # preview fetch and the final division.
+        default_preview = index.get_symbol_source_excerpts(
+            "mod.helper", max_tokens=512
+        )
+        custom_preview = index.get_symbol_source_excerpts(
+            "mod.helper", max_tokens=512, chars_per_token=2.0
+        )
+        assert len(custom_preview) < len(default_preview)
+
+        default_total = 10 + 6 + 13 + len(default_preview)
+        custom_total = 10 + 6 + 13 + len(custom_preview)
+        assert (
+            default_builder._estimate_candidate_tokens_for_ranking(supporting, False)
+            == int(default_total / 4.0)
+        )
+        assert (
+            custom_builder._estimate_candidate_tokens_for_ranking(supporting, False)
+            == int(custom_total / 2.0)
+        )
+
     def test_build_reduces_primary_source_for_multi_file_queries(self):
         """Multi-file comparisons should leave room for supporting previews."""
         primary_source = "def primary():\n" + ("    value = 1\n" * 1000)

@@ -69,10 +69,12 @@ Public API
 from __future__ import annotations
 
 import logging
+import math
 import time
 from typing import Any
 
 from packages.context.builder import ContextBuilder
+from packages.context.budget import CHARS_PER_TOKEN
 from packages.context.composer import ContextComposer
 from packages.context.context_package import ContextPackage
 from packages.context.delta import (
@@ -251,7 +253,8 @@ class RepositoryContextStage(PipelineStage):
                     max_tokens=max_context_tokens,
                 )
 
-            builder = ContextBuilder(self._index)
+            chars_per_token = self._resolve_chars_per_token(context)
+            builder = ContextBuilder(self._index, chars_per_token=chars_per_token)
             context_result = builder.build(query)
 
             # Check if ranking returned no relevant symbols.
@@ -456,6 +459,33 @@ class RepositoryContextStage(PipelineStage):
                 return intent_budget
 
         return self._max_context_tokens
+
+    @staticmethod
+    def _resolve_chars_per_token(context: PipelineContext) -> float:
+        """Read the resolved model's calibrated chars-per-token ratio.
+
+        Defensive: falls back to the platform default when the resolved
+        model is missing, the definition lacks the attribute, or the value
+        is not a finite number within the supported 0.5-20.0 range.
+
+        Args:
+            context: The pipeline context.
+
+        Returns:
+            The chars-per-token ratio to use for context estimation.
+        """
+        resolved = getattr(context, "resolved_model", None)
+        if resolved is None:
+            return CHARS_PER_TOKEN
+        definition = getattr(resolved, "definition", None)
+        if definition is None:
+            return CHARS_PER_TOKEN
+        value = getattr(definition, "chars_per_token", CHARS_PER_TOKEN)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return CHARS_PER_TOKEN
+        if not math.isfinite(value) or not 0.5 <= value <= 20.0:
+            return CHARS_PER_TOKEN
+        return float(value)
 
     @staticmethod
     def _extract_query(context: PipelineContext) -> str:

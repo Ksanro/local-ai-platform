@@ -344,13 +344,19 @@ class RepositoryIndex:
         return decorators if decorators else None
 
     def get_symbol_source_excerpts(
-        self, qualified_name: str, max_tokens: int = 256
+        self,
+        qualified_name: str,
+        max_tokens: int = 256,
+        chars_per_token: float = 4.0,
     ) -> str | None:
         """Return a truncated source excerpt for supporting symbols.
 
         Args:
             qualified_name: The fully qualified symbol name.
             max_tokens: Maximum token budget for the excerpt.
+            chars_per_token: Characters-per-token ratio used to convert the
+                token budget into a character cap.  Callers may pass a
+                model-calibrated ratio; the platform default is 4.0.
 
         Returns:
             Truncated source text, or ``None`` if not found.
@@ -358,8 +364,8 @@ class RepositoryIndex:
         source = self.get_symbol_source(qualified_name)
         if source is None:
             return None
-        # Estimate tokens (rough: 4 chars per token)
-        max_chars = max_tokens * 4
+        # Estimate tokens (rough: chars_per_token characters per token)
+        max_chars = int(max_tokens * chars_per_token)
         if len(source) > max_chars:
             return source[:max_chars] + "\n    # ... (truncated)"
         return source

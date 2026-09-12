@@ -8,6 +8,7 @@ supports deterministic execution.
 from __future__ import annotations
 
 import logging
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -1034,3 +1035,122 @@ class TestContextPlanConsumption:
 
         assert result.success is True
         assert context.context_package is not None
+
+
+# ------------------------------------------------------------------
+# chars_per_token threading
+# ------------------------------------------------------------------
+
+
+class TestCharsPerTokenThreading:
+    """Verify the stage threads the model ratio into ContextBuilder."""
+
+    def _resolved(self, chars_per_token: object = 3.5) -> SimpleNamespace:
+        """Build a fake resolved model with a definition attribute."""
+        return SimpleNamespace(
+            definition=SimpleNamespace(chars_per_token=chars_per_token)
+        )
+
+    def test_defaults_without_resolved_model(self) -> None:
+        """No resolved model falls back to the platform default."""
+        context = _make_context()
+        assert RepositoryContextStage._resolve_chars_per_token(context) == 4.0
+
+    def test_defaults_when_definition_missing(self) -> None:
+        """A resolved model without a definition falls back to the default."""
+        context = _make_context()
+        context.resolved_model = SimpleNamespace()
+        assert RepositoryContextStage._resolve_chars_per_token(context) == 4.0
+
+    def test_reads_valid_float_from_definition(self) -> None:
+        """A calibrated float ratio is returned unchanged."""
+        context = _make_context()
+        context.resolved_model = self._resolved(3.5)
+        assert RepositoryContextStage._resolve_chars_per_token(context) == 3.5
+
+    def test_accepts_int_value(self) -> None:
+        """An int ratio is accepted and converted to float."""
+        context = _make_context()
+        context.resolved_model = self._resolved(5)
+        assert RepositoryContextStage._resolve_chars_per_token(context) == 5.0
+
+    def test_accepts_boundary_values(self) -> None:
+        """The 0.5 and 20.0 boundaries are accepted."""
+        for value in (0.5, 20.0):
+            context = _make_context()
+            context.resolved_model = self._resolved(value)
+            assert RepositoryContextStage._resolve_chars_per_token(context) == value
+
+    @pytest.mark.parametrize(
+        "bad_value",
+        ["3.5", True, float("inf"), float("nan"), 0.1, 100.0, None, object()],
+    )
+    def test_falls_back_for_invalid_values(self, bad_value) -> None:
+        """Missing/invalid model ratios fall back to the default."""
+        context = _make_context()
+        context.resolved_model = self._resolved(bad_value)
+        assert RepositoryContextStage._resolve_chars_per_token(context) == 4.0
+
+    @pytest.mark.asyncio
+    async def test_execute_passes_default_ratio_without_resolved_model(self) -> None:
+        """execute() passes 4.0 to ContextBuilder when no model is resolved."""
+        symbols = [_make_symbol("App", "main.App", SymbolType.CLASS, "main.py")]
+        index = _make_index(symbols)
+        stage = RepositoryContextStage(index=index)
+
+        context = _make_context()
+        fake_result = SimpleNamespace(candidates=[])
+
+        with patch(
+            "packages.pipeline.stages.repository_context.ContextBuilder"
+        ) as mock_builder_cls:
+            mock_builder_cls.return_value.build.return_value = fake_result
+            result = await stage.execute(context)
+
+        assert result.success is True
+        args, kwargs = mock_builder_cls.call_args
+        assert args[0] is index
+        assert kwargs["chars_per_token"] == 4.0
+
+    @pytest.mark.asyncio
+    async def test_execute_passes_model_ratio_to_builder(self) -> None:
+        """execute() passes the resolved model ratio to ContextBuilder."""
+        symbols = [_make_symbol("App", "main.App", SymbolType.CLASS, "main.py")]
+        index = _make_index(symbols)
+        stage = RepositoryContextStage(index=index)
+
+        context = _make_context()
+        context.resolved_model = self._resolved(3.5)
+        fake_result = SimpleNamespace(candidates=[])
+
+        with patch(
+            "packages.pipeline.stages.repository_context.ContextBuilder"
+        ) as mock_builder_cls:
+            mock_builder_cls.return_value.build.return_value = fake_result
+            result = await stage.execute(context)
+
+        assert result.success is True
+        args, kwargs = mock_builder_cls.call_args
+        assert args[0] is index
+        assert kwargs["chars_per_token"] == 3.5
+
+    @pytest.mark.asyncio
+    async def test_execute_falls_back_for_invalid_model_ratio(self) -> None:
+        """execute() falls back to 4.0 when the model ratio is invalid."""
+        symbols = [_make_symbol("App", "main.App", SymbolType.CLASS, "main.py")]
+        index = _make_index(symbols)
+        stage = RepositoryContextStage(index=index)
+
+        context = _make_context()
+        context.resolved_model = self._resolved("3.5")
+        fake_result = SimpleNamespace(candidates=[])
+
+        with patch(
+            "packages.pipeline.stages.repository_context.ContextBuilder"
+        ) as mock_builder_cls:
+            mock_builder_cls.return_value.build.return_value = fake_result
+            result = await stage.execute(context)
+
+        assert result.success is True
+        _, kwargs = mock_builder_cls.call_args
+        assert kwargs["chars_per_token"] == 4.0
