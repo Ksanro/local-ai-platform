@@ -1,8 +1,10 @@
 """Tests for GET /debug/runtime-context.
 
-Covers the default no-router behavior, the models_config router, the
-fallback single-provider router, settings-field reflection, that provider
-secrets are never serialized, the read-only ``quality_baseline`` summary
+Covers the default no-router behavior, the models_config router (including
+the per-model ``chars_per_token`` calibration and the platform default),
+the fallback single-provider router, settings-field reflection, that
+provider secrets are never serialized, the read-only ``quality_baseline``
+summary
 (available, empty-history, and loader-exception cases), and the read-only
 ``gateway_session_summary`` (success, empty-history, loader-exception, and
 summarizer-exception cases).
@@ -234,7 +236,15 @@ def test_models_config_router() -> None:
                 "api_key": "top-secret-key",
                 "context_window": 262144,
                 "max_output_tokens": 8192,
-            }
+                "chars_per_token": 3.5,
+            },
+            {
+                "model": "qwen36",
+                "provider": "openai",
+                "base_url": "http://127.0.0.1:30001/v1",
+                "context_window": 131072,
+                "max_output_tokens": 8192,
+            },
         ]
     )
     router = ModelRouter(ModelRegistry.from_json(raw))
@@ -257,7 +267,19 @@ def test_models_config_router() -> None:
                 "base_url": "http://127.0.0.1:30000/v1",
                 "context_window": 262144,
                 "max_output_tokens": 8192,
-            }
+                # Calibrated runtime value from the model config.
+                "chars_per_token": 3.5,
+            },
+            {
+                "model": "qwen36",
+                "backend_model": None,
+                "provider": "openai",
+                "base_url": "http://127.0.0.1:30001/v1",
+                "context_window": 131072,
+                "max_output_tokens": 8192,
+                # Omitted from config, so the platform default is reported.
+                "chars_per_token": 4.0,
+            },
         ]
         # api_key is never serialized.
         assert "api_key" not in response.text
@@ -290,6 +312,9 @@ def test_fallback_router() -> None:
             "base_url": None,
             "context_window": None,
             "max_output_tokens": None,
+            # No model definition in fallback mode; the effective
+            # repository-context calibration is the platform default.
+            "chars_per_token": 4.0,
         }
     ]
     assert body["quality_baseline"] == UNAVAILABLE_QUALITY_BASELINE

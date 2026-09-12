@@ -81,6 +81,9 @@ Inspect:
 - `default_model` / `default_provider` - the settings-driven routing defaults
 - `routing_mode` - `models_config`, `fallback`, or `none`
 - `models[].base_url` and `models[].backend_model` - where each alias routes
+- `models[].chars_per_token` - the calibrated chars-per-token ratio used for
+  repository-context budgeting (platform default 4.0; in fallback mode the
+  platform default is reported)
 - `repository_context_intent_budget_map` - per-intent context budgets
 - `quality_baseline.available` and `quality_baseline.latest_score` - persisted
   quality-harness history (empty until a run is stored)

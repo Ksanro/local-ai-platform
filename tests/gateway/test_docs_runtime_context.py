@@ -23,6 +23,7 @@ INSPECT_FIELDS = (
     "routing_mode",
     "models[].base_url",
     "models[].backend_model",
+    "models[].chars_per_token",
     "repository_context_intent_budget_map",
     "quality_baseline.available",
     "quality_baseline.latest_score",

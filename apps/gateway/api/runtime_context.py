@@ -17,6 +17,7 @@ from typing import Any
 from fastapi import APIRouter, Request
 
 from apps.gateway.core.config import get_settings
+from packages.context.budget import CHARS_PER_TOKEN
 from packages.engineering_memory.memory import EngineeringMemory
 from packages.engineering_memory.quality_harness_records import WORKFLOW_NAME
 from packages.observability.quality_history import summarize_quality_history
@@ -36,6 +37,7 @@ _MODEL_FIELDS = (
     "base_url",
     "context_window",
     "max_output_tokens",
+    "chars_per_token",
 )
 
 def _model_entries(definitions: list[ModelDefinition]) -> list[dict[str, Any]]:
@@ -251,6 +253,9 @@ async def runtime_context(request: Request) -> dict[str, Any]:
                 "base_url": None,
                 "context_window": None,
                 "max_output_tokens": None,
+                # No model definition in fallback mode; repository-context
+                # budgeting calibrates at the platform default.
+                "chars_per_token": CHARS_PER_TOKEN,
             }
             for name in model_router.available_models()
         ]
