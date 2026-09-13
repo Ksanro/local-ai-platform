@@ -79,6 +79,9 @@ uv run python -m ruff check <paths you changed>
 uv run python -m mypy packages/providers packages/pipeline apps/gateway
 ```
 
+The mypy gate excludes the dormant `packages/pipeline/stages/workflow_stage.py`
+module via a pyproject override; CI's mypy step uses the same live-path scope.
+
 Use `python -m` — the bare `pytest`/`ruff` shims are blocked by Windows Application Control on the
 primary dev machine.
 

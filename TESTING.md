@@ -50,7 +50,7 @@ Use these to confirm code is correct before any live run. Fast, repeatable, no n
 .\uv.exe run python -m pytest -q
 .\uv.exe run python -m pytest tests\pipeline tests\gateway tests\test_protocol_invariant.py -q
 .\uv.exe run python -m ruff check packages apps
-.\uv.exe run python -m mypy packages\pipeline apps\gateway
+.\uv.exe run python -m mypy packages\providers packages\pipeline apps\gateway
 .\uv.exe run python scripts\check_fixes.py
 .\uv.exe run python scripts\bench_context.py
 .\uv.exe run python scripts\quality_harness.py

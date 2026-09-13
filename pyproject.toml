@@ -47,11 +47,6 @@ explicit_package_bases = true
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
-module = "tests.*"
-disallow_untyped_defs = false
-disallow_incomplete_defs = false
-
-[[tool.mypy.overrides]]
 module = "apps.*"
 disallow_untyped_defs = false
 disallow_incomplete_defs = false
@@ -66,11 +61,14 @@ module = "starlette.*"
 ignore_errors = true
 
 [[tool.mypy.overrides]]
-module = "packages.workflows.*"
+# Dormant stage of the deferred workflow/execution/verification/evaluation
+# runtime; not registered in apps/gateway/main.py. Excluded from the
+# live-path mypy gate, like packages.workflows.* below.
+module = "packages.pipeline.stages.workflow_stage"
 ignore_errors = true
 
 [[tool.mypy.overrides]]
-module = "tests.workflows.*"
+module = "packages.workflows.*"
 ignore_errors = true
 
 [tool.pytest.ini_options]

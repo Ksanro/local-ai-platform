@@ -406,6 +406,10 @@ Recommended live-path checks:
 .\uv.exe run python scripts\quality_harness.py --json | .\uv.exe run python scripts\evaluate_quality_harness.py -
 ```
 
+The mypy gate passes with the dormant `packages/pipeline/stages/workflow_stage.py`
+module excluded via a pyproject override; CI's mypy step uses the same live-path
+scope.
+
 ## Current Open Issues
 
 - Repository context can dominate prompt size; history capping alone is not the
