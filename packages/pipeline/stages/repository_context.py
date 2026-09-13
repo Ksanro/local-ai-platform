@@ -73,8 +73,8 @@ import math
 import time
 from typing import Any
 
-from packages.context.builder import ContextBuilder
 from packages.context.budget import CHARS_PER_TOKEN
+from packages.context.builder import ContextBuilder
 from packages.context.composer import ContextComposer
 from packages.context.context_package import ContextPackage
 from packages.context.delta import (
