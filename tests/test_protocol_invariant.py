@@ -21,11 +21,13 @@ import copy
 import json
 from pathlib import Path
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
 from packages.pipeline.context import PipelineContext
 from packages.pipeline.engine import PipelineEngine
+from packages.pipeline.result import PipelineStageResult
 from packages.pipeline.stages import (
     ModelResolutionStage,
     PlanningStage,
@@ -58,22 +60,11 @@ def _load_fixture(name: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def _build_fallback_engine() -> PipelineEngine:
-    """Build a pipeline engine in fallback (single-provider) mode."""
-    _load_providers()
+def _synthetic_router() -> ModelRouter:
+    """Build a ModelRouter over a synthetic registry.
 
-    engine = PipelineEngine()
-    # In fallback mode no ModelResolutionStage — ProviderStage resolves directly.
-    # We register a no-op placeholder so the stage order matches.
-    engine.register(ProviderStage())
-    return engine
-
-
-def _build_routed_engine() -> PipelineEngine:
-    """Build a pipeline engine with model routing enabled.
-
-    Uses a synthetic ModelRegistry that maps any model to the vllm provider
-    with a dummy backend_model so routing does NOT alter message content.
+    Maps the fixture model names to the vllm provider with a dummy
+    backend_model so routing does NOT alter message content.
     """
     _load_providers()
 
@@ -100,8 +91,12 @@ def _build_routed_engine() -> PipelineEngine:
     }
 
     registry = ModelRegistry(definitions=definitions)
+    return ModelRouter(registry)
 
-    router = ModelRouter(registry)
+
+def _build_routed_engine() -> PipelineEngine:
+    """Build a pipeline engine with model routing enabled."""
+    router = _synthetic_router()
     engine = PipelineEngine()
     engine.register(ModelResolutionStage(router))
     engine.register(PlanningStage())
@@ -109,6 +104,23 @@ def _build_routed_engine() -> PipelineEngine:
     engine.register(RepositoryContextStage(index=None))
     engine.register(ProviderStage())
     return engine
+
+
+def _install_chat_capture(provider: Any) -> AsyncMock:
+    """Point the resolved provider's ``chat`` at an AsyncMock.
+
+    Keeps the invariant check hermetic (no real provider call from the
+    pre-commit gate) while capturing the exact payload that
+    ``ProviderStage`` forwards to the provider.
+    """
+    chat: AsyncMock = AsyncMock(
+        return_value={
+            "choices": [],
+            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        }
+    )
+    provider.chat = chat
+    return chat
 
 
 # ---------------------------------------------------------------------------
@@ -143,7 +155,10 @@ def _normalize_input_for_comparison(data: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
-def _get_provider_payload(context: PipelineContext) -> dict[str, Any]:
+def _get_provider_payload(
+    context: PipelineContext,
+    chat_mock: AsyncMock | None = None,
+) -> dict[str, Any]:
     """Extract the provider payload from a PipelineContext.
 
     This is what would actually be forwarded to the provider.
@@ -152,12 +167,14 @@ def _get_provider_payload(context: PipelineContext) -> dict[str, Any]:
     provider_request = context.get_metadata("provider_request")
     if isinstance(provider_request, ProviderRequest):
         payload = provider_request.to_dict()
+    elif chat_mock is not None and chat_mock.call_args is not None:
+        # ProviderStage forwards its kwargs to provider.chat - that is the
+        # exact provider payload after all stages ran.
+        payload = dict(chat_mock.call_args.kwargs)
     else:
         # Fallback: use raw context.request
         payload = dict(context.request)
 
-    # ProviderStage always overwrites model, stream, stream_options.
-    # We capture what's actually in the payload after all stages ran.
     return payload
 
 
@@ -442,7 +459,8 @@ class TestProtocolInvariant:
         "list_content",
     ])
     @pytest.mark.parametrize("mode", ["fallback", "routed"])
-    def test_invariant_per_fixture(
+    @pytest.mark.asyncio
+    async def test_invariant_per_fixture(
         self,
         fixture_name: str,
         mode: str,
@@ -463,59 +481,61 @@ class TestProtocolInvariant:
         context.set_metadata("model", payload.get("model", "default"))
         context.set_metadata("context_enabled", mode == "routed")
 
-        # Run the stages relevant to the mode
-        try:
-            if mode == "routed":
-                engine_routed = _build_routed_engine()
-                # Execute stages manually
-                for stage in engine_routed._stages:
-                    stage.before(context)
-                    result = stage.execute(context)
-                    if result is not None and hasattr(result, "__await__"):
-                        import asyncio
-                        asyncio.get_event_loop().run_until_complete(result)
-                    else:
-                        if not hasattr(result, '__await__'):
-                            context.set_stage_result(stage.name, result)
-                        # Handle awaitable result
-                        try:
-                            result_result = result  # already done
-                            if (
-                                result_result is not None
-                                and hasattr(
-                                    result_result, '__await__'
-                                )
-                            ):
-                                pass  # skip async for now
-                            else:
-                                after_result = stage.after(
-                                    context,
-                                    (
-                                        result_result
-                                        if 'result_result' in dir()
-                                        else result
-                                    ),
-                                )
-                                if after_result is not None:
-                                    context.set_stage_result(
-                                        stage.name, after_result
-                                    )
-                        except Exception:
-                            pass
-            else:
-                # Fallback: just run ProviderStage
-                result = ProviderStage().execute(context)
-                if hasattr(result, '__await__'):
-                    import asyncio
-                    asyncio.get_event_loop().run_until_complete(result)
+        # Run the stages relevant to the mode. All stage hooks are async,
+        # so they are awaited exactly like PipelineEngine.execute does.
+        chat_mock: AsyncMock | None = None
 
-        except Exception:
-            # Stage execution may fail due to missing network — that's OK.
-            # We just need the context to have been processed.
-            pass
+        if mode == "routed":
+            engine = _build_routed_engine()
+            for stage in engine._stages:
+                short_circuit = await stage.before(context)
+                if short_circuit is not None:
+                    result = short_circuit
+                    if not isinstance(result, PipelineStageResult):
+                        result = PipelineStageResult(
+                            stage_name=stage.name,
+                            success=True,
+                            data=result,
+                        )
+                else:
+                    result = await stage.execute(context)
+                    if (
+                        stage.name == "model_resolution"
+                        and context.resolved_model is not None
+                    ):
+                        # Hermetic provider: capture the payload instead of
+                        # hitting a real backend from the pre-commit gate.
+                        chat_mock = _install_chat_capture(
+                            context.resolved_model.provider
+                        )
+                after_result = await stage.after(context, result)
+                if after_result is not None and isinstance(
+                    after_result, PipelineStageResult
+                ):
+                    result = after_result
+                context.set_stage_result(stage.name, result)
+                if not result.success:
+                    # PipelineEngine.execute halts on a failed stage.
+                    break
+        else:
+            # Fallback: no routing stages; ProviderStage works off a
+            # resolved model (as the gateway's FallbackModelRouter provides).
+            router = _synthetic_router()
+            resolved = router.resolve(payload.get("model", "default"))
+            context.resolved_model = resolved
+            chat_mock = _install_chat_capture(resolved.provider)
+
+            stage = ProviderStage()
+            result = await stage.execute(context)
+            after_result = await stage.after(context, result)
+            if after_result is not None and isinstance(
+                after_result, PipelineStageResult
+            ):
+                result = after_result
+            context.set_stage_result(stage.name, result)
 
         # Extract the provider payload
-        provider_payload = _get_provider_payload(context)
+        provider_payload = _get_provider_payload(context, chat_mock)
 
         # Compare with a detailed diff
         diffs = _protocol_diff(payload, provider_payload, mode)
