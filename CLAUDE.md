@@ -64,10 +64,17 @@ unreachable code. The `modification` failure is a pre-existing Windows-path issu
 
 A change is only clean if the count does not increase. Report the before and after number.
 
+The local pre-commit hook (`.git/hooks/pre-commit`, machine-local) blocks on any **live-path**
+test failure: it runs `scripts/precommit_test_gate.sh`, which executes the live-path test set and
+uses pytest's exit code (no count parsing). The full-suite baseline above is the opt-in check:
+`bash scripts/precommit_test_gate.sh --full` (blocks only if the count exceeds the baseline, and
+if the run cannot be interpreted safely).
+
 ## Gate commands
 
 ```
-uv run python -m pytest -q
+bash scripts/precommit_test_gate.sh      # live-path gate (what the pre-commit hook runs)
+uv run python -m pytest -q              # full suite (43-failure baseline on 3.13, see above)
 uv run python -m ruff check <paths you changed>
 uv run python -m mypy packages/providers packages/pipeline apps/gateway
 ```

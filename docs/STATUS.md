@@ -389,7 +389,10 @@ values already present in `.env`.
 ## Testing Reality
 
 Use focused gates for live-path changes. Full-repo tests and lint still include
-dormant packages with known failures and pre-existing lint debt.
+dormant packages with known failures and pre-existing lint debt. The local
+pre-commit hook enforces the live-path gate (`scripts/precommit_test_gate.sh`);
+the known full-suite failure baseline (43 on Python 3.13) is an opt-in `--full`
+check - see `TESTING.md` "Pre-commit hook".
 
 Recommended live-path checks:
 

@@ -57,9 +57,39 @@ Use these to confirm code is correct before any live run. Fast, repeatable, no n
 .\uv.exe run python -m pytest tests\evaluation tests\scripts tests\engineering_memory tests\observability\test_quality_harness.py tests\observability\test_quality_history.py -q
 ```
 
-Baseline: the full suite has a known failure count (all in unreachable dead-code packages). A clean
-change must **not increase** it. Confirm the current baseline number before claiming a change is
-clean.
+Baseline: the full suite has a known failure count (all in unreachable dead-code packages; 43 on
+Python 3.13 - see the "Pre-commit hook" section below). A clean change must **not increase** it.
+Confirm the current baseline number before claiming a change is clean.
+
+## Pre-commit hook
+
+The local git hook (`.git/hooks/pre-commit`, untracked and machine-local)
+delegates to the tracked `scripts/precommit_test_gate.sh`:
+
+- **Default mode (what the hook runs):** the live-path test set only
+  (`tests/pipeline`, `tests/gateway`, `tests/providers`, `tests/planning`,
+  `tests/context`, `tests/repository`, `tests/evaluation`, `tests/scripts`,
+  `tests/engineering_memory`, `tests/test_protocol_invariant.py`, plus the
+  three activated `tests/observability` quality files). The commit is
+  blocked on pytest's exit code - any live-path failure blocks. No
+  failure-count parsing.
+- **Full-suite baseline (opt-in):** the known dormant-package failures are
+  not paid for on every commit. Check them explicitly:
+
+  ```powershell
+  bash scripts\precommit_test_gate.sh --full
+  ```
+
+  Baseline: **43 failures on Python 3.13** (49 on Python 3.12 - six
+  immutability tests depend on a CPython fix for
+  `@dataclass(frozen=True, slots=True)`). `--full` blocks only when the
+  count exceeds the baseline, and also fails when the run cannot be
+  interpreted safely (collection/internal errors).
+
+The known failures are all in dormant packages: `autonomous` (26), dormant
+`observability` telemetry (12), `integration/test_engineering_flow` (4),
+and `modification/test_engine.py::TestInvalidPatchSet::test_nonexistent_workspace_raises` (1).
+Do not reduce the count with xfail/skip; see `CLAUDE.md` "Test baseline".
 
 ## Live measurement (gateway + vLLM required)
 
