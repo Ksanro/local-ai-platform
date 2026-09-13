@@ -72,8 +72,22 @@ if the run cannot be interpreted safely).
 
 ## Gate commands
 
+```bash
+bash scripts/precommit_test_gate.sh          # live-path gate (what the pre-commit hook runs)
+bash scripts/precommit_test_gate.sh --full   # opt-in full-suite baseline check
 ```
-bash scripts/precommit_test_gate.sh      # live-path gate (what the pre-commit hook runs)
+
+From PowerShell on this machine, invoke the gate via Git's bundled bash - a
+bare `bash` resolves to the WSL stub, which has no distro installed:
+
+```powershell
+& 'C:\Program Files\Git\bin\bash.exe' scripts/precommit_test_gate.sh           # live-path gate
+& 'C:\Program Files\Git\bin\bash.exe' scripts/precommit_test_gate.sh --full   # full-suite baseline
+```
+
+Other checks:
+
+```
 uv run python -m pytest -q              # full suite (43-failure baseline on 3.13, see above)
 uv run python -m ruff check <paths you changed>
 uv run python -m mypy packages/providers packages/pipeline apps/gateway

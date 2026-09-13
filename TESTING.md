@@ -74,14 +74,9 @@ delegates to the tracked `scripts/precommit_test_gate.sh`:
   blocked on pytest's exit code - any live-path failure blocks. No
   failure-count parsing.
 - **Full-suite baseline (opt-in):** the known dormant-package failures are
-  not paid for on every commit. Check them explicitly:
-
-  ```powershell
-  bash scripts\precommit_test_gate.sh --full
-  ```
-
-  Baseline: **43 failures on Python 3.13** (49 on Python 3.12 - six
-  immutability tests depend on a CPython fix for
+  not paid for on every commit. Check them explicitly with the `--full`
+  forms below. Baseline: **43 failures on Python 3.13** (49 on Python 3.12
+  - six immutability tests depend on a CPython fix for
   `@dataclass(frozen=True, slots=True)`). `--full` blocks only when the
   count exceeds the baseline, and also fails when the run cannot be
   interpreted safely (collection/internal errors).
@@ -90,6 +85,21 @@ The known failures are all in dormant packages: `autonomous` (26), dormant
 `observability` telemetry (12), `integration/test_engineering_flow` (4),
 and `modification/test_engine.py::TestInvalidPatchSet::test_nonexistent_workspace_raises` (1).
 Do not reduce the count with xfail/skip; see `CLAUDE.md` "Test baseline".
+
+Run the gate manually from the repo root. From Git Bash:
+
+```bash
+bash scripts/precommit_test_gate.sh          # live-path gate (what the hook runs)
+bash scripts/precommit_test_gate.sh --full   # full-suite baseline check
+```
+
+From PowerShell on this machine, use Git's bundled bash - a bare `bash`
+resolves to the WSL stub, which has no distro installed:
+
+```powershell
+& 'C:\Program Files\Git\bin\bash.exe' scripts/precommit_test_gate.sh           # live-path gate
+& 'C:\Program Files\Git\bin\bash.exe' scripts/precommit_test_gate.sh --full   # full-suite baseline
+```
 
 ## Live measurement (gateway + vLLM required)
 
