@@ -10,10 +10,7 @@ Verifies:
 
 from __future__ import annotations
 
-import json
 from typing import Any
-
-import pytest
 
 from packages.context.context_package import ContextPackage
 from packages.pipeline.request import PipelineRequest
@@ -108,8 +105,12 @@ class TestSurfaceSessionMetadata:
                 scope["session_symbols_selected"] = pkg.get("symbols_selected", 0)
                 scope["session_symbols_new"] = pkg.get("symbols_new", 0)
                 scope["session_symbols_suppressed"] = pkg.get("symbols_suppressed", 0)
-                scope["session_estimated_tokens"] = getattr(package, "estimated_tokens", 0) if package else 0
-                scope["session_primary_symbol"] = getattr(package, "primary_symbol", "") if package else ""
+                scope["session_estimated_tokens"] = (
+                    getattr(package, "estimated_tokens", 0) if package else 0
+                )
+                scope["session_primary_symbol"] = (
+                    getattr(package, "primary_symbol", "") if package else ""
+                )
             else:
                 # Empty or no_new_symbols path.
                 symbols_new = pkg.get("symbols_new", 0)
@@ -148,7 +149,9 @@ class TestSurfaceSessionMetadata:
         assert scope["session_symbols_new"] == 0
         assert scope["session_symbols_suppressed"] == 10
         # Verify invariant: selected == new + suppressed
-        assert scope["session_symbols_selected"] == scope["session_symbols_new"] + scope["session_symbols_suppressed"]
+        assert scope["session_symbols_selected"] == (
+            scope["session_symbols_new"] + scope["session_symbols_suppressed"]
+        )
 
     def test_assembled_path_with_counts(self) -> None:
         """On assembled path, counts are read from metadata dict."""
@@ -174,7 +177,9 @@ class TestSurfaceSessionMetadata:
         assert scope["session_symbols_new"] == 1
         assert scope["session_symbols_suppressed"] == 2
         # Verify invariant
-        assert scope["session_symbols_selected"] == scope["session_symbols_new"] + scope["session_symbols_suppressed"]
+        assert scope["session_symbols_selected"] == (
+            scope["session_symbols_new"] + scope["session_symbols_suppressed"]
+        )
 
     def test_empty_path_counts(self) -> None:
         """On empty path, all symbol counts are zero."""
@@ -192,7 +197,9 @@ class TestSurfaceSessionMetadata:
         assert scope["session_symbols_new"] == 0
         assert scope["session_symbols_suppressed"] == 0
         # Verify invariant (trivially)
-        assert scope["session_symbols_selected"] == scope["session_symbols_new"] + scope["session_symbols_suppressed"]
+        assert scope["session_symbols_selected"] == (
+            scope["session_symbols_new"] + scope["session_symbols_suppressed"]
+        )
 
     def test_disabled_path_counts(self) -> None:
         """On disabled path, all symbol counts are zero."""
