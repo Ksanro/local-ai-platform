@@ -135,12 +135,20 @@ Run deterministic answer-quality probes:
 
 Read the `TOTAL` line. `--compare-context` changes exactly one variable per
 probe: repository context on versus off through the same gateway/provider path.
-Recent baselines were `14-15/15` with context and `2/15` without context, on
-the original 6 single-turn probes — the probe set now also includes 2
-multi-turn probes (`multiturn_history_cap_budget`, `multiturn_config_systems`)
-that send prior user/assistant turns before the scored final prompt, so a
-fresh baseline run is needed to include them (`total_maximum` moves from `15`
-to `20`).
+The current fixed probe set has 8 probes - the original 6 single-turn probes
+plus 2 multi-turn probes (`multiturn_history_cap_budget`,
+`multiturn_config_systems`) that send prior user/assistant turns before the
+scored final prompt - with 20 total expected facts (`total_maximum` is `20`).
+The current baseline is the qwen38-27b/SGLang full quality run completed
+2026-08-22 with `scripts\quality_harness.py --json --model qwen38-27b
+--max-tokens 8192 --reasoning-model qwen38-27b`: clean TOTAL 20/20 expected
+facts, style 8/8 ok, 28013 prompt tokens, 144.6 seconds; the JSON is saved at
+`logs\quality_baseline_qwen38_27b_after_fixes.json` and persisted as
+engineering-memory session `quality_harness-20260821T214629502370-6d519523`
+(full command and persist steps: `docs/live-gateway-runbook.md`, "Full Quality
+Baseline"). The earlier `14-15/15` with context and `2/15` without context are
+historical numbers from the original 6 single-turn probes (`total_maximum`
+`15`).
 The quality table also reports a separate style signal: `ok` means no known
 reasoning preamble or tool/thinking marker was detected, while `bad` means the
 answer still contained that chatter even if the required facts were present.
