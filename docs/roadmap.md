@@ -2,7 +2,9 @@
 
 This roadmap is based on the current live gateway, not on dormant scaffolding.
 
-Last reviewed: 2026-09-09.
+Last reviewed: 2026-09-19 (records the completed dormant Capability Framework v1
+prototype and the first read-only, script-reachable Git Integration slice; the
+live-gateway priorities are unchanged since the 2026-09-09 pass).
 
 ## Done Enough For Now
 
@@ -56,6 +58,18 @@ First candidates, all activated as narrow, script-reachable slices:
 
 Remaining dormant packages stay on hold per `docs/dormant-code-backlog.md`'s
 "Hold For Later" list until there is a concrete product need.
+
+Completed prototype work, deliberately not activated (2026-09-19):
+`packages.capabilities` - the Capability Framework v1 is finished as dormant
+context-assembly code. Nine capabilities exist (Explain, Debug, Refactor,
+Implement Feature, Generate Tests, Review, Architecture Review, Bug
+Investigation, and the non-`Capability`-ABC Pull Request Review), covered by 691
+passing focused tests in `tests/capabilities`. None of them is registered by
+default, reachable from the gateway path, or performs provider execution, so this
+closes the framework's own inventory item only. It does not promote controller,
+tasks, workflows, execution, verification, autonomous operation, or gateway
+capability routing, and it does not displace the measured latency/retrieval work
+in sections 2 and 3.
 
 ### 2. Quality Harness Expansion
 
@@ -190,10 +204,32 @@ Both slices share the same `memory_v1.json` storage file, distinguished by
 Remaining dormant: controller/execution/verification wiring, semantic memory,
 packages.session/packages.controller integration.
 
-### Git Integration
+### Git Integration - first slice DONE (read-only, script-reachable)
 
-Useful later for change-aware context, memory, and measuring which files were
-actually touched. Not urgent for the current latency/retrieval loop.
+`packages.repository.git_changes` (`capture_change_snapshot`,
+`parse_porcelain_v2`, `GitChangeStatus`, `GitFileChange`, `GitChangeSnapshot`)
+plus `scripts/git_change_snapshot.py` now capture a deterministic snapshot of a
+working tree: repository root, branch, HEAD, upstream and ahead/behind when
+configured, staged, unstaged, untracked, renamed/copied (old and new path),
+deleted, and conflicted paths, and a clean/dirty flag. `run_git_command` enforces
+an exact allowlist and will only ever start these two read-only vectors:
+
+```text
+git rev-parse --show-toplevel
+git --no-optional-locks status --porcelain=v2 -z --branch --untracked-files=all
+```
+
+Any other argument vector raises `GitUnsafeCommandError` before a process is
+created, so mutating commands - and prefix, suffix or reordered variants of the
+allowed ones - cannot reach Git through this module. Because parsing is limited to
+NUL-delimited porcelain v2, taking a snapshot never stages, commits, resets,
+checks out, cleans, fetches, or pushes, and never rewrites `.git`.
+
+Still deliberately not done: gateway or pipeline wiring, change-aware context
+ranking, engineering-memory persistence of snapshots, diffs and patch
+generation, and the GitHub API. Git integration remains off the current
+latency/retrieval loop; change-aware context and measuring which files were
+actually touched stay deferred until a measured need appears.
 
 ## Deferred
 
@@ -202,6 +238,9 @@ actually touched. Not urgent for the current latency/retrieval loop.
 - autonomous engineering loop
 - controller/execution/verification/evaluation runtime
 - agent orchestration
+- gateway capability routing (the dormant `packages.capabilities` prototype is
+  complete; wiring a capability into the live path stays deferred until the
+  activation prerequisites in `docs/dormant-code-backlog.md` are met)
 - semantic/vector search
 
 These may become valuable, but they should not pull focus from the proven live

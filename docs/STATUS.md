@@ -3,7 +3,10 @@
 This file is the current runtime snapshot. It intentionally describes only
 what matters for the live gateway path and calls out dormant code explicitly.
 
-Last reviewed: 2026-09-09.
+Last reviewed: 2026-09-19 (Git Change Snapshot v1 added as a script-reachable,
+read-only repository utility, and the dormant `packages.capabilities` inventory was
+recounted with repository commands the same day. The live gateway path itself is
+unchanged since the 2026-09-09 review).
 
 ## Product Shape
 
@@ -327,13 +330,37 @@ runs should use `--max-tokens 2048` or higher.
   `load_session_log_history`) via `scripts/session_log_history.py` — read-only
   summary of persisted session-log `EngineeringMemory` records: success rate,
   median latency, intent distribution, error breakdown, history-cap rate.
+- `packages.repository.git_changes` (`capture_change_snapshot`,
+  `parse_porcelain_v2`, `GitChangeStatus`, `GitFileChange`, `GitChangeSnapshot`,
+  `GitUnsafeCommandError`) via `scripts/git_change_snapshot.py` — Git Change
+  Snapshot v1: a script-reachable, strictly read-only Git integration that
+  reports repository-root, branch, HEAD, upstream, ahead/behind, staged,
+  unstaged, untracked, renamed/copied (old and new path), deleted, and
+  conflicted paths plus a clean/dirty flag. Its subprocess boundary enforces an
+  exact two-vector allowlist
+  (`git rev-parse --show-toplevel` and `git status --porcelain=v2 -z --branch`
+  with `--no-optional-locks` and `--untracked-files=all`) and raises
+  `GitUnsafeCommandError` for anything else — including prefix, suffix and
+  reordered variants — before a process starts. It parses NUL-delimited porcelain
+  v2 only, never stages, commits, resets, checks out, cleans, fetches, or pushes,
+  and orders every collection deterministically. Not part of the gateway request
+  path: no endpoint, no context-ranking input, no memory persistence.
 
 ## What Exists But Is Dormant
 
 These packages are not part of the live gateway path unless explicitly wired
 later:
 
-- `packages.capabilities`
+- `packages.capabilities` — the Capability Framework v1 prototype is complete and
+  covered by focused tests, but it is not reachable from the live gateway: no
+  `apps/gateway` or live `packages/pipeline` module imports it, no capability is
+  registered by default, and no provider execution happens through it. It
+  contains nine capabilities (Explain, Debug, Refactor, Implement Feature,
+  Generate Tests, Review, Architecture Review, Bug Investigation, and
+  Pull Request Review — the last one being a different, non-`Capability`-ABC
+  orchestration shape that only builds a `TaskRequest`). The roster, the exact
+  dormant boundaries and the activation prerequisites live in
+  `docs/dormant-code-backlog.md`; the design itself is in `docs/capabilities.md`
 - `packages.tasks`
 - `packages.workflows`
 - `packages.advisors`
@@ -361,17 +388,26 @@ later:
 They may contain tests and useful designs, but they should not be treated as
 runtime behavior.
 
-Approximate dormant-package footprint as of 2026-08-01:
+Approximate dormant-package footprint. The `packages.capabilities` row was
+recounted with repository commands on 2026-09-19; the other rows still reflect
+the 2026-08-01 pass and are estimates, not measured inventory:
 
 | Area | Package files | Test files | Approx. lines | Backlog posture |
 |---|---:|---:|---:|---|
 | `packages.evaluation` | 6 | 6 | 1.6k | `quality_harness_report.py` slice activated; `evaluator.py`/`registry.py` still dormant. |
 | `packages.engineering_memory` | 5 | 5 | 2.8k | `quality_harness_records.py` and `session_log_records.py` slices activated; controller wiring still dormant. |
 | `packages.observability` | 8 | 10 | 6.0k | `quality_history.py` and `session_log_history.py` slices activated; telemetry/tracing stack still dormant. |
-| `packages.capabilities` | 12 | 11 | 3.1k | Useful design source, but overlaps current planning/context path. |
+| `packages.capabilities` | 15 | 13 | 4.5k (package only) | Capability Framework v1 prototype complete: 8 `Capability` subclasses plus the non-ABC `PullRequestReviewCapability`; overlaps current planning/context path, not reachable from the live gateway. |
 | `packages.tasks` / `workflows` | 27 | 17 | 4.8k | Keep dormant until an execution loop is product-proven. |
 | Controller/execution/verification stack | 29 | 28 | 7.0k | Large future stack; not on the gateway hot path. |
 | Modification/patches/session/bootstrap/autonomous/advisors/architecture/benchmark | 49 | 46 | 12.5k | Inventory before wiring; use only with a concrete measured need. |
+
+The `packages.capabilities` figures are the measured ones: 15 Python files and
+4,504 lines of package code, 13 `test_*.py` modules plus a shared
+`assembly_probes.py` helper and `tests/capabilities/__init__.py` (15 files,
+14,765 lines of test code), and 691 focused tests passing
+(`.\uv.exe run python -m pytest tests\capabilities -q`). "Approx. lines" counts
+package code only for every row.
 
 ## Configuration Notes
 
@@ -400,6 +436,7 @@ Recommended live-path checks:
 .\uv.exe run python -m pytest tests\pipeline tests\gateway tests\providers tests\planning tests\context tests\repository -q
 .\uv.exe run python -m ruff check apps\gateway packages\pipeline packages\providers packages\planning packages\context packages\repository scripts
 .\uv.exe run python -m mypy packages\providers packages\pipeline apps\gateway
+.\uv.exe run python scripts\git_change_snapshot.py --json .
 .\uv.exe run python scripts\quality_harness.py
 .\uv.exe run python scripts\quality_harness.py --compare-context
 .\uv.exe run python scripts\quality_harness.py --delta-context --session-log-path logs\sessions.jsonl

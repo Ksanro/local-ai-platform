@@ -3,7 +3,8 @@
 This backlog tracks code that exists in the repository but is not wired into
 the live gateway path.
 
-Last reviewed: 2026-08-01.
+Last reviewed: 2026-09-19 (`packages.capabilities` inventory recounted with
+repository commands; the remaining rows still date from the 2026-08-01 pass).
 
 ## Live Boundary
 
@@ -24,11 +25,13 @@ treated as dormant until deliberately activated.
 
 ## Inventory
 
-Approximate footprint:
+Approximate footprint. The `packages.capabilities` row was recounted with
+repository commands on 2026-09-19; every other row is a 2026-08-01 estimate, not
+measured inventory:
 
 | Package area | Package files | Test files | Approx. lines | Current role |
 |---|---:|---:|---:|---|
-| `packages.capabilities` | 12 | 11 | 3.1k | Capability orchestration prototypes. |
+| `packages.capabilities` | 15 | 13 | 4.5k (package only, approx.) | Capability Framework v1 prototype, complete but dormant: 8 `Capability` subclasses plus the non-ABC `PullRequestReviewCapability`. |
 | `packages.tasks` | 14 | 8 | 2.6k | Task model and task-specific wrappers. |
 | `packages.workflows` | 13 | 9 | 2.2k | Workflow definitions and engine scaffolding. |
 | `packages.controller` | 9 | 10 | 3.8k | Engineering controller / decision layer. |
@@ -46,15 +49,78 @@ Approximate footprint:
 | `packages.benchmark` | 5 | 4 | 1.1k | Older benchmark framework. |
 | `packages.advisors` | 6 | 6 | 1.4k | Advisor prototypes. |
 
+The `packages.capabilities` line counts are package code only: 4,504 lines across
+15 Python files. Its tests add 14,765 lines across 15 files - 13 `test_*.py`
+modules plus the shared `assembly_probes.py` helper and `__init__.py` - and
+691 focused tests pass (`.\uv.exe run python -m pytest tests\capabilities -q`).
+Other rows were not re-measured in this pass.
+
+## Capability Framework v1 - completed prototype (still dormant)
+
+The framework itself is finished as prototype work: nine capabilities, one shared
+ABC pipeline, profiles, registry, factory, and a frozen result model, all covered
+by focused tests. None of it is reachable from `apps/gateway/main.py`, a gateway
+endpoint, or a live script, so it stays in this backlog rather than in
+`docs/STATUS.md`'s "What Is Implemented And Reachable" list.
+
+| Capability | `name` | Capability intent | Profile | Retrieval / plan shape |
+|---|---|---|---|---|
+| `ExplainCapability` | `explain` | `PlannerIntent.EXPLAIN` | `EXPLAIN_PROFILE` | planner-derived plan |
+| `DebugCapability` | `debug` | `PlannerIntent.DEBUG` | `DEBUG_PROFILE` | planner-derived plan |
+| `RefactorCapability` | `refactor` | `PlannerIntent.REFACTOR` | `REFACTOR_PROFILE` | planner-derived plan |
+| `ImplementFeatureCapability` | `implement-feature` | `PlannerIntent.IMPLEMENT` | `IMPLEMENT_PROFILE` | planner called with `intent_override="IMPLEMENT"` |
+| `GenerateTestsCapability` | `generate-tests` | `PlannerIntent.GENERATE_TESTS` | `GENERATE_TESTS_PROFILE` | planner called with `intent_override="TEST"` (the planner has no `GENERATE_TESTS` token) |
+| `ReviewCapability` | `review` | `PlannerIntent.REVIEW` | `REVIEW_PROFILE` | planner called with `intent_override="SEARCH"` (the planner has no `REVIEW` token); context-assembly only |
+| `ArchitectureReviewCapability` | `architecture-review` | `PlannerIntent.REVIEW` | `ARCHITECTURE_REVIEW_PROFILE` | whole-repository analyzer; builds its plan without `ContextPlanner` |
+| `BugInvestigationCapability` | `bug-investigation` | `PlannerIntent.DEBUG` | `DEBUG_PROFILE` (reuses the debug profile) | planner-derived plan |
+| `PullRequestReviewCapability` | `pull-request-review` | - | - | **different, non-ABC orchestration shape**: not a `Capability` subclass; it builds a dormant `TaskRequest` instead of a `CapabilityResult` |
+
+What is true for every one of them:
+
+- No capability is registered by default. `CapabilityRegistry` starts empty, and
+  the only `register(...)` calls in the package live in docstring examples.
+- Nothing outside the package imports it at runtime. The only cross-package
+  references are `if TYPE_CHECKING:` imports of `CapabilityResult` in
+  `packages/evaluation/evaluator.py` and `packages/tasks/models.py`, both dormant
+  packages that are themselves not on the gateway path.
+- No provider execution occurs. The eight context-assembly capabilities build a
+  frozen `CapabilityResult` whose `provider_request` is an unsent
+  `ProviderRequest`; nothing sends it, and creating it does not make a capability
+  live. `PullRequestReviewCapability.execute()` is narrower still - it returns a
+  `dict` carrying a dormant `TaskRequest` and review metadata.
+- Importing `packages.serializers` (or any submodule of it, which is how a
+  capability reaches `SerializerFactory`) imports the built-in serializer modules
+  so they self-register. That is infrastructure availability of the serialization
+  layer, not capability activation.
+- Relationship honesty: the first ranked candidate becomes `primary_symbol`, the
+  remaining candidates become `supporting_symbols`, and `related_modules` is the
+  sorted, deduplicated set of candidate modules - the contract pinned by the
+  shared `tests/capabilities/assembly_probes.py::assert_relationship_honesty`
+  probe. `related_callers` and `related_callees` are never populated from ranked
+  candidates: they stay empty, and `RelationshipSummary.caller_count` /
+  `callee_count` are `0` with them, because no verified `CALLS` edges reach a
+  capability. Ranked candidates carry a score and a module path, never an edge.
+- Profile flags: only `relationship_depth`, `max_context_tokens` and the
+  `include_callers` / `include_callees` pair (collapsed into
+  `relationship_expansion`) have a `ContextQuery` effect.
+  `include_dependencies`, `include_dependents`, `include_tests`,
+  `include_dead_code` and `include_diagnostics` are declarative intent only.
+  `ContextQuery.max_symbols` stays at the platform default (20); a capability
+  does not derive a candidate count from `ContextPlan.maximum_depth`, which is
+  traversal depth.
+
 ## Activation Rules
 
-Before moving dormant code into the live product, require all of:
+A capability (or any other dormant area) may move out of dormant status only with
+all of the following - not because the code already exists:
 
-- reachable from `apps/gateway/main.py`, a gateway endpoint, or a documented script
-- visible in session logs, quality-harness output, or API response behavior
-- covered by focused tests for the live path
-- documented in `docs/STATUS.md`
-- validated by measurement if it affects latency, prompt tokens, or answer quality
+- a concrete product need for the behavior
+- an explicit reachable entry point in `apps/gateway/main.py`, a gateway
+  endpoint, or a documented script
+- observable behavior in session logs, quality-harness output, or API responses
+- focused tests covering that live path, not only the dormant unit
+- documentation updated in `docs/STATUS.md` (and this backlog entry closed)
+- measurement wherever latency or context quality can change
 
 ## Recommended Order
 
@@ -123,7 +189,9 @@ quality summaries prove useful.
 
 Keep these dormant until there is a concrete product need:
 
-- `packages.capabilities`
+- `packages.capabilities` — the framework prototype is complete and covered by
+  focused tests, but it stays here: no reachable entry point, no registration, no
+  live-path behavior to measure yet
 - `packages.tasks`
 - `packages.workflows`
 - `packages.controller`

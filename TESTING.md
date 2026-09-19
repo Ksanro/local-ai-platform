@@ -53,9 +53,18 @@ Use these to confirm code is correct before any live run. Fast, repeatable, no n
 .\uv.exe run python -m mypy packages\providers packages\pipeline apps\gateway
 .\uv.exe run python scripts\check_fixes.py
 .\uv.exe run python scripts\bench_context.py
+.\uv.exe run python scripts\git_change_snapshot.py --json .
 .\uv.exe run python scripts\quality_harness.py
 .\uv.exe run python -m pytest tests\evaluation tests\scripts tests\engineering_memory tests\observability\test_quality_harness.py tests\observability\test_quality_history.py -q
 ```
+
+`scripts\git_change_snapshot.py` is a read-only Git utility: it runs
+`git rev-parse --show-toplevel` and
+`git --no-optional-locks status --porcelain=v2 -z --branch
+--untracked-files=all`, prints a table (or `--json`), exits nonzero on an
+operational error, and never stages, commits, resets, checks out, cleans,
+fetches, or pushes. Pass a path to snapshot another repository; the default is
+the current directory.
 
 Baseline: the full suite has a known failure count (all in unreachable dead-code packages; 43 on
 Python 3.13 - see the "Pre-commit hook" section below). A clean change must **not increase** it.

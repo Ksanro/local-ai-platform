@@ -412,7 +412,7 @@ class TestResolveGatewayCommit:
         """When git binary is not found, fall back to empty string."""
         import scripts.evaluate_quality_harness as mod
 
-        original_subprocess = mod.subprocess
+        original_run = mod.subprocess.run
 
         def fake_run_raises(*a, **k):
             raise OSError("No such file")
@@ -421,7 +421,7 @@ class TestResolveGatewayCommit:
         try:
             assert _resolve_gateway_commit("") == ""
         finally:
-            mod.subprocess.run = original_subprocess.run
+            mod.subprocess.run = original_run
 
     def test_git_called_process_error_returns_empty_string(self) -> None:
         """When git command fails (e.g., not a repo), fall back to empty."""

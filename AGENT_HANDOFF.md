@@ -493,7 +493,7 @@ profile-over-plan retrieval).
 - `packages/capabilities/__init__.py` -- exports `ReviewCapability` and
   `REVIEW_PROFILE`; the docstring roster moved Review from "Future" to
   "Implemented (dormant)". No registration, no wiring.
-- `tests/capabilities/test_review.py` (new) -- 109 focused tests, reusing
+- `tests/capabilities/test_review.py` (new) -- 111 focused tests, reusing
   `tests/capabilities/assembly_probes.py` for the permutation and
   fresh-interpreter probes.
 - `docs/capabilities.md` -- new `## Review Capability` section, a
