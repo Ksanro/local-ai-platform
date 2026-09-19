@@ -140,9 +140,11 @@ Use focused gates for live-path work:
 .\uv.exe run python -m mypy packages\providers packages\pipeline apps\gateway
 ```
 
-The full repository still contains dormant packages with known failures and
-lint debt. Do not use a green full-repo run as the definition of live-path
-correctness until CI is realigned.
+The local pre-commit hook enforces the live-path pytest gate
+(`scripts/precommit_test_gate.sh`). The full repository still contains
+dormant packages with known failures and lint debt, so a green full-repo
+run is not the definition of live-path correctness. The full-suite
+baseline is opt-in and documented in `TESTING.md` ("Pre-commit hook").
 
 ## Documentation
 
