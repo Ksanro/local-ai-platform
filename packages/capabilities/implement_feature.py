@@ -1,19 +1,23 @@
-"""Debug Capability v1.
+"""ImplementFeature Capability v1.
 
-Orchestrates the platform components to diagnose code issues.
+Orchestrates the platform components that gather the repository context
+needed to implement a new feature across an existing request path.
+
+The capability is dormant: it is exported for direct use but is not wired
+into the live gateway pipeline.
 
 Architecture
 ------------
 
 User Query
     ↓
-ContextPlanner (intent=DEBUG)
+ContextPlanner (intent_override="IMPLEMENT")
     ↓
 RepositoryIndex.find()
     ↓
-ContextBuilder (depth=2, diagnostics=True)
+ContextBuilder (maximum_depth=2, relationship_expansion=True)
     ↓
-ContextPackage assembly
+ContextPackage assembly (primary + supporting symbols, related modules)
     ↓
 Serializer
     ↓
@@ -25,28 +29,42 @@ No ranking, no AST inspection, no filesystem access, no provider calls.
 Retrieval Profile
 -----------------
 
-Debug expands the retrieval scope beyond Explain:
+ImplementFeature maximizes cross-layer context for new functionality:
 
-| Option              | Value |
-|---------------------|-------|
-| include_callers     | true  |
-| include_callees     | true  |
-| include_diagnostics | true  |
-| include_dependencies| true  |
-| relationship_depth  | 2     |
-| include_dead_code   | false |
-| include_tests       | true  |
+| Option                | Value |
+|-----------------------|-------|
+| include_callers       | true  |
+| include_callees       | true  |
+| include_dependencies  | true  |
+| include_dependents    | true  |
+| include_tests         | true  |
+| include_dead_code     | false |
+| include_diagnostics   | true  |
+| relationship_depth    | 2     |
+| max_context_tokens    | 4096  |
+
+Only ``relationship_depth``, ``max_context_tokens`` and the caller/callee
+pair (which decides ``relationship_expansion``) reach ``ContextQuery``. The
+current ``ContextQuery`` API has no ``include_tests``,
+``include_dependencies``, ``include_dependents`` or ``include_diagnostics``
+fields, so those flags stay declarative profile intent and are not forwarded
+to the context builder. ``include_dead_code`` is likewise declarative.
+
+The candidate ceiling is not derived from the profile or the plan either:
+``ContextQuery`` keeps its own default (20 symbols) because
+``ContextPlan.maximum_depth`` measures relationship traversal depth, not the
+number of candidates.
 
 Public API
 ----------
 
 .. code-block:: python
 
-    from packages.capabilities.debug import DebugCapability
+    from packages.capabilities.implement_feature import ImplementFeatureCapability
 
-    engine = DebugCapability()
+    engine = ImplementFeatureCapability()
     result = engine.execute(
-        query="Why is auth failing?",
+        query="Implement feature X across the gateway pipeline",
         repository_index=index,
     )
 
@@ -63,9 +81,10 @@ The capability must not
 - mutate RepositoryIndex
 - mutate ContextPackage
 - parse Python
-- calculate impact
-- rank symbols
+- generate code
+- modify source code
 - perform graph traversal
+- compute dependencies
 
 Only orchestration.
 """
@@ -76,7 +95,7 @@ import time
 
 from packages.capabilities.base import Capability, PlannerIntent
 from packages.capabilities.models import CapabilityResult
-from packages.capabilities.profiles import DEBUG_PROFILE, RetrievalProfile
+from packages.capabilities.profiles import IMPLEMENT_PROFILE, RetrievalProfile
 from packages.context.context_package import ContextPackage
 from packages.context.context_package import RelationshipSummary as RelationshipSummaryPub
 from packages.context.models import ContextCandidate, ContextQuery, ContextResult
@@ -87,8 +106,8 @@ from packages.serializers.models import ProviderRequest
 from packages.serializers.types import ProviderType
 
 
-class DebugCapability(Capability):
-    """Orchestrates the debug capability pipeline.
+class ImplementFeatureCapability(Capability):
+    """Orchestrates the implement-feature capability pipeline.
 
     Attributes:
         None — the capability is stateless.
@@ -101,32 +120,32 @@ class DebugCapability(Capability):
         Returns:
             The capability name string.
         """
-        return "debug"
+        return "implement-feature"
 
     @property
     def intent(self) -> PlannerIntent:
         """Planner intent for this capability.
 
         Returns:
-            PlannerIntent.DEBUG.
+            PlannerIntent.IMPLEMENT.
         """
-        return PlannerIntent.DEBUG
+        return PlannerIntent.IMPLEMENT
 
     @property
     def profile(self) -> RetrievalProfile:
         """Retrieval profile for this capability.
 
         Returns:
-            The DEBUG_PROFILE singleton.
+            The IMPLEMENT_PROFILE singleton.
         """
-        return DEBUG_PROFILE
+        return IMPLEMENT_PROFILE
 
     def execute(
         self,
         query: str,
         repository_index: RepositoryIndex,
     ) -> CapabilityResult:
-        """Execute the debug capability pipeline.
+        """Execute the implement-feature capability pipeline.
 
         Orchestrates exactly this pipeline:
 
@@ -149,10 +168,14 @@ class DebugCapability(Capability):
         selected_symbols = self._stage_repository_search(query, repository_index)
 
         # Stage 3: Build context.
-        context_result = self._stage_context_building(query, context_plan, repository_index)
+        context_result = self._stage_context_building(
+            query, context_plan, repository_index
+        )
 
         # Stage 4: Assemble context package.
-        context_package = self._stage_assemble_package(context_result, repository_index)
+        context_package = self._stage_assemble_package(
+            context_result, repository_index
+        )
 
         # Stage 5: Serialize to provider request.
         provider_request = self._stage_serialization(context_package, query)
@@ -184,6 +207,10 @@ class DebugCapability(Capability):
     ) -> ContextPlan:
         """Stage 1: Invoke the context planner.
 
+        The capability pins the planner intent with ``intent_override`` so an
+        ambiguous or debug-like query can never steer the pipeline into an
+        ``EXPLAIN``/``DEBUG``/``SEARCH`` plan.
+
         Args:
             query: The user query.
             repository_index: The repository index.
@@ -197,6 +224,7 @@ class DebugCapability(Capability):
         plan = planner.build(
             user_messages=[query],
             repository_index=repository_index,
+            intent_override=self.intent.value,
         )
         return plan
 
@@ -226,11 +254,22 @@ class DebugCapability(Capability):
     ) -> ContextResult:
         """Stage 3: Build context from the plan.
 
-        Debug uses a deeper relationship depth and includes diagnostics.
+        ImplementFeature derives its token budget and relationship depth
+        from ``IMPLEMENT_PROFILE``: features normally span several layers
+        of an existing request path, so callers and callees are expanded to
+        depth 2 while dead code stays out of the package.
+
+        ``ContextPlan.maximum_depth`` is relationship traversal depth, not a
+        candidate-count limit, so it is never reused as ``max_symbols``. The
+        candidate ceiling stays at the established ``ContextQuery`` default,
+        which keeps a multi-candidate package possible for an ``IMPLEMENT``
+        plan whose rule-supplied traversal depth is ``1``.
 
         Args:
             query: The user query.
-            context_plan: The planning result.
+            context_plan: The planning result. Accepted for pipeline
+                symmetry; the intent it carries is already pinned by
+                ``_stage_planning``.
             repository_index: The repository index.
 
         Returns:
@@ -238,14 +277,20 @@ class DebugCapability(Capability):
         """
         from packages.context.builder import ContextBuilder
 
-        # Build a ContextQuery from the ContextPlan with DEBUG-specific settings.
+        profile = self.profile
+
+        # Build a ContextQuery from the retrieval profile.
+        #
+        # The profile owns the token budget and the relationship traversal
+        # depth. The candidate ceiling is not passed at all, so it stays at
+        # the ContextQuery default (ContextQuery.max_symbols == 20) instead
+        # of being mistaken for ContextPlan.maximum_depth.
         context_query = ContextQuery(
             text=query,
-            max_symbols=context_plan.maximum_depth if context_plan.maximum_depth > 0 else 20,
             max_modules=10,
-            max_tokens=4096,
-            maximum_depth=context_plan.maximum_depth,
-            relationship_expansion=context_plan.relationship_expansion,
+            max_tokens=profile.max_context_tokens,
+            maximum_depth=profile.relationship_depth,
+            relationship_expansion=profile.include_callers or profile.include_callees,
         )
 
         builder = ContextBuilder(index=repository_index)
@@ -277,7 +322,9 @@ class DebugCapability(Capability):
         supporting_candidates: list[ContextCandidate] = []
 
         if candidates:
+            # Primary is the highest-scoring candidate.
             primary_candidate = candidates[0]
+            # Supporting candidates are the remaining ones.
             supporting_candidates = list(candidates[1:])
 
         # Extract primary symbol qualified name.
@@ -305,18 +352,18 @@ class DebugCapability(Capability):
         related_callees: list[str] = []
 
         # Collect related modules from every ranked candidate.
-        all_symbols_set: set[str] = set()
+        all_modules_set: set[str] = set()
         for candidate in candidates:
-            all_symbols_set.add(candidate.module)
+            all_modules_set.add(candidate.module)
 
-        related_modules: list[str] = sorted(all_symbols_set)
+        related_modules: list[str] = sorted(all_modules_set)
 
         # Build relationship summary.
         all_symbol_names: set[str] = set()
         if primary_candidate is not None:
             all_symbol_names.add(primary_candidate.qualified_name)
-        for s in supporting_symbols:
-            all_symbol_names.add(s)
+        for symbol_name in supporting_symbols:
+            all_symbol_names.add(symbol_name)
 
         relationship_summary = RelationshipSummaryPub(
             caller_count=len(related_callers),

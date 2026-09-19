@@ -3,6 +3,9 @@
 Maintains a global mapping of provider types to serializer classes.
 Serializers are registered automatically when their module is imported
 (e.g. ``packages.serializers.openai`` registers ``"openai"`` at import time).
+The ``packages.serializers`` package imports the built-in serializer modules, so
+reaching this layer through ``SerializerFactory`` already leaves them
+registered; this module itself never imports a serializer.
 
 Architecture
 ------------

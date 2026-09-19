@@ -59,8 +59,7 @@ from packages.capabilities.profiles import (
     RetrievalProfile,
 )
 from packages.context.context_package import ContextPackage
-from packages.context.context_package import RelationshipSummary as RelationshipSummaryPub
-from packages.context.models import ContextCandidate, ContextQuery, ContextResult
+from packages.context.models import ContextQuery, ContextResult
 from packages.planning.plan import ContextPlan
 from packages.repository.index.models import RepositoryIndex
 from packages.serializers.models import ProviderRequest
@@ -270,78 +269,23 @@ class ArchitectureReviewCapability(Capability):
                 seen_symbols.add(qname)
                 supporting_symbols.append(qname)
 
-        # Collect related callers and callees from the primary symbol's
-        # module.
+        # Relationship fields stay empty: ContextResult publishes ranked
+        # candidates, not verified CALLS edges. Neither candidate order nor
+        # same-module membership establishes that one symbol calls another, so
+        # this capability publishes no caller/callee claim at all.
         related_callers: list[str] = []
         related_callees: list[str] = []
 
-        module = primary_candidate.module
-        module_symbols: list[ContextCandidate] = [
-            c for c in candidates if c.module == module
-        ]
-        for candidate in supporting_candidates:
-            if candidate.module == module:
-                qname = candidate.qualified_name
-                if qname not in seen_symbols:
-                    module_symbols.append(candidate)
-
-        primary_index = -1
-        for i, sym in enumerate(module_symbols):
-            if sym.qualified_name == primary_symbol_name:
-                primary_index = i
-                break
-
-        if primary_index >= 0:
-            callers_set: set[str] = set()
-            for i in range(0, primary_index):
-                qname = module_symbols[i].qualified_name
-                if qname not in callers_set and qname != primary_symbol_name:
-                    callers_set.add(qname)
-                    related_callers.append(qname)
-
-            callees_set: set[str] = set()
-            for i in range(primary_index + 1, len(module_symbols)):
-                qname = module_symbols[i].qualified_name
-                if qname not in callees_set and qname != primary_symbol_name:
-                    callees_set.add(qname)
-                    related_callees.append(qname)
-
-        # Sort callers and callees alphabetically.
-        related_callers.sort()
-        related_callees.sort()
-
-        # Collect related modules.
-        all_symbols_set: set[str] = {module}
-        for candidate in supporting_candidates:
+        # Collect related modules from every ranked candidate.
+        all_symbols_set: set[str] = set()
+        for candidate in candidates:
             all_symbols_set.add(candidate.module)
-        for caller in related_callers:
-            for candidate in candidates:
-                if candidate.qualified_name == caller:
-                    all_symbols_set.add(candidate.module)
-                    break
-            else:
-                for candidate in supporting_candidates:
-                    if candidate.qualified_name == caller:
-                        all_symbols_set.add(candidate.module)
-                        break
-        for callee in related_callees:
-            for candidate in candidates:
-                if candidate.qualified_name == callee:
-                    all_symbols_set.add(candidate.module)
-                    break
-            else:
-                for candidate in supporting_candidates:
-                    if candidate.qualified_name == callee:
-                        all_symbols_set.add(candidate.module)
-                        break
 
         related_modules: list[str] = sorted(all_symbols_set)
 
         # Build relationship summary.
         all_symbol_names: set[str] = {primary_symbol_name}
         all_symbol_names.update(supporting_symbols)
-        all_symbol_names.update(related_callers)
-        all_symbol_names.update(related_callees)
 
         from packages.context.context_package import (
             ContextMetadata,

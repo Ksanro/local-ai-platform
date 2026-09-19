@@ -11,6 +11,7 @@ Verifies:
 
 from __future__ import annotations
 
+from itertools import permutations
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -26,6 +27,10 @@ from packages.repository.index.models import (
 )
 from packages.serializers.models import ProviderRequest
 from packages.serializers.types import ProviderType
+from tests.capabilities.assembly_probes import (
+    assert_relationship_honesty,
+    candidate,
+)
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -561,3 +566,67 @@ class TestImmutableResult:
 def capability() -> ArchitectureReviewCapability:
     """Create an ArchitectureReviewCapability instance."""
     return ArchitectureReviewCapability()
+
+
+# ---------------------------------------------------------------------------
+# Test: Relationship honesty
+# ---------------------------------------------------------------------------
+
+
+class TestRelationshipHonesty:
+    """Assembly publishes candidates, never invented call edges."""
+
+    def test_same_module_order_never_becomes_a_call_edge(
+        self, capability: ArchitectureReviewCapability
+    ) -> None:
+        base = [
+            candidate("pkg.mod.func_a", "pkg/mod.py", 120),
+            candidate("pkg.mod.func_b", "pkg/mod.py", 90),
+            candidate("pkg.mod.func_c", "pkg/mod.py", 60),
+        ]
+
+        for order in permutations(base):
+            assert_relationship_honesty(capability, list(order))
+
+    def test_cross_module_candidates_stay_symbols_and_modules(
+        self, capability: ArchitectureReviewCapability
+    ) -> None:
+        package = assert_relationship_honesty(
+            capability,
+            [
+                candidate("pkg.mod.func_a", "pkg/mod_a.py", 120),
+                candidate("pkg.mod.func_b", "pkg/mod_b.py", 90),
+                candidate("pkg.mod.func_c", "pkg/mod_a.py", 60),
+            ],
+        )
+
+        assert package.supporting_symbols == ["pkg.mod.func_b", "pkg.mod.func_c"]
+        assert package.related_modules == ["pkg/mod_a.py", "pkg/mod_b.py"]
+
+    def test_duplicate_symbols_and_modules_are_deduplicated(
+        self, capability: ArchitectureReviewCapability
+    ) -> None:
+        package = assert_relationship_honesty(
+            capability,
+            [
+                candidate("pkg.mod.func_a", "pkg/mod_a.py", 120),
+                candidate("pkg.mod.func_b", "pkg/mod_b.py", 90),
+                candidate("pkg.mod.func_b", "pkg/mod_b.py", 80),
+                candidate("pkg.mod.func_a", "pkg/mod_a.py", 70),
+            ],
+        )
+
+        assert package.supporting_symbols == ["pkg.mod.func_b"]
+        assert package.relationship_summary.symbol_count == 2
+
+    def test_assembly_is_deterministic(self, capability: ArchitectureReviewCapability) -> None:
+        base = [
+            candidate("pkg.mod.func_a", "pkg/mod_a.py", 120),
+            candidate("pkg.mod.func_b", "pkg/mod_b.py", 90),
+            candidate("pkg.mod.func_c", "pkg/mod.py", 60),
+        ]
+
+        first = assert_relationship_honesty(capability, base)
+        second = assert_relationship_honesty(capability, base)
+
+        assert first == second

@@ -16,6 +16,7 @@ Verifies:
 
 from __future__ import annotations
 
+from itertools import permutations
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -40,6 +41,10 @@ from packages.repository.index.models import (
 )
 from packages.serializers.models import ProviderRequest
 from packages.serializers.types import ProviderType
+from tests.capabilities.assembly_probes import (
+    assert_relationship_honesty,
+    candidate,
+)
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -445,16 +450,16 @@ class TestCallersRequested:
                             _make_index(),
                         )
 
-        # func_a is primary, func_b and func_c are after it in the list
-        # so they become callees (after primary), callers is empty
-        # because func_a is at index 0.
+        # func_a is primary because it ranks first; func_b and func_c
+        # share its module and rank below it, which makes them
+        # supporting symbols, never callees.
         assert isinstance(package, ContextPackage)
         # The package should have the primary symbol set
         assert package.primary_symbol == "pkg.mod.func_a"
-        # func_b and func_c come after func_a in the candidate list
-        # so they are callees
-        assert "pkg.mod.func_b" in package.related_callees
-        assert "pkg.mod.func_c" in package.related_callees
+        # Rank order and a shared module are retrieval facts, so both
+        # relationship lists stay empty.
+        assert "pkg.mod.func_b" in package.supporting_symbols
+        assert "pkg.mod.func_c" in package.supporting_symbols
 
 
 # ---------------------------------------------------------------------------
@@ -476,7 +481,7 @@ class TestCalleesRequested:
         self,
         capability: DebugCapability,
     ) -> None:
-        """ContextPackage should contain related_callees for debug."""
+        """ContextPackage must not turn ranked neighbours into callees."""
         candidates = [
             ContextCandidate(
                 symbol_id="pkg.mod.func_a",
@@ -530,7 +535,7 @@ class TestCalleesRequested:
                             _make_index(),
                         )
 
-        assert "pkg.mod.func_b" in package.related_callees
+        assert "pkg.mod.func_b" in package.supporting_symbols
 
 
 # ---------------------------------------------------------------------------
@@ -603,16 +608,16 @@ class TestAssemblePackageEdgeCases:
         assert package.related_callers == []
         assert package.related_callees == []
 
-    def test_callers_when_primary_not_first(
+    def test_primary_is_always_the_first_candidate(
         self,
         capability: DebugCapability,
     ) -> None:
-        """When primary (candidates[0]) is not first in module_symbols,
-        symbols before it in module_symbols are callers."""
-        # func_b is at index 0 (primary), func_a is at index 1, func_c at index 2.
-        # All same module. module_symbols = [func_b, func_a, func_c]
-        # primary_index = 0 (func_b), so no callers (nothing before index 0).
-        # Callees = func_a, func_c (after index 0).
+        """The primary is the first candidate, so position inside a
+        module group never produces callers or callees."""
+        # func_b ranks first; func_a and func_c follow it in the same module.
+        # Sharing pkg/mod.py is a module fact, not a call edge, so nothing
+        # is derived from that ordering: both relationship lists stay empty
+        # and the two neighbours stay supporting symbols.
         candidates = [
             ContextCandidate(
                 symbol_id="pkg.mod.func_b",
@@ -650,20 +655,21 @@ class TestAssemblePackageEdgeCases:
             _make_index(),
         )
 
-        # func_b is primary (candidates[0]), func_a and func_c are callees
+        # func_b is primary (candidates[0]); func_a and func_c are
+        # callees: rank and module are retrieval facts, not call edges.
         assert package.primary_symbol == "pkg.mod.func_b"
-        assert "pkg.mod.func_a" in package.related_callees
-        assert "pkg.mod.func_c" in package.related_callees
+        assert "pkg.mod.func_a" in package.supporting_symbols
+        assert "pkg.mod.func_c" in package.supporting_symbols
 
-    def test_callers_exist_when_primary_in_middle(
+    def test_primary_in_the_middle_of_a_module_publishes_no_edges(
         self,
         capability: DebugCapability,
     ) -> None:
-        """When primary is in the middle of module_symbols, symbols before it are callers."""
-        # Put a different-module candidate first, then func_a, then func_c.
-        # module_symbols (same-module only) = [func_a, func_c]
-        # primary_index = 0, so no callers.
-        # To get callers, we need a same-module candidate BEFORE func_a.
+        """A primary ranked in the middle of a module publishes no edges."""
+        # Every candidate here lives in pkg/mod.py and func_a ranks first.
+        # func_c and func_b rank below it and stay supporting symbols;
+        # neither relationship list gains anything from that.
+        # Neither rank nor module membership would add a call edge here.
         candidates = [
             ContextCandidate(
                 symbol_id="pkg.mod.func_a",
@@ -701,21 +707,22 @@ class TestAssemblePackageEdgeCases:
             _make_index(),
         )
 
-        # func_a is primary (candidates[0]), func_c and func_b are callees
+        # func_a is primary (candidates[0]); func_c and func_b are not
+        # callees either: rank and module are retrieval facts, not edges.
         assert package.primary_symbol == "pkg.mod.func_a"
-        assert "pkg.mod.func_c" in package.related_callees
-        assert "pkg.mod.func_b" in package.related_callees
+        assert "pkg.mod.func_c" in package.supporting_symbols
+        assert "pkg.mod.func_b" in package.supporting_symbols
         assert package.related_callers == []
 
-    def test_multiple_modules_in_callers(
+    def test_multiple_modules_stay_supporting_symbols_and_modules(
         self,
         capability: DebugCapability,
     ) -> None:
-        """Callers from different modules should all be collected."""
-        # func_x (mod_a) is primary, func_y (mod_b) is supporting,
-        # func_a (mod_a) is supporting.
+        """Candidates from different modules stay symbols and modules."""
+        # func_x (mod_a) is primary; func_y (mod_b) and func_a (mod_a)
+        # are supporting symbols in their own modules.
         # module_symbols (same-module as primary=mod_a) = [func_x, func_a]
-        # primary_index = 0, so no callers.
+        # neither relationship list gains anything from that.
         # Callees: func_a (same module, after primary).
         # For callees from different modules, we need func_y after primary in module_symbols.
         # But func_y is in mod_b, not mod_a, so it won't be in module_symbols.
@@ -763,10 +770,11 @@ class TestAssemblePackageEdgeCases:
             _make_index(),
         )
 
-        # func_x is primary, func_a is callee (same module, after primary)
+        # func_x is primary; func_a shares its module and ranks after it,
+        # so it stays a supporting symbol, not a callee.
         assert package.primary_symbol == "pkg.mod_a.func_x"
-        assert "pkg.mod_a.func_a" in package.related_callees
-        # func_y is a supporting symbol but not a callee (different module)
+        assert "pkg.mod_a.func_a" in package.supporting_symbols
+        # func_y is a supporting symbol from a different module
         assert "pkg.mod_b.func_y" in package.supporting_symbols
         # related_modules should include both modules
         assert "pkg/mod_a.py" in package.related_modules
@@ -1767,3 +1775,67 @@ class TestRepeatedExecutionIdentical:
             assert result.selected_symbols == ()
             assert result.selected_modules == ("packages/providers/factory.py",)
             assert result.estimated_tokens == 256
+
+
+# ---------------------------------------------------------------------------
+# Test: Relationship honesty
+# ---------------------------------------------------------------------------
+
+
+class TestRelationshipHonesty:
+    """Assembly publishes candidates, never invented call edges."""
+
+    def test_same_module_order_never_becomes_a_call_edge(
+        self, capability: DebugCapability
+    ) -> None:
+        base = [
+            candidate("pkg.mod.func_a", "pkg/mod.py", 120),
+            candidate("pkg.mod.func_b", "pkg/mod.py", 90),
+            candidate("pkg.mod.func_c", "pkg/mod.py", 60),
+        ]
+
+        for order in permutations(base):
+            assert_relationship_honesty(capability, list(order))
+
+    def test_cross_module_candidates_stay_symbols_and_modules(
+        self, capability: DebugCapability
+    ) -> None:
+        package = assert_relationship_honesty(
+            capability,
+            [
+                candidate("pkg.mod.func_a", "pkg/mod_a.py", 120),
+                candidate("pkg.mod.func_b", "pkg/mod_b.py", 90),
+                candidate("pkg.mod.func_c", "pkg/mod_a.py", 60),
+            ],
+        )
+
+        assert package.supporting_symbols == ["pkg.mod.func_b", "pkg.mod.func_c"]
+        assert package.related_modules == ["pkg/mod_a.py", "pkg/mod_b.py"]
+
+    def test_duplicate_symbols_and_modules_are_deduplicated(
+        self, capability: DebugCapability
+    ) -> None:
+        package = assert_relationship_honesty(
+            capability,
+            [
+                candidate("pkg.mod.func_a", "pkg/mod_a.py", 120),
+                candidate("pkg.mod.func_b", "pkg/mod_b.py", 90),
+                candidate("pkg.mod.func_b", "pkg/mod_b.py", 80),
+                candidate("pkg.mod.func_a", "pkg/mod_a.py", 70),
+            ],
+        )
+
+        assert package.supporting_symbols == ["pkg.mod.func_b"]
+        assert package.relationship_summary.symbol_count == 2
+
+    def test_assembly_is_deterministic(self, capability: DebugCapability) -> None:
+        base = [
+            candidate("pkg.mod.func_a", "pkg/mod_a.py", 120),
+            candidate("pkg.mod.func_b", "pkg/mod_b.py", 90),
+            candidate("pkg.mod.func_c", "pkg/mod.py", 60),
+        ]
+
+        first = assert_relationship_honesty(capability, base)
+        second = assert_relationship_honesty(capability, base)
+
+        assert first == second

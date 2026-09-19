@@ -38,29 +38,45 @@ Capability Framework v1
 - **CapabilityFactory** – creates capability instances through the registry.
 - **PlannerIntent** – intent enum mapping capabilities to planner modes.
 
+Implemented capabilities
+------------------------
+
+- Explain
+- Debug
+- Refactor
+- Implement Feature (dormant — exported for direct use, not wired into the
+  live gateway pipeline)
+- Generate Tests (dormant — exported for direct use, not wired into the live
+  gateway pipeline)
+- Review (dormant — exported for direct use, not wired into the live gateway
+  pipeline; assembles review context, it does not author review findings)
+
 Future capabilities
 -------------------
 
-- Debug
-- Implement Feature
-- Refactor
-- Review
-- Generate Tests
+Capabilities are additive: one class, one profile, one export. See
+``docs/capabilities.md`` for the roster and the wiring rules.
 """
 
 from packages.capabilities.base import Capability, PlannerIntent
 from packages.capabilities.debug import DebugCapability
 from packages.capabilities.explain import ExplainCapability
 from packages.capabilities.factory import CapabilityFactory
+from packages.capabilities.generate_tests import GenerateTestsCapability
+from packages.capabilities.implement_feature import ImplementFeatureCapability
 from packages.capabilities.profiles import (
     ARCHITECTURE_REVIEW_PROFILE,
     DEBUG_PROFILE,
     EXPLAIN_PROFILE,
+    GENERATE_TESTS_PROFILE,
+    IMPLEMENT_PROFILE,
     REFACTOR_PROFILE,
+    REVIEW_PROFILE,
     RetrievalProfile,
 )
 from packages.capabilities.refactor import RefactorCapability
 from packages.capabilities.registry import CapabilityRegistry
+from packages.capabilities.review import ReviewCapability
 
 __all__ = [
     "Capability",
@@ -68,11 +84,17 @@ __all__ = [
     "CapabilityRegistry",
     "DebugCapability",
     "ExplainCapability",
+    "GenerateTestsCapability",
+    "ImplementFeatureCapability",
     "PlannerIntent",
     "RefactorCapability",
+    "ReviewCapability",
     "DEBUG_PROFILE",
     "EXPLAIN_PROFILE",
+    "GENERATE_TESTS_PROFILE",
+    "IMPLEMENT_PROFILE",
     "REFACTOR_PROFILE",
     "ARCHITECTURE_REVIEW_PROFILE",
+    "REVIEW_PROFILE",
     "RetrievalProfile",
 ]

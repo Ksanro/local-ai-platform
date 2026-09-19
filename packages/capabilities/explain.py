@@ -274,74 +274,17 @@ class ExplainCapability(Capability):
                 seen_symbols.add(qname)
                 supporting_symbols.append(qname)
 
-        # Collect related callers and callees from the primary symbol's
-        # module.
+        # Relationship fields stay empty: ContextResult publishes ranked
+        # candidates, not verified CALLS edges. Neither candidate order nor
+        # same-module membership establishes that one symbol calls another, so
+        # this capability publishes no caller/callee claim at all.
         related_callers: list[str] = []
         related_callees: list[str] = []
 
-        if primary_candidate is not None:
-            module = primary_candidate.module
-            module_symbols: list[ContextCandidate] = []
-            for candidate in candidates:
-                if candidate.module == module:
-                    module_symbols.append(candidate)
-            for candidate in supporting_candidates:
-                if candidate.module == module:
-                    qname = candidate.qualified_name
-                    if qname not in seen_symbols:
-                        module_symbols.append(candidate)
-
-            primary_index = -1
-            for i, sym in enumerate(module_symbols):
-                if sym.qualified_name == primary_symbol_name:
-                    primary_index = i
-                    break
-
-            if primary_index >= 0:
-                callers_set: set[str] = set()
-                for i in range(0, primary_index):
-                    qname = module_symbols[i].qualified_name
-                    if qname not in callers_set and qname != primary_symbol_name:
-                        callers_set.add(qname)
-                        related_callers.append(qname)
-
-                callees_set: set[str] = set()
-                for i in range(primary_index + 1, len(module_symbols)):
-                    qname = module_symbols[i].qualified_name
-                    if qname not in callees_set and qname != primary_symbol_name:
-                        callees_set.add(qname)
-                        related_callees.append(qname)
-
-        # Sort callers and callees alphabetically.
-        related_callers.sort()
-        related_callees.sort()
-
-        # Collect related modules.
+        # Collect related modules from every ranked candidate.
         all_symbols_set: set[str] = set()
-        if primary_candidate is not None:
-            all_symbols_set.add(primary_candidate.module)
-        for candidate in supporting_candidates:
+        for candidate in candidates:
             all_symbols_set.add(candidate.module)
-        for caller in related_callers:
-            for candidate in candidates:
-                if candidate.qualified_name == caller:
-                    all_symbols_set.add(candidate.module)
-                    break
-            else:
-                for candidate in supporting_candidates:
-                    if candidate.qualified_name == caller:
-                        all_symbols_set.add(candidate.module)
-                        break
-        for callee in related_callees:
-            for candidate in candidates:
-                if candidate.qualified_name == callee:
-                    all_symbols_set.add(candidate.module)
-                    break
-            else:
-                for candidate in supporting_candidates:
-                    if candidate.qualified_name == callee:
-                        all_symbols_set.add(candidate.module)
-                        break
 
         related_modules: list[str] = sorted(all_symbols_set)
 
@@ -350,10 +293,6 @@ class ExplainCapability(Capability):
         if primary_candidate is not None:
             all_symbol_names.add(primary_candidate.qualified_name)
         for s in supporting_symbols:
-            all_symbol_names.add(s)
-        for s in related_callers:
-            all_symbol_names.add(s)
-        for s in related_callees:
             all_symbol_names.add(s)
 
         relationship_summary = RelationshipSummaryPub(

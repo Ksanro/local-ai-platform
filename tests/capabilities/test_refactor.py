@@ -18,6 +18,7 @@ Coverage target: >95%
 
 from __future__ import annotations
 
+from itertools import permutations
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -43,6 +44,10 @@ from packages.repository.index.models import (
 )
 from packages.serializers.models import ProviderRequest
 from packages.serializers.types import ProviderType
+from tests.capabilities.assembly_probes import (
+    assert_relationship_honesty,
+    candidate,
+)
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -1098,7 +1103,7 @@ class TestRefactorStages:
     def test_stage_assemble_package_with_caller_callee_modules(
         self, capability: RefactorCapability
     ) -> None:
-        """Include modules for callers and callees in related_modules."""
+        """Every candidate module lands in related_modules."""
         ctx_result = ContextResult(
             candidates=[
                 ContextCandidate(
@@ -1244,7 +1249,7 @@ class TestRefactorStages:
     def test_stage_assemble_package_caller_modules_not_in_candidates(
         self, capability: RefactorCapability
     ) -> None:
-        """_stage_assemble_package should include modules for callers not in main candidates."""
+        """_stage_assemble_package includes every candidate module."""
         # supporting_candidates is a local variable (candidates[1:]), not a
         # ContextResult field. This covers lines 345-346 (supporting iteration).
         ctx_result = ContextResult(
@@ -1275,8 +1280,8 @@ class TestRefactorStages:
     def test_stage_assemble_package_callee_modules_not_in_candidates(
         self, capability: RefactorCapability
     ) -> None:
-        """_stage_assemble_package should include modules for callees not in main candidates."""
-        # This covers lines 358-361 where callees are looked up via _qname_to_candidate.
+        """_stage_assemble_package collects modules straight from candidates."""
+        # related_modules comes from the candidate list itself, not a lookup
         ctx_result = ContextResult(
             candidates=[
                 ContextCandidate(
@@ -1359,7 +1364,7 @@ class TestRefactorStages:
     ) -> None:
         """_stage_assemble_package primary is the highest-scoring candidate."""
         # The primary is the first candidate (highest score).
-        # All others after it in the module are callees.
+        # All others after it in the module are supporting symbols.
         ctx_result = ContextResult(
             candidates=[
                 ContextCandidate(
@@ -1387,17 +1392,20 @@ class TestRefactorStages:
 
         result = capability._stage_assemble_package(ctx_result, MagicMock())
 
-        # ClassA is primary (first/highest score), ClassB and ClassC are callees
+        # ClassA is primary because it ranks first; the others are supporting
+        # symbols, not callees.
         assert result.primary_symbol == "pkg.mod.ClassA"
-        assert "pkg.mod.ClassB" in result.related_callees
-        assert "pkg.mod.ClassC" in result.related_callees
-        assert result.related_callers == []  # Nothing before primary
+        assert "pkg.mod.ClassB" in result.supporting_symbols
+        assert "pkg.mod.ClassC" in result.supporting_symbols
+        # Rank order and a shared module are not CALLS edges.
+        assert result.related_callers == []
+        assert result.related_callees == []
 
     def test_stage_assemble_package_primary_is_first_candidate(
         self, capability: RefactorCapability
     ) -> None:
         """_stage_assemble_package primary is always candidates[0]; remaining
-        same-module candidates become callees."""
+        same-module candidates stay supporting symbols."""
         # The primary is always the first candidate (highest score).
         # Everything after it in the same module becomes a callee.
         ctx_result = ContextResult(
@@ -1428,14 +1436,16 @@ class TestRefactorStages:
         result = capability._stage_assemble_package(ctx_result, MagicMock())
 
         assert result.primary_symbol == "pkg.mod.ClassA"
-        assert result.related_callers == []  # primary is first, no callers
-        assert "pkg.mod.ClassB" in result.related_callees
-        assert "pkg.mod.ClassC" in result.related_callees
+        # Rank order and a shared module are not CALLS edges.
+        assert result.related_callers == []
+        assert result.related_callees == []
+        assert "pkg.mod.ClassB" in result.supporting_symbols
+        assert "pkg.mod.ClassC" in result.supporting_symbols
 
     def test_stage_assemble_package_with_caller_in_supporting_candidates(
         self, capability: RefactorCapability
     ) -> None:
-        """_stage_assemble_package should find callers in supporting_candidates."""
+        """_stage_assemble_package keeps supporting candidates out of both lists."""
         # supporting_candidates is a local variable (candidates[1:]).
         # This covers lines 345-346 (supporting iteration for modules).
         ctx_result = ContextResult(
@@ -1460,7 +1470,7 @@ class TestRefactorStages:
     def test_stage_assemble_package_with_callee_in_supporting_candidates(
         self, capability: RefactorCapability
     ) -> None:
-        """_stage_assemble_package should find callees in supporting_candidates."""
+        """_stage_assemble_package keeps supporting candidates out of both lists."""
         # supporting_candidates is a local variable (candidates[1:]).
         # This covers lines 358-361 (callee module lookup).
         ctx_result = ContextResult(
@@ -1541,12 +1551,12 @@ class TestRefactorStages:
         assert isinstance(result, ContextPackage)
         assert "pkg.mod.ClassB" in result.supporting_symbols
 
-    def test_stage_assemble_package_callees_after_primary_in_module(
+    def test_stage_assemble_package_candidates_after_primary_stay_supporting(
         self, capability: RefactorCapability
     ) -> None:
-        """Cover lines 321-335: callees after primary in module_symbols."""
-        # Multiple candidates in the same module — primary is first,
-        # remaining are callees.
+        """Candidates ranked after the primary stay supporting symbols."""
+        # Multiple candidates in the same module: the first is primary
+        # and the rest are supporting symbols.
         ctx_result = ContextResult(
             candidates=[
                 ContextCandidate(
@@ -1575,14 +1585,14 @@ class TestRefactorStages:
         result = capability._stage_assemble_package(ctx_result, MagicMock())
 
         assert isinstance(result, ContextPackage)
-        # ClassB and ClassC should be callees (after ClassA)
-        assert "pkg.mod.ClassB" in result.related_callees
-        assert "pkg.mod.ClassC" in result.related_callees
+        # ClassB and ClassC rank after ClassA and stay supporting symbols
+        assert "pkg.mod.ClassB" in result.supporting_symbols
+        assert "pkg.mod.ClassC" in result.supporting_symbols
 
-    def test_stage_assemble_package_callers_in_supporting_candidates(
+    def test_stage_assemble_package_cross_modules_publish_no_relationships(
         self, capability: RefactorCapability
     ) -> None:
-        """Cover lines 345-346: callers looked up in supporting_candidates."""
+        """Candidates in different modules contribute modules, not edges."""
         # Multiple candidates in different modules — all modules should
         # be included in related_modules.
         ctx_result = ContextResult(
@@ -1618,10 +1628,10 @@ class TestRefactorStages:
         assert "pkg/mod_b.py" in result.related_modules
         assert "pkg/mod_c.py" in result.related_modules
 
-    def test_stage_assemble_package_callees_in_supporting_candidates(
+    def test_stage_assemble_package_supporting_candidates_publish_nothing(
         self, capability: RefactorCapability
     ) -> None:
-        """Cover lines 358-361: callees looked up in supporting_candidates."""
+        """Cross-module candidates never enter either relationship list."""
         ctx_result = ContextResult(
             candidates=[
                 ContextCandidate(
@@ -1647,10 +1657,10 @@ class TestRefactorStages:
         assert "pkg/mod_a.py" in result.related_modules
         assert "pkg/mod_b.py" in result.related_modules
 
-    def test_stage_assemble_package_all_symbol_names_includes_callers(
+    def test_stage_assemble_package_symbol_names_come_from_candidates(
         self, capability: RefactorCapability
     ) -> None:
-        """Cover line 371: related_callers added to all_symbol_names."""
+        """The symbol count comes from the candidate names only."""
         ctx_result = ContextResult(
             candidates=[
                 ContextCandidate(
@@ -1672,16 +1682,16 @@ class TestRefactorStages:
 
         result = capability._stage_assemble_package(ctx_result, MagicMock())
 
-        # The relationship_summary should include both primary and supporting
+        # The relationship_summary counts the primary and the supporting
         assert result.relationship_summary.symbol_count >= 2
 
-    def test_stage_assemble_package_collect_modules_from_callers_in_candidates(
+    def test_stage_assemble_package_publishes_every_candidate_module(
         self, capability: RefactorCapability
     ) -> None:
-        """Cover lines 345-346: caller module lookup in supporting_candidates."""
-        # Create a scenario where a caller (ClassB) is found in candidates.
-        # ClassA is primary, ClassB is after ClassA in the same module so
-        # it becomes a callee. This covers lines 358-361 (callee lookup).
+        """Every candidate module is published, and nothing else is."""
+        # Two candidates in two different modules. Both modules are
+        # published; neither ranking nor module membership produces a
+        # caller or a callee.
         ctx_result = ContextResult(
             candidates=[
                 ContextCandidate(
@@ -1707,11 +1717,11 @@ class TestRefactorStages:
         assert "pkg/mod_a.py" in result.related_modules
         assert "pkg/mod_b.py" in result.related_modules
 
-    def test_stage_assemble_package_collect_modules_from_callees_in_candidates(
+    def test_stage_assemble_package_module_list_never_becomes_a_relationship(
         self, capability: RefactorCapability
     ) -> None:
-        """Cover lines 358-361: callee module lookup in candidates."""
-        # Create a scenario where a callee is found in candidates.
+        """Module collection stays independent of any relationship."""
+        # Two candidates, two modules, and no relationship between them.
         ctx_result = ContextResult(
             candidates=[
                 ContextCandidate(
@@ -2140,3 +2150,67 @@ class TestCapabilityResultFields:
                             assert result.estimated_tokens == 256
                             assert isinstance(result.execution_time_ms, float)
                             assert result.execution_time_ms >= 0
+
+
+# ---------------------------------------------------------------------------
+# Test: Relationship honesty
+# ---------------------------------------------------------------------------
+
+
+class TestRelationshipHonesty:
+    """Assembly publishes candidates, never invented call edges."""
+
+    def test_same_module_order_never_becomes_a_call_edge(
+        self, capability: RefactorCapability
+    ) -> None:
+        base = [
+            candidate("pkg.mod.func_a", "pkg/mod.py", 120),
+            candidate("pkg.mod.func_b", "pkg/mod.py", 90),
+            candidate("pkg.mod.func_c", "pkg/mod.py", 60),
+        ]
+
+        for order in permutations(base):
+            assert_relationship_honesty(capability, list(order))
+
+    def test_cross_module_candidates_stay_symbols_and_modules(
+        self, capability: RefactorCapability
+    ) -> None:
+        package = assert_relationship_honesty(
+            capability,
+            [
+                candidate("pkg.mod.func_a", "pkg/mod_a.py", 120),
+                candidate("pkg.mod.func_b", "pkg/mod_b.py", 90),
+                candidate("pkg.mod.func_c", "pkg/mod_a.py", 60),
+            ],
+        )
+
+        assert package.supporting_symbols == ["pkg.mod.func_b", "pkg.mod.func_c"]
+        assert package.related_modules == ["pkg/mod_a.py", "pkg/mod_b.py"]
+
+    def test_duplicate_symbols_and_modules_are_deduplicated(
+        self, capability: RefactorCapability
+    ) -> None:
+        package = assert_relationship_honesty(
+            capability,
+            [
+                candidate("pkg.mod.func_a", "pkg/mod_a.py", 120),
+                candidate("pkg.mod.func_b", "pkg/mod_b.py", 90),
+                candidate("pkg.mod.func_b", "pkg/mod_b.py", 80),
+                candidate("pkg.mod.func_a", "pkg/mod_a.py", 70),
+            ],
+        )
+
+        assert package.supporting_symbols == ["pkg.mod.func_b"]
+        assert package.relationship_summary.symbol_count == 2
+
+    def test_assembly_is_deterministic(self, capability: RefactorCapability) -> None:
+        base = [
+            candidate("pkg.mod.func_a", "pkg/mod_a.py", 120),
+            candidate("pkg.mod.func_b", "pkg/mod_b.py", 90),
+            candidate("pkg.mod.func_c", "pkg/mod.py", 60),
+        ]
+
+        first = assert_relationship_honesty(capability, base)
+        second = assert_relationship_honesty(capability, base)
+
+        assert first == second

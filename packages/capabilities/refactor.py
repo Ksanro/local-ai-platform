@@ -13,7 +13,7 @@ RepositoryIndex.find()
     ↓
 ContextBuilder (depth=3, relationship_expansion=True)
     ↓
-ContextPackage assembly (callers + callees + diagnostics + dependencies + dead code)
+ContextPackage assembly (primary + supporting symbols, related modules)
     ↓
 Serializer
     ↓
@@ -302,73 +302,17 @@ class RefactorCapability(Capability):
                 seen_symbols.add(qname)
                 supporting_symbols.append(qname)
 
-        # Collect related callers and callees from the primary symbol's
-        # module.
-        #
-        # Within a module, candidates are ordered by score (descending).
-        # The primary symbol may appear anywhere in that ordering, so
-        # symbols before it in the module are "callers" (higher score)
-        # and symbols after it are "callees" (lower score).
+        # Relationship fields stay empty: ContextResult publishes ranked
+        # candidates, not verified CALLS edges. Neither candidate order nor
+        # same-module membership establishes that one symbol calls another, so
+        # this capability publishes no caller/callee claim at all.
         related_callers: list[str] = []
         related_callees: list[str] = []
 
-        if primary_candidate is not None:
-            module = primary_candidate.module
-
-            # Gather all candidates from the same module, preserving
-            # score-based ordering.
-            module_symbols: list[ContextCandidate] = [
-                c for c in candidates if c.module == module
-            ]
-
-            # Find the primary symbol's index within its module.
-            primary_index = -1
-            for i, sym in enumerate(module_symbols):
-                if sym.qualified_name == primary_symbol_name:
-                    primary_index = i
-                    break
-
-            if primary_index >= 0:
-                # Symbols after the primary in the module are
-                # "callees" (lower score).
-                #
-                # Note: the primary is always candidates[0] (highest
-                # score), so there are no callers before it.  The
-                # callers loop below is kept for symmetry with
-                # ExplainCapability and for future use if the
-                # ordering ever changes.
-                callees_set: set[str] = set()
-                for i in range(primary_index + 1, len(module_symbols)):
-                    qname = module_symbols[i].qualified_name
-                    if qname not in callees_set and qname != primary_symbol_name:
-                        callees_set.add(qname)
-                        related_callees.append(qname)
-
-        # Sort callers and callees alphabetically.
-        related_callers.sort()
-        related_callees.sort()
-
-        # Collect related modules.
+        # Collect related modules from every ranked candidate.
         all_symbols_set: set[str] = set()
-        if primary_candidate is not None:
-            all_symbols_set.add(primary_candidate.module)
-        for candidate in supporting_candidates:
-            all_symbols_set.add(candidate.module)
-
-        # Build a lookup map from qualified_name to candidate for
-        # efficient module resolution of callers/callees.
-        _qname_to_candidate: dict[str, ContextCandidate] = {}
         for candidate in candidates:
-            _qname_to_candidate[candidate.qualified_name] = candidate
-
-        for caller in related_callers:
-            _candidate = _qname_to_candidate.get(caller)
-            if _candidate is not None:
-                all_symbols_set.add(_candidate.module)
-        for callee in related_callees:
-            _candidate = _qname_to_candidate.get(callee)
-            if _candidate is not None:
-                all_symbols_set.add(_candidate.module)
+            all_symbols_set.add(candidate.module)
 
         related_modules: list[str] = sorted(all_symbols_set)
 
@@ -377,10 +321,6 @@ class RefactorCapability(Capability):
         if primary_candidate is not None:
             all_symbol_names.add(primary_candidate.qualified_name)
         for s in supporting_symbols:
-            all_symbol_names.add(s)
-        for s in related_callers:
-            all_symbol_names.add(s)
-        for s in related_callees:
             all_symbol_names.add(s)
 
         relationship_summary = RelationshipSummaryPub(

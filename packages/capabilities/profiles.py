@@ -34,6 +34,9 @@ Public API
         EXPLAIN_PROFILE,
         DEBUG_PROFILE,
         REFACTOR_PROFILE,
+        IMPLEMENT_PROFILE,
+        GENERATE_TESTS_PROFILE,
+        REVIEW_PROFILE,
     )
 
     # Access via capability
@@ -159,6 +162,100 @@ REFACTOR_PROFILE = RetrievalProfile(
     include_dead_code=True,
     include_diagnostics=True,
     relationship_depth=3,
+    max_context_tokens=4096,
+)
+
+#: ImplementFeature retrieval profile - broad cross-layer context for
+#: implementing a new feature end to end.
+#:
+#: | Option                | Value |
+#: |-----------------------|-------|
+#: | include_callers       | true  |
+#: | include_callees       | true  |
+#: | include_dependencies  | true  |
+#: | include_dependents    | true  |
+#: | include_tests         | true  |
+#: | include_dead_code     | false |
+#: | include_diagnostics   | true  |
+#: | relationship_depth    | 2     |
+#: | max_context_tokens    | 4096  |
+IMPLEMENT_PROFILE: RetrievalProfile = RetrievalProfile(
+    name="implement-feature",
+    include_callers=True,
+    include_callees=True,
+    include_dependencies=True,
+    include_dependents=True,
+    include_tests=True,
+    include_dead_code=False,
+    include_diagnostics=True,
+    relationship_depth=2,
+    max_context_tokens=4096,
+)
+
+#: GenerateTests retrieval profile - coverage context for writing tests
+#: about existing code.
+#:
+#: | Option                | Value |
+#: |-----------------------|-------|
+#: | include_callers       | true  |
+#: | include_callees       | false |
+#: | include_dependencies  | true  |
+#: | include_dependents    | true  |
+#: | include_tests         | true  |
+#: | include_dead_code     | false |
+#: | include_diagnostics   | true  |
+#: | relationship_depth    | 2     |
+#: | max_context_tokens    | 4096  |
+#:
+#: Only relationship_depth, max_context_tokens and the caller/callee pair
+#: reach ContextQuery; the remaining include_* flags are declarative
+#: retrieval intent.
+GENERATE_TESTS_PROFILE: RetrievalProfile = RetrievalProfile(
+    name="generate-tests",
+    include_callers=True,
+    include_callees=False,
+    include_dependencies=True,
+    include_dependents=True,
+    include_tests=True,
+    include_dead_code=False,
+    include_diagnostics=True,
+    relationship_depth=2,
+    max_context_tokens=4096,
+)
+
+#: Review retrieval profile - balanced read-only context for judging a change.
+#:
+#: | Option                | Value |
+#: |-----------------------|-------|
+#: | include_callers       | true  |
+#: | include_callees       | true  |
+#: | include_dependencies  | true  |
+#: | include_dependents    | true  |
+#: | include_tests         | true  |
+#: | include_dead_code     | false |
+#: | include_diagnostics   | true  |
+#: | relationship_depth    | 2     |
+#: | max_context_tokens    | 4096  |
+#:
+#: A reviewer reads both directions of a change's dependency neighbourhood and
+#: the tests that cover it, but unused code is not review surface, so
+#: ``include_dead_code`` stays off. This is the general, symbol-level companion
+#: of ``ARCHITECTURE_REVIEW_PROFILE``, which goes deeper (3), wider (8192 tokens)
+#: and dead-code aware for repository-wide architecture reviews.
+#:
+#: Only ``relationship_depth``, ``max_context_tokens`` and the caller/callee
+#: pair reach ``ContextQuery``; the remaining ``include_*`` flags are declarative
+#: retrieval intent. See ``packages/capabilities/review.py``.
+REVIEW_PROFILE: RetrievalProfile = RetrievalProfile(
+    name="review",
+    include_callers=True,
+    include_callees=True,
+    include_dependencies=True,
+    include_dependents=True,
+    include_tests=True,
+    include_dead_code=False,
+    include_diagnostics=True,
+    relationship_depth=2,
     max_context_tokens=4096,
 )
 

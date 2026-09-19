@@ -778,8 +778,8 @@ class TestContextBuildingWithCandidates:
         assert package.primary_symbol == "auth.authenticate"
         assert "auth.validate" in package.supporting_symbols
 
-    def test_execute_assemble_package_with_callers_and_callees(self) -> None:
-        """_stage_assemble_package should identify callers and callees."""
+    def test_execute_assemble_package_publishes_no_call_relationships(self) -> None:
+        """_stage_assemble_package publishes ranked candidates, never call edges."""
         from packages.capabilities.bug_investigation import BugInvestigationCapability
         from packages.context.models import ContextBudgetResult, ContextCandidate, ContextResult
 
@@ -824,11 +824,11 @@ class TestContextBuildingWithCandidates:
 
         assert package is not None
         assert package.primary_symbol == "auth.validate"
-        # auth.validate is at index 0 (primary), so no callers before it
-        # callees are symbols after index 0: auth.authenticate, auth.logout
+        # Rank order and shared modules are not CALLS edges.
         assert package.related_callers == []
-        assert "auth.authenticate" in package.related_callees
-        assert "auth.logout" in package.related_callees
+        assert package.related_callees == []
+        assert "auth.authenticate" in package.supporting_symbols
+        assert "auth.logout" in package.supporting_symbols
 
     def test_execute_assemble_package_with_multiple_modules(self) -> None:
         """_stage_assemble_package should handle multiple modules."""
@@ -986,14 +986,14 @@ class TestContextBuildingWithCandidates:
         provider_request = cap._stage_serialization(package, "Test query")
         assert provider_request is not None
 
-    def test_assemble_package_with_caller_not_in_candidates(self) -> None:
-        """_stage_assemble_package should handle callers not in candidates."""
+    def test_assemble_package_same_module_neighbour_is_not_a_caller(self) -> None:
+        """_stage_assemble_package keeps a ranked neighbour out of both lists."""
         from packages.capabilities.bug_investigation import BugInvestigationCapability
         from packages.context.models import ContextBudgetResult, ContextCandidate, ContextResult
 
         cap = BugInvestigationCapability()
 
-        # Create candidate where caller is not in the candidates list
+        # Rank order and shared modules are not CALLS edges.
         candidate1 = ContextCandidate(
             symbol_id="auth.validate",
             qualified_name="auth.validate",
@@ -1028,18 +1028,19 @@ class TestContextBuildingWithCandidates:
 
         assert package is not None
         assert package.primary_symbol == "auth.validate"
-        # validate is at index 0, so authenticate is a callee
+        # Rank order and shared modules are not CALLS edges.
         assert package.related_callers == []
-        assert "auth.authenticate" in package.related_callees
+        assert package.related_callees == []
+        assert "auth.authenticate" in package.supporting_symbols
 
-    def test_assemble_package_multiple_modules_with_callers(self) -> None:
-        """_stage_assemble_package should handle multiple modules with callers."""
+    def test_assemble_package_multiple_modules_stay_supporting_symbols(self) -> None:
+        """_stage_assemble_package keeps multi-module candidates out of both lists."""
         from packages.capabilities.bug_investigation import BugInvestigationCapability
         from packages.context.models import ContextBudgetResult, ContextCandidate, ContextResult
 
         cap = BugInvestigationCapability()
 
-        # Create candidates across multiple modules with callers
+        # Rank order and shared modules are not CALLS edges.
         candidate1 = ContextCandidate(
             symbol_id="auth.logout",
             qualified_name="auth.logout",
@@ -1085,21 +1086,21 @@ class TestContextBuildingWithCandidates:
         assert package is not None
         # First candidate is primary
         assert package.primary_symbol == "auth.logout"
-        # authenticate and validate are callees (after logout)
-        assert "auth.authenticate" in package.related_callees
-        assert "auth.validate" in package.related_callees
+        # Rank order and shared modules are not CALLS edges.
+        assert "auth.authenticate" in package.supporting_symbols
+        assert "auth.validate" in package.supporting_symbols
         # Both modules should be in related_modules
         assert "packages/auth/auth.py" in package.related_modules
         assert "packages/session/session.py" in package.related_modules
 
-    def test_assemble_package_with_caller_in_supporting(self) -> None:
-        """_stage_assemble_package should find callers in supporting_candidates."""
+    def test_assemble_package_supporting_candidate_is_not_a_caller(self) -> None:
+        """_stage_assemble_package keeps supporting candidates out of both lists."""
         from packages.capabilities.bug_investigation import BugInvestigationCapability
         from packages.context.models import ContextBudgetResult, ContextCandidate, ContextResult
 
         cap = BugInvestigationCapability()
 
-        # First candidate is primary, second is at index 1 (callee)
+        # Rank order and shared modules are not CALLS edges.
         candidate1 = ContextCandidate(
             symbol_id="auth.validate",
             qualified_name="auth.validate",
@@ -1133,10 +1134,11 @@ class TestContextBuildingWithCandidates:
         )
 
         assert package is not None
-        # validate is primary (index 0), helper is at index 1 (callee)
+        # Rank order and shared modules are not CALLS edges.
         assert package.primary_symbol == "auth.validate"
         assert package.related_callers == []
-        assert "auth.helper" in package.related_callees
+        assert package.related_callees == []
+        assert "auth.helper" in package.supporting_symbols
 
     def test_assemble_package_relationship_summary(self) -> None:
         """_stage_assemble_package should build relationship summary."""
@@ -1185,7 +1187,7 @@ class TestContextBuildingWithCandidates:
         assert package is not None
         assert package.relationship_summary is not None
         assert package.relationship_summary.caller_count == 0
-        assert package.relationship_summary.callee_count == 2
+        assert package.relationship_summary.callee_count == 0
         assert package.relationship_summary.module_count == 1
         assert package.relationship_summary.symbol_count == 3
 
@@ -1278,14 +1280,14 @@ class TestContextBuildingWithCandidates:
         assert result is not None
         assert result.context_package is not None
 
-    def test_assemble_package_caller_not_in_candidates(self) -> None:
-        """_stage_assemble_package should find caller module in supporting_candidates."""
+    def test_assemble_package_ranked_neighbour_is_not_a_caller(self) -> None:
+        """_stage_assemble_package publishes a supporting module, not a caller."""
         from packages.capabilities.bug_investigation import BugInvestigationCapability
         from packages.context.models import ContextBudgetResult, ContextCandidate, ContextResult
 
         cap = BugInvestigationCapability()
 
-        # Create scenario where caller is only in supporting_candidates, not in candidates
+        # Rank order and shared modules are not CALLS edges.
         candidate1 = ContextCandidate(
             symbol_id="auth.validate",
             qualified_name="auth.validate",
@@ -1320,9 +1322,10 @@ class TestContextBuildingWithCandidates:
 
         assert package is not None
         assert package.primary_symbol == "auth.validate"
-        # validate is at index 0, logout is at index 1 (callee)
+        # Rank order and shared modules are not CALLS edges.
         assert package.related_callers == []
-        assert "auth.logout" in package.related_callees
+        assert package.related_callees == []
+        assert "auth.logout" in package.supporting_symbols
 
     def test_assemble_package_symbol_count_includes_all(self) -> None:
         """_stage_assemble_package should count all symbols in relationship summary."""
@@ -1374,23 +1377,22 @@ class TestContextBuildingWithCandidates:
         assert package.relationship_summary.symbol_count == 3
         # 1 module
         assert package.relationship_summary.module_count == 1
-        # 0 callers, 2 callees
+        # Rank order and shared modules are not CALLS edges.
         assert package.relationship_summary.caller_count == 0
-        assert package.relationship_summary.callee_count == 2
+        assert package.relationship_summary.callee_count == 0
 
-    def test_assemble_package_callee_module_in_supporting(self) -> None:
-        """_stage_assemble_package should find callee module in supporting_candidates.
+    def test_assemble_package_supporting_module_stays_a_module(self) -> None:
+        """A same-module neighbour stays a supporting symbol.
 
-        This exercises the else branch at lines 360-364 where the callee is not
-        found in the main candidates list but is in supporting_candidates.
+        Its module is already published through the candidate list, so the
+        package derives nothing else from it.
         """
         from packages.capabilities.bug_investigation import BugInvestigationCapability
         from packages.context.models import ContextBudgetResult, ContextCandidate, ContextResult
 
         cap = BugInvestigationCapability()
 
-        # Create a scenario where the callee module is only in supporting_candidates.
-        # We need: primary at index 0, and a callee that appears after primary
+        # Rank order and shared modules are not CALLS edges.
         # but whose module is only found via supporting_candidates lookup.
         candidate1 = ContextCandidate(
             symbol_id="auth.validate",
@@ -1425,10 +1427,11 @@ class TestContextBuildingWithCandidates:
         )
 
         assert package is not None
-        # validate is primary (index 0), helper is callee (index 1)
+        # Rank order and shared modules are not CALLS edges.
         assert package.primary_symbol == "auth.validate"
         assert package.related_callers == []
-        assert "auth.helper" in package.related_callees
+        assert package.related_callees == []
+        assert "auth.helper" in package.supporting_symbols
         assert "packages/auth/auth.py" in package.related_modules
 
 
@@ -1440,11 +1443,11 @@ class TestContextBuildingWithCandidates:
 class TestStageAssemblePackageAdditional:
     """Additional tests for _stage_assemble_package."""
 
-    def test_package_with_callers_and_callees(self) -> None:
-        """Package should correctly identify callers and callees.
+    def test_package_with_ranked_same_module_candidates(self) -> None:
+        """The first candidate is the primary and the rest stay supporting.
 
-        Note: The first candidate in a module group is always the primary.
-        So auth.helper is primary, auth.validate and auth.logout are callees.
+        Note: ranking chooses the primary symbol; neither ranking nor shared
+        module membership says the primary calls the others.
         """
         from packages.capabilities.bug_investigation import BugInvestigationCapability
         from packages.context.models import ContextBudgetResult, ContextResult
@@ -1452,10 +1455,7 @@ class TestStageAssemblePackageAdditional:
 
         cap = BugInvestigationCapability()
 
-        # First candidate is primary, remaining are callees.
-        # To test callers, we need a different module group with primary in middle.
-        # Module auth: helper (primary, index 0), validate (callee, index 1)
-        # Module session: create (primary, index 0), logout (callee, index 1)
+        # Rank order and shared modules are not CALLS edges.
         candidate1 = Candidate(
             symbol_id="auth.helper",
             qualified_name="auth.helper",
@@ -1499,10 +1499,11 @@ class TestStageAssemblePackageAdditional:
         assert package is not None
         # First candidate is always primary
         assert package.primary_symbol == "auth.helper"
-        # No callers before helper (index 0 in auth group)
+        # Rank order and shared modules are not CALLS edges.
         assert package.related_callers == []
-        # validate is at index 1 in auth group, so it's a callee
-        assert "auth.validate" in package.related_callees
+        assert package.related_callees == []
+        # Rank order and shared modules are not CALLS edges.
+        assert "auth.validate" in package.supporting_symbols
         # session.create is primary for its own module group
         assert "session.create" in package.supporting_symbols
 
@@ -1598,7 +1599,7 @@ class TestStageAssemblePackageAdditional:
         assert "packages/session/session.py" in package.related_modules
         assert "packages/token/token.py" in package.related_modules
 
-    def test_relationship_summary_builder(self) -> None:
+    def test_relationship_summary_counts_match_published_lists(self) -> None:
         """Test that relationship summary is built correctly."""
         from packages.capabilities.bug_investigation import BugInvestigationCapability
         from packages.context.models import ContextBudgetResult, ContextResult
@@ -1606,7 +1607,7 @@ class TestStageAssemblePackageAdditional:
 
         cap = BugInvestigationCapability()
 
-        # auth.helper is primary (index 0), validate and logout are callees (indices 1, 2)
+        # Rank order and shared modules are not CALLS edges.
         candidate1 = Candidate(
             symbol_id="auth.helper",
             qualified_name="auth.helper",
@@ -1648,27 +1649,25 @@ class TestStageAssemblePackageAdditional:
         )
 
         assert package is not None
-        # helper is primary (index 0), so no callers
+        # Rank order and shared modules are not CALLS edges.
         assert package.relationship_summary.caller_count == 0
-        # validate and logout are callees (indices 1 and 2)
-        assert package.relationship_summary.callee_count == 2
+        # Rank order and shared modules are not CALLS edges.
+        assert package.relationship_summary.callee_count == 0
         # 1 module
         assert package.relationship_summary.module_count == 1
         # 3 symbols total
         assert package.relationship_summary.symbol_count == 3
-    def test_assemble_package_multiple_modules_with_callees(self) -> None:
-        """_stage_assemble_package should handle callees across multiple modules.
+    def test_assemble_package_multiple_modules_publish_no_callees(self) -> None:
+        """Candidates from several modules stay symbols and modules.
 
-        This exercises the else branch at lines 370-374 where callee modules
-        are found via supporting_candidates lookup.
+        Cross-module rank order publishes no relationship.
         """
         from packages.capabilities.bug_investigation import BugInvestigationCapability
         from packages.context.models import ContextBudgetResult, ContextCandidate, ContextResult
 
         cap = BugInvestigationCapability()
 
-        # Primary and callee in auth module, callee in session module
-        # This ensures auth.validate has callees within the same module
+        # Rank order and shared modules are not CALLS edges.
         candidate1 = ContextCandidate(
             symbol_id="auth.validate",
             qualified_name="auth.validate",
@@ -1708,33 +1707,32 @@ class TestStageAssemblePackageAdditional:
 
         assert package is not None
         assert package.primary_symbol == "auth.validate"
-        # validate is at index 0, helper is at index 1 (callee)
+        # Rank order and shared modules are not CALLS edges.
         assert package.related_callers == []
-        assert "auth.helper" in package.related_callees
-        # session.create is in supporting_symbols but not a callee (different module group)
+        assert package.related_callees == []
+        assert "auth.helper" in package.supporting_symbols
+        # Rank order and shared modules are not CALLS edges.
         assert "session.create" in package.supporting_symbols
         # Both modules should be in related_modules
         assert "packages/auth/auth.py" in package.related_modules
         assert "packages/session/session.py" in package.related_modules
 
-    def test_assemble_package_primary_not_at_index_0(self) -> None:
-        """_stage_assemble_package should find callers before primary in module group.
+    def test_assemble_package_primary_is_always_the_first_candidate(self) -> None:
+        """A candidate ranked after the primary is not its callee.
 
-        This exercises lines 331-336 where callers are collected before the primary
-        symbol within the same module group. The primary is always the first candidate
-        in the module group, so we place a symbol before it to create a caller.
+        Same-module candidates that rank below the primary stay supporting
+        symbols, and the caller list stays empty.
         """
         from packages.capabilities.bug_investigation import BugInvestigationCapability
         from packages.context.models import ContextBudgetResult, ContextCandidate, ContextResult
 
         cap = BugInvestigationCapability()
 
-        # Within auth module: helper (index 0, caller), validate (index 1, primary),
-        # logout (index 2, callee)
+        # Rank order and shared modules are not CALLS edges.
         # Primary is always the first candidate in the module group, so we need
         # to set primary_symbol_name to find validate. But the code searches for
         # the primary symbol by name within the module_symbols list.
-        # Since validate is at index 1, helper at index 0 becomes a caller.
+        # Rank order and shared modules are not CALLS edges.
         candidate1 = ContextCandidate(
             symbol_id="auth.helper",
             qualified_name="auth.helper",
@@ -1774,17 +1772,18 @@ class TestStageAssemblePackageAdditional:
 
         # The first candidate is always primary
         assert package.primary_symbol == "auth.helper"
-        # No callers before helper (index 0)
+        # Rank order and shared modules are not CALLS edges.
         assert package.related_callers == []
-        # validate and logout are callees (after helper)
-        assert "auth.validate" in package.related_callees
-        assert "auth.logout" in package.related_callees
+        assert package.related_callees == []
+        # Rank order and shared modules are not CALLS edges.
+        assert "auth.validate" in package.supporting_symbols
+        assert "auth.logout" in package.supporting_symbols
 
-    def test_assemble_package_primary_symbol_not_first_candidate(self) -> None:
-        """_stage_assemble_package should find primary symbol not at index 0.
+    def test_assemble_package_primary_symbol_follows_rank_not_module_order(self) -> None:
+        """The primary symbol is simply the first ranked candidate.
 
-        This exercises lines 324-327 where primary_index is found by searching
-        for the primary symbol name in the module_symbols list.
+        Module membership changes nothing about the relationships the
+        package publishes.
         """
         from packages.capabilities.bug_investigation import BugInvestigationCapability
         from packages.context.models import ContextBudgetResult, ContextCandidate, ContextResult
@@ -1833,30 +1832,26 @@ class TestStageAssemblePackageAdditional:
 
         # auth.helper is primary (first in first module group)
         assert package.primary_symbol == "auth.helper"
-        # validate is at index 1 in auth group, after helper (index 0), so it's a callee
+        # Rank order and shared modules are not CALLS edges.
         assert package.related_callers == []
-        assert "auth.validate" in package.related_callees
+        assert package.related_callees == []
+        assert "auth.validate" in package.supporting_symbols
         # session.create is in supporting_symbols (different module group)
         assert "session.create" in package.supporting_symbols
 
-    def test_assemble_package_with_callers_in_module_group(self) -> None:
-        """_stage_assemble_package should collect callers before primary index.
+    def test_assemble_module_group_publishes_no_callers(self) -> None:
+        """A module group never produces callers.
 
-        This exercises lines 331-336 where callers are collected from before
-        the primary symbol within the same module group.
+        Everything ranked in the same module stays a supporting symbol.
         """
         from packages.capabilities.bug_investigation import BugInvestigationCapability
         from packages.context.models import ContextBudgetResult, ContextCandidate, ContextResult
 
         cap = BugInvestigationCapability()
 
-        # Create a scenario where the primary symbol is NOT at index 0 within
-        # its module group. This requires the module group to have multiple
-        # candidates where the primary is found at a later index.
-        #
-        # Module group auth: helper (index 0), validate (index 1, primary)
-        # The code searches for primary by name, so validate is found at index 1.
-        # helper at index 0 becomes a caller.
+        # Ranked candidates that share a module: helper ranks first and is
+        # the primary, validate follows it as a supporting symbol.
+        # Rank order and shared modules are not CALLS edges.
         candidate1 = ContextCandidate(
             symbol_id="auth.helper",
             qualified_name="auth.helper",
@@ -1891,25 +1886,21 @@ class TestStageAssemblePackageAdditional:
 
         # helper is primary (first in module group)
         assert package.primary_symbol == "auth.helper"
-        # No callers before helper (index 0)
+        # Rank order and shared modules are not CALLS edges.
         assert package.related_callers == []
-        # validate is at index 1, after helper, so it's a callee
-        assert "auth.validate" in package.related_callees
+        assert package.related_callees == []
+        # Rank order and shared modules are not CALLS edges.
+        assert "auth.validate" in package.supporting_symbols
 
-    def test_assemble_package_caller_module_in_candidates(self) -> None:
-        """_stage_assemble_package should find caller module in candidates list.
-
-        This exercises lines 355-359 where the caller's module is found in
-        the main candidates list.
+    def test_assemble_package_candidate_module_is_only_a_module(self) -> None:
+        """A candidate module is published as a module, not a relationship.
         """
         from packages.capabilities.bug_investigation import BugInvestigationCapability
         from packages.context.models import ContextBudgetResult, ContextCandidate, ContextResult
 
         cap = BugInvestigationCapability()
 
-        # Create scenario where caller is in the candidates list
-        # We need: primary at index 0, caller at index 1, callee at index 2
-        # The caller (index 1) should be found in candidates when building related_modules
+        # Rank order and shared modules are not CALLS edges.
         candidate1 = ContextCandidate(
             symbol_id="auth.validate",
             qualified_name="auth.validate",
@@ -1949,26 +1940,27 @@ class TestStageAssemblePackageAdditional:
 
         assert package is not None
         assert package.primary_symbol == "auth.validate"
-        # validate is at index 0, so no callers
+        # Rank order and shared modules are not CALLS edges.
         assert package.related_callers == []
-        # helper and logout are at indices 1 and 2, so they're callees
-        assert "auth.helper" in package.related_callees
-        assert "auth.logout" in package.related_callees
+        assert package.related_callees == []
+        # Rank order and shared modules are not CALLS edges.
+        assert "auth.helper" in package.supporting_symbols
+        assert "auth.logout" in package.supporting_symbols
         # auth module should be in related_modules
         assert "packages/auth/auth.py" in package.related_modules
 
-    def test_assemble_package_callee_in_supporting_candidates(self) -> None:
-        """_stage_assemble_package should find callee in supporting_candidates.
+    def test_assemble_package_supporting_candidate_is_not_a_callee(self) -> None:
+        """A supporting candidate never becomes a callee.
 
-        This exercises lines 370-374 where the callee's module is NOT found
-        in the main candidates list but IS found in supporting_candidates.
+        Its module is still collected, because modules come from the
+        candidate list rather than from any call graph.
         """
         from packages.capabilities.bug_investigation import BugInvestigationCapability
         from packages.context.models import ContextBudgetResult, ContextCandidate, ContextResult
 
         cap = BugInvestigationCapability()
 
-        # Create scenario where callee is only in supporting_candidates
+        # Rank order and shared modules are not CALLS edges.
         candidate1 = ContextCandidate(
             symbol_id="auth.primary",
             qualified_name="auth.primary",
@@ -2009,11 +2001,11 @@ class TestStageAssemblePackageAdditional:
         assert "packages/auth/auth.py" in package.related_modules
         assert "packages/session/session.py" in package.related_modules
 
-    def test_assemble_package_supporting_in_same_module(self) -> None:
-        """_stage_assemble_package should add supporting candidates to module_symbols.
+    def test_assemble_package_same_module_supporting_candidate_stays_supporting(self) -> None:
+        """A same-module supporting candidate stays a supporting symbol.
 
-        This exercises line 322 where supporting candidates in the same module
-        as the primary are appended to module_symbols.
+        It contributes its name to the symbol list and its module to the
+        module list, and nothing else.
         """
         from packages.capabilities.bug_investigation import BugInvestigationCapability
         from packages.context.models import ContextBudgetResult, ContextCandidate, ContextResult
@@ -2057,22 +2049,12 @@ class TestStageAssemblePackageAdditional:
 
         assert package is not None
         assert package.primary_symbol == "auth.primary"
-        # auth.supporting is in supporting_symbols
+        # Rank order and shared modules are not CALLS edges.
         assert "auth.supporting" in package.supporting_symbols
-        # auth.supporting is a callee (after primary in module_symbols)
-        assert "auth.supporting" in package.related_callees
 
-    def test_assemble_package_caller_via_symbol_id_mismatch(self) -> None:
-        """Lines 333-336 are dead code: primary_index is always 0.
 
-        The first candidate in a module group is always the primary, so
-        primary_index is always 0. Callers can only exist in later module
-        groups, but the code only processes the first module group.
-        """
-        pass
-
-    def test_assemble_package_caller_module_not_in_candidates(self) -> None:
-        """_stage_assemble_package should handle callers not in candidates_modules."""
+    def test_assemble_package_module_list_never_becomes_relationships(self) -> None:
+        """_stage_assemble_package keeps modules out of both relationship lists."""
         from packages.capabilities.bug_investigation import BugInvestigationCapability
         from packages.context.models import ContextBudgetResult, ContextCandidate, ContextResult
 
@@ -2112,13 +2094,14 @@ class TestStageAssemblePackageAdditional:
 
         assert package is not None
         assert package.primary_symbol == "auth.helper"
-        # helper is at index 0, so no callers
+        # Rank order and shared modules are not CALLS edges.
         assert package.related_callers == []
-        # validate is at index 1, so it's a callee
-        assert "auth.validate" in package.related_callees
+        assert package.related_callees == []
+        # Rank order and shared modules are not CALLS edges.
+        assert "auth.validate" in package.supporting_symbols
 
-    def test_assemble_package_adds_callers_to_symbol_names(self) -> None:
-        """_stage_assemble_package should handle empty related_callers in symbol count."""
+    def test_assemble_package_symbol_names_come_from_candidates_only(self) -> None:
+        """_stage_assemble_package builds the symbol count from candidates only."""
         from packages.capabilities.bug_investigation import BugInvestigationCapability
         from packages.context.models import ContextBudgetResult, ContextCandidate, ContextResult
 
@@ -2158,10 +2141,11 @@ class TestStageAssemblePackageAdditional:
 
         assert package is not None
         assert package.primary_symbol == "auth.helper"
-        # helper is at index 0, so no callers
+        # Rank order and shared modules are not CALLS edges.
         assert package.related_callers == []
-        # validate is at index 1, so it's a callee
-        assert "auth.validate" in package.related_callees
+        assert package.related_callees == []
+        # Rank order and shared modules are not CALLS edges.
+        assert "auth.validate" in package.supporting_symbols
         # symbol_count should include primary + supporting
         assert package.relationship_summary.symbol_count == 2
 
@@ -2404,3 +2388,104 @@ class TestInvestigationReport:
         report = result.investigation_report
         assert report is not None
         assert isinstance(report["impact_summary"], str)
+
+
+# ---------------------------------------------------------------------------
+# Test: Relationship honesty
+# ---------------------------------------------------------------------------
+
+
+class TestRelationshipHonesty:
+    """Assembly publishes candidates, never invented call edges."""
+
+    def test_same_module_order_never_becomes_a_call_edge(self) -> None:
+        """Every ranking of one module's candidates stays edge-free."""
+        from itertools import permutations
+
+        from packages.capabilities.bug_investigation import (
+            BugInvestigationCapability,
+        )
+        from tests.capabilities.assembly_probes import (
+            assert_relationship_honesty,
+            candidate,
+        )
+
+        capability = BugInvestigationCapability()
+        base = [
+            candidate("auth.logout", "packages/auth/auth.py", 120),
+            candidate("auth.authenticate", "packages/auth/auth.py", 90),
+            candidate("auth.validate", "packages/auth/auth.py", 60),
+        ]
+
+        for order in permutations(base):
+            assert_relationship_honesty(capability, list(order))
+
+    def test_cross_module_candidates_stay_symbols_and_modules(self) -> None:
+        """A candidate in another module contributes a symbol and a module."""
+        from packages.capabilities.bug_investigation import (
+            BugInvestigationCapability,
+        )
+        from tests.capabilities.assembly_probes import (
+            assert_relationship_honesty,
+            candidate,
+        )
+
+        package = assert_relationship_honesty(
+            BugInvestigationCapability(),
+            [
+                candidate("auth.logout", "packages/auth/auth.py", 120),
+                candidate("session.create", "packages/session/session.py", 90),
+            ],
+        )
+
+        assert package.supporting_symbols == ["session.create"]
+        assert package.related_modules == [
+            "packages/auth/auth.py",
+            "packages/session/session.py",
+        ]
+
+    def test_duplicate_symbols_and_modules_are_deduplicated(self) -> None:
+        """Repeated candidates appear once, and the counts follow."""
+        from packages.capabilities.bug_investigation import (
+            BugInvestigationCapability,
+        )
+        from tests.capabilities.assembly_probes import (
+            assert_relationship_honesty,
+            candidate,
+        )
+
+        package = assert_relationship_honesty(
+            BugInvestigationCapability(),
+            [
+                candidate("auth.logout", "packages/auth/auth.py", 120),
+                candidate("auth.validate", "packages/auth/auth.py", 90),
+                candidate("auth.validate", "packages/auth/auth.py", 80),
+                candidate("auth.logout", "packages/auth/auth.py", 70),
+            ],
+        )
+
+        assert package.supporting_symbols == ["auth.validate"]
+        assert package.relationship_summary.symbol_count == 2
+        assert package.relationship_summary.module_count == 1
+
+    def test_assembly_is_deterministic(self) -> None:
+        """The same candidates assemble the same package twice."""
+        from packages.capabilities.bug_investigation import (
+            BugInvestigationCapability,
+        )
+        from tests.capabilities.assembly_probes import (
+            assert_relationship_honesty,
+            candidate,
+        )
+
+        capability = BugInvestigationCapability()
+        base = [
+            candidate("auth.logout", "packages/auth/auth.py", 120),
+            candidate("session.create", "packages/session/session.py", 90),
+            candidate("auth.validate", "packages/auth/auth.py", 60),
+        ]
+
+        first = assert_relationship_honesty(capability, base)
+        second = assert_relationship_honesty(capability, base)
+
+        assert first == second

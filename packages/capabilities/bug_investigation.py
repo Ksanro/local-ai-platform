@@ -96,7 +96,7 @@ from packages.capabilities.models import CapabilityResult
 from packages.capabilities.profiles import DEBUG_PROFILE, RetrievalProfile
 from packages.context.context_package import ContextPackage
 from packages.context.context_package import RelationshipSummary as RelationshipSummaryPub
-from packages.context.models import ContextBudgetResult, ContextCandidate, ContextQuery, ContextResult
+from packages.context.models import ContextCandidate, ContextQuery, ContextResult
 from packages.planning.plan import ContextPlan
 from packages.repository.index.models import RepositoryIndex
 from packages.serializers.factory import SerializerFactory
@@ -329,50 +329,17 @@ class BugInvestigationCapability(Capability):
                 seen_symbols.add(qname)
                 supporting_symbols.append(qname)
 
-        # Collect related callers and callees from the primary symbol's
-        # module.
-        # Note: related_callers is intentionally empty for bug investigation.
-        # The first candidate is always the primary symbol; all other symbols
-        # in the same module group are callees (called-by the primary).
+        # Relationship fields stay empty: ContextResult publishes ranked
+        # candidates, not verified CALLS edges. Neither candidate order nor
+        # same-module membership establishes that one symbol calls another, so
+        # this capability publishes no caller/callee claim at all.
         related_callers: list[str] = []
         related_callees: list[str] = []
 
-        if primary_candidate is not None:
-            module = primary_candidate.module
-            # Build the module symbol group: all candidates in the same
-            # module as the primary.  No duplicate iteration — we iterate
-            # the full candidates list once and filter by module.
-            module_symbols: list[ContextCandidate] = [
-                c for c in candidates if c.module == module
-            ]
-
-            # The first candidate in a module group is always the primary.
-            # All subsequent symbols in the same module group are callees.
-            if len(module_symbols) > 0:
-                callees_set: set[str] = set()
-                for i in range(1, len(module_symbols)):
-                    qname = module_symbols[i].qualified_name
-                    if qname not in callees_set and qname != primary_symbol_name:
-                        callees_set.add(qname)
-                        related_callees.append(qname)
-
-        # Sort callers and callees alphabetically.
-        related_callers.sort()
-        related_callees.sort()
-
-        # Collect related modules.
+        # Collect related modules from every ranked candidate.
         all_symbols_set: set[str] = set()
-        if primary_candidate is not None:
-            all_symbols_set.add(primary_candidate.module)
-        for candidate in supporting_candidates:
+        for candidate in candidates:
             all_symbols_set.add(candidate.module)
-        # related_callers is always empty in bug investigation (first candidate
-        # is always primary), so we only need to add callee modules.
-        for callee in related_callees:
-            for candidate in candidates:
-                if candidate.qualified_name == callee:
-                    all_symbols_set.add(candidate.module)
-                    break
 
         related_modules: list[str] = sorted(all_symbols_set)
 
@@ -381,8 +348,6 @@ class BugInvestigationCapability(Capability):
         if primary_candidate is not None:
             all_symbol_names.add(primary_candidate.qualified_name)
         for s in supporting_symbols:
-            all_symbol_names.add(s)
-        for s in related_callees:
             all_symbol_names.add(s)
 
         relationship_summary = RelationshipSummaryPub(
