@@ -42,6 +42,9 @@ out, cleaning, fetching or pushing can happen here.
 
 - ``--no-optional-locks`` keeps ``git status`` from writing a refreshed
   index back into ``.git``
+- every invocation runs under a wall-clock budget
+  (:data:`GIT_COMMAND_TIMEOUT_SECONDS`), so a stalled Git process cannot
+  stall the caller with it
 - the only output is the returned snapshot; nothing is persisted
 - the allowlist lives in :func:`run_git_command` itself, not in its
   callers; a test that injects its own ``runner`` replaces the boundary
@@ -92,6 +95,7 @@ __all__ = [
     "GitCommandRunner",
     "GitError",
     "GitPorcelainParseError",
+    "GitTimeoutError",
     "GitUnavailableError",
     "GitUnsafeCommandError",
     "NotAGitRepositoryError",
@@ -105,6 +109,12 @@ __all__ = [
 SCHEMA_VERSION: Final[int] = 1
 
 _GIT_EXECUTABLE: Final[str] = "git"
+
+#: Hard wall-clock budget for one read-only Git invocation. ``git status`` can
+#: stall - an index lock, an enormous working tree, an unreachable network
+#: share - and a stalled Git must not be able to stall anything else, so the
+#: process boundary owns the deadline instead of every caller.
+GIT_COMMAND_TIMEOUT_SECONDS: Final[float] = 30.0
 
 #: The two read-only Git commands this module is built around; the allowlist
 #: below is what actually enforces them at the subprocess boundary.
@@ -237,6 +247,33 @@ class GitPorcelainParseError(GitError):
     """Raised when porcelain v2 output does not match the documented format."""
 
 
+class GitTimeoutError(GitError):
+    """Raised when a read-only Git command exceeds its wall-clock budget.
+
+    A ``git status`` can stall on an index lock, an enormous working tree or an
+    unreachable network share. Every caller that reaches Git from a long-lived
+    process depends on that stall being finite, so the subprocess boundary -
+    not the callers - owns the deadline.
+
+    Attributes:
+        command: The full argument vector passed to the Git executable.
+        timeout_seconds: The budget that expired.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        command: Sequence[str],
+        timeout_seconds: float,
+    ) -> None:
+        """Store the timed-out command alongside the human-readable message."""
+        joined = " ".join(command)
+        super().__init__(f"{message} [git {joined}] timed out after {timeout_seconds:g}s")
+        self.command = tuple(command)
+        self.timeout_seconds = timeout_seconds
+
+
 class GitUnsafeCommandError(GitError):
     """Raised when a command outside the read-only allowlist is requested.
 
@@ -303,18 +340,26 @@ class GitCommandRunner(Protocol):
     def __call__(self, command: Sequence[str], cwd: Path) -> GitCommandResult: ...
 
 
-def run_git_command(command: Sequence[str], cwd: Path) -> GitCommandResult:
+def run_git_command(
+    command: Sequence[str],
+    cwd: Path,
+    *,
+    timeout_seconds: float = GIT_COMMAND_TIMEOUT_SECONDS,
+) -> GitCommandResult:
     """Run one allowlisted read-only Git command and return its raw result.
 
     This is the only place in the platform that starts a Git process, and
     the only gate through which a Git command line can reach Git. The
     argument vector is matched against :data:`_ALLOWED_COMMANDS` in full
-    before anything is started.
+    before anything is started, and the process is given a hard wall-clock
+    budget so no caller can inherit an endless ``git status``.
 
     Args:
         command: Git arguments, exactly one of ``_ROOT_ARGS`` or
             ``_STATUS_ARGS``; any other vector is rejected.
         cwd: Directory Git should run in.
+        timeout_seconds: How long the process may run before it is killed and
+            :class:`GitTimeoutError` is raised.
 
     Returns:
         A :class:`GitCommandResult`; no exception is raised for a
@@ -325,6 +370,7 @@ def run_git_command(command: Sequence[str], cwd: Path) -> GitCommandResult:
             read-only vectors, without a process having been started.
         GitUnavailableError: If the ``git`` executable is missing or
             cannot be started.
+        GitTimeoutError: If the process outlives ``timeout_seconds``.
     """
     args = tuple(command)
     if args not in _ALLOWED_COMMANDS:
@@ -340,6 +386,7 @@ def run_git_command(command: Sequence[str], cwd: Path) -> GitCommandResult:
             capture_output=True,
             shell=False,
             check=False,
+            timeout=timeout_seconds,
         )
     except FileNotFoundError as error:
         raise GitUnavailableError(
@@ -348,6 +395,12 @@ def run_git_command(command: Sequence[str], cwd: Path) -> GitCommandResult:
     except OSError as error:
         raise GitUnavailableError(
             f"Could not start Git executable {_GIT_EXECUTABLE!r}: {error}"
+        ) from error
+    except subprocess.TimeoutExpired as error:
+        raise GitTimeoutError(
+            "read-only Git command exceeded its time budget",
+            command=args,
+            timeout_seconds=float(error.timeout or timeout_seconds),
         ) from error
 
     return GitCommandResult(

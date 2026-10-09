@@ -89,6 +89,8 @@ class ContextBuilder:
         _maximum_supporting_symbols: Max supporting symbols to include.
         _maximum_module_descriptions: Max module descriptions to include.
         _chars_per_token: Characters-per-token ratio for estimation math.
+        _changed_modules: Index module keys of locally modified files that
+            earn the bounded working-tree bonus; empty when the signal is off.
     """
 
     def __init__(
@@ -99,6 +101,7 @@ class ContextBuilder:
         maximum_supporting_symbols: int = 20,
         maximum_module_descriptions: int = 10,
         chars_per_token: float = CHARS_PER_TOKEN,
+        changed_modules: frozenset[str] = frozenset(),
     ) -> None:
         """Initialise the builder.
 
@@ -117,6 +120,10 @@ class ContextBuilder:
                 budgeting and token estimation.  Callers may pass a
                 model-calibrated ratio; the platform default is
                 ``CHARS_PER_TOKEN``.
+            changed_modules: Index module keys of locally modified files,
+                derived from the read-only Git change snapshot.  Only symbols
+                already matched by the query can earn the bonus from them.
+                Empty by default, which leaves ranking exactly as it was.
         """
         self._index = index
         self._primary_symbol_max_tokens = primary_symbol_max_tokens
@@ -124,6 +131,7 @@ class ContextBuilder:
         self._maximum_supporting_symbols = maximum_supporting_symbols
         self._maximum_module_descriptions = maximum_module_descriptions
         self._chars_per_token = chars_per_token
+        self._changed_modules = frozenset(changed_modules)
 
     def build(
         self,
@@ -210,6 +218,7 @@ class ContextBuilder:
             relationship_enabled=relationship_enabled,
             expansion_enabled=expansion_enabled,
             token_estimator=self._estimate_candidate_tokens_for_ranking,
+            changed_modules=self._changed_modules,
         )
         candidates = engine.rank(query.text, candidates, max_tokens=query.max_tokens)
         candidates = self._promote_request_path_symbols(candidates, query.text)

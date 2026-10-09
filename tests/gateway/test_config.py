@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from apps.gateway.core.config import (
     Settings,
     parse_context_intent_rules,
@@ -62,3 +64,25 @@ def test_settings_include_tests_by_default() -> None:
     settings = Settings()
 
     assert settings.repository_exclude_tests is False
+
+
+def test_changed_file_signal_is_off_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Change-aware ranking stays dormant unless it is explicitly enabled."""
+    monkeypatch.delenv("APP_REPOSITORY_CONTEXT_CHANGED_FILES_ENABLED", raising=False)
+    monkeypatch.delenv("APP_REPOSITORY_CONTEXT_CHANGED_FILES_TTL_SECONDS", raising=False)
+
+    settings = Settings()
+
+    assert settings.repository_context_changed_files_enabled is False
+    assert settings.repository_context_changed_files_ttl_seconds == 0
+
+
+def test_changed_file_signal_reads_app_prefix(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Both knobs are configured through ``APP_`` environment variables."""
+    monkeypatch.setenv("APP_REPOSITORY_CONTEXT_CHANGED_FILES_ENABLED", "true")
+    monkeypatch.setenv("APP_REPOSITORY_CONTEXT_CHANGED_FILES_TTL_SECONDS", "45")
+
+    settings = Settings()
+
+    assert settings.repository_context_changed_files_enabled is True
+    assert settings.repository_context_changed_files_ttl_seconds == 45

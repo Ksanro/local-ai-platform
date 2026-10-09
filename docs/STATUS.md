@@ -3,9 +3,15 @@
 This file is the current runtime snapshot. It intentionally describes only
 what matters for the live gateway path and calls out dormant code explicitly.
 
-Last reviewed: 2026-09-19 (Git Change Snapshot v1 added as a script-reachable,
+Last reviewed: 2026-10-09 (the read-only Git change snapshot gained its first
+live-gateway consumer: opt-in, off-by-default change-aware repository-context
+ranking. `packages.repository.git_changes` stays read-only and runs the same two
+allowlisted commands, now under a wall-clock budget; the live path adds no new
+stage and no new Git command.)
+
+Previous review: 2026-09-19 (Git Change Snapshot v1 added as a script-reachable,
 read-only repository utility, and the dormant `packages.capabilities` inventory was
-recounted with repository commands the same day. The live gateway path itself is
+recounted with repository commands the same day. The live gateway path itself was
 unchanged since the 2026-09-09 review).
 
 ## Product Shape
@@ -58,6 +64,33 @@ explicit request override, custom rules, then built-in defaults.
 Uses the startup repository index to select ranked symbols and modules, then
 injects repository context into the provider-bound messages. Delta injection
 suppresses symbols already sent in the conversation.
+
+Change-aware ranking is opt-in and off by default. With
+`APP_REPOSITORY_CONTEXT_CHANGED_FILES_ENABLED=true`, startup takes one
+read-only Git change snapshot through `packages.repository.git_changes`
+(no new Git commands, nothing persisted) and reduces it to a bounded set of
+index module keys - at most 200, rename and copy sources counted alongside
+their targets, deletions never. Ranking then adds one flat `+25` bonus
+(`RankingConfig.WEIGHT_CHANGED_FILE`) to candidates from those modules, and
+only to candidates that already carry a query-match or relationship reason.
+Clearing `MINIMUM_CANDIDATE_SCORE` is not enough on its own, because every
+public symbol earns the public-name and symbol-type bonuses whether or not the
+query mentioned it. Edited files therefore break relevance ties in their favour
+without pulling unrelated symbols in; the token budget still decides how many
+symbols fit, so the signal reorders the same candidate pool instead of enlarging
+it.
+`APP_REPOSITORY_CONTEXT_CHANGED_FILES_TTL_SECONDS` (default `0`) optionally
+refreshes the snapshot once per window through
+`packages.repository.changed_files_refresh`, a background task started during
+lifespan startup that calls the signal on a worker thread, so refreshing never
+runs inside a request; with the default
+`0`, "currently being edited" means "dirty when the gateway started", exactly
+like the index itself. A clean tree, a directory without Git metadata, and a
+failed snapshot all fall back to today's behaviour. Paths are matched after
+`realpath`, so a repository configured through a symlink, junction, `subst`
+drive or 8.3 short name still works, and the count of paths that resolve
+outside the indexed root is reported. Logs and stage data carry
+only the count of changed modules - never paths or file contents.
 
 For anaphoric multi-turn follow-ups such as "for that capping logic" or
 "given that split", retrieval includes the previous clean user task text so
@@ -269,6 +302,10 @@ runs should use `--max-tokens 2048` or higher.
 - planning and intent detection
 - repository-context injection
 - delta context injection
+- opt-in change-aware repository-context ranking (symbols the query already
+  matched get one bounded `+25` bonus when their file is locally modified; off
+  by default, `apps/gateway/main.py` ->
+  `RepositoryContextStage` -> `ContextBuilder` -> `RankingEngine`)
 - history capping
 - session JSONL logging
 - session log analyzer
@@ -343,8 +380,11 @@ runs should use `--max-tokens 2048` or higher.
   `GitUnsafeCommandError` for anything else — including prefix, suffix and
   reordered variants — before a process starts. It parses NUL-delimited porcelain
   v2 only, never stages, commits, resets, checks out, cleans, fetches, or pushes,
-  and orders every collection deterministically. Not part of the gateway request
-  path: no endpoint, no context-ranking input, no memory persistence.
+  and orders every collection deterministically. It stays out of the request
+  path itself - no endpoint and no memory persistence - but
+  `packages.repository.changed_files` now feeds its snapshot into
+  repository-context ranking when
+  `APP_REPOSITORY_CONTEXT_CHANGED_FILES_ENABLED=true` (off by default).
 
 ## What Exists But Is Dormant
 

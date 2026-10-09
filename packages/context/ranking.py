@@ -76,6 +76,7 @@ Scoring Factors
 | Small implementation size | +15 |
 | Token overlap (per token) | +10 |
 | Public name (no underscore prefix) | +5 |
+| Symbol in a locally modified file | +25 (opt-in, only for symbols that already match the query) |
 
 **Penalties (subtractive):**
 
@@ -130,6 +131,8 @@ from typing import TYPE_CHECKING, Any
 from packages.context.models import ContextCandidate
 from packages.context.ranking_config import RankingConfig
 from packages.context.scoring import (
+    RankingReason,
+    carries_query_relevance,
     normalise_query_text,
     score_candidate,
     score_relationship,
@@ -137,7 +140,6 @@ from packages.context.scoring import (
 
 if TYPE_CHECKING:
     from packages.context.models import ContextCandidate as _ContextCandidate
-    from packages.context.scoring import RankingReason
 
 CandidateTokenEstimator = Callable[["ContextCandidate", bool], int]
 
@@ -162,6 +164,7 @@ class RankingEngine:
         relationship_enabled: bool | None = None,
         expansion_enabled: bool | None = None,
         token_estimator: CandidateTokenEstimator | None = None,
+        changed_modules: frozenset[str] = frozenset(),
     ) -> None:
         """Initialise the ranking engine.
 
@@ -179,6 +182,9 @@ class RankingEngine:
             token_estimator: Optional callback used to estimate candidate
                 token cost during relationship expansion. The callback
                 receives ``(candidate, is_primary)``.
+            changed_modules: Index module keys of locally modified files,
+                derived from the read-only Git change snapshot.  Empty by
+                default, which keeps ranking exactly as before.
         """
 
         # Determine defaults from environment variables.
@@ -196,6 +202,7 @@ class RankingEngine:
         self._relationship_enabled = relationship_enabled
         self._expansion_enabled = expansion_enabled
         self._token_estimator = token_estimator
+        self._changed_modules = frozenset(self._module_key(module) for module in changed_modules)
 
     @property
     def relationship_enabled(self) -> bool:
@@ -206,6 +213,28 @@ class RankingEngine:
     def expansion_enabled(self) -> bool:
         """Whether relationship expansion is enabled."""
         return self._expansion_enabled
+
+    @staticmethod
+    def _module_key(module: str) -> str:
+        """Normalise a module path to the index key form used for matching.
+
+        Index keys are repository relative, forward slashed and without the
+        ``.py`` suffix (``packages/context/builder``).  Both that form and a
+        source path ending in ``.py`` are accepted, and normalisation is
+        idempotent.
+
+        Args:
+            module: A module path from a candidate or a changed-module set.
+
+        Returns:
+            The normalised module key.
+        """
+        path = module.replace("\\", "/").strip()
+        while path.startswith("./"):
+            path = path[2:]
+        if path.endswith(".py"):
+            path = path[:-3]
+        return path.rstrip("/")
 
     def rank(
         self,
@@ -226,6 +255,16 @@ class RankingEngine:
         If relationship expansion is enabled, direct callers and callees
         of the primary symbol are appended to the candidate list (after
         the main ranking pass) within the token budget.
+
+        If a changed-module set was supplied, candidates living in those
+        modules receive ``RankingConfig.WEIGHT_CHANGED_FILE`` exactly once,
+        and only when at least one of their reasons ties them to the query
+        (a name, module, test-target or relationship signal) and they already
+        clear ``MINIMUM_CANDIDATE_SCORE``.  The score threshold alone is not
+        relevance - every public symbol carries ``PUBLIC_NAME`` and
+        ``SYMBOL_TYPE_PREFERENCE`` - so the signal reorders symbols the query
+        actually matched instead of promoting whatever else sits in a dirty
+        file.
 
         Args:
             query_text: Raw query text from the user.
@@ -268,6 +307,29 @@ class RankingEngine:
                         stype,
                         lineno,
                         reasons + rel_reasons,
+                        candidate,
+                    )
+
+        # Add the working-tree signal when a changed-module set was supplied.
+        # Bounded on purpose: one flat bonus per candidate, and only for
+        # candidates that already carry a query or relationship signal.  A raw
+        # score threshold would not be enough - every public symbol earns
+        # PUBLIC_NAME and SYMBOL_TYPE_PREFERENCE whether or not the query
+        # mentioned it - so a dirty tree must never promote a symbol that
+        # matched nothing.
+        if self._changed_modules:
+            for i, (s, qname, stype, lineno, reasons, candidate) in enumerate(scored):
+                if (
+                    s >= RankingConfig.MINIMUM_CANDIDATE_SCORE
+                    and carries_query_relevance(reasons)
+                    and self._module_key(candidate.module) in self._changed_modules
+                ):
+                    scored[i] = (
+                        s + RankingConfig.WEIGHT_CHANGED_FILE,
+                        qname,
+                        stype,
+                        lineno,
+                        reasons + [RankingReason.CHANGED_FILE],
                         candidate,
                     )
 

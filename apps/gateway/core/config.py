@@ -98,6 +98,8 @@ class Settings(BaseSettings):
     repository_exclude_globs: str = "scripts/**"  # comma-separated glob list; empty disables
     repository_context_max_tokens: int = 4096
     repository_context_intent_budgets: str = ""
+    repository_context_changed_files_enabled: bool = False  # opt-in change-aware ranking
+    repository_context_changed_files_ttl_seconds: int = 0  # 0 = snapshot once at startup
     context_intent_rules: str = ""
     models_config: str = ""  # JSON array of model definitions; empty = single-provider fallback
     context_delta_injection: bool = True  # inject only symbols not already sent

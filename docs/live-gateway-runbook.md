@@ -198,6 +198,69 @@ EXPLAIN is `4096`: the `2048` budget dropped
 repeatable `multiturn_config_systems` miss. Restart the gateway after changing
 `.env` so new budgets apply.
 
+## Change-Aware Ranking (Optional)
+
+Change-aware ranking lets locally modified files pull their symbols forward in
+repository-context ranking. It is off by default and reuses the read-only
+snapshot behind `scripts/git_change_snapshot.py` - no new Git command runs, and
+each snapshot is bounded by a 30 second command timeout. Only symbols that
+already carry a query-match or relationship reason can win the bonus; a public
+symbol the query never touched keeps its position no matter how dirty its file
+is.
+
+Start the gateway with the flag set (`.env` is loaded with `override=True`, so
+put it in `.env` or make sure `.env` does not already define it):
+
+```powershell
+$env:APP_REPOSITORY_CONTEXT_CHANGED_FILES_ENABLED='true'
+.\uv.exe run python -m uvicorn apps.gateway.main:create_app --factory --port 8001
+```
+
+Check that startup captured something - the line reports counts only, never
+paths or contents:
+
+```powershell
+# in the gateway terminal
+changed_files_signal enabled=true paths=5 captures=1 failures=0 outside_root=0 last_error=none
+```
+
+`paths=0` means a clean tree (expected on a freshly committed checkout); take the
+same number from `scripts\git_change_snapshot.py --json .` to cross-check.
+`last_error` names an exception type only, and a non-zero `failures` value means
+ranking fell back to its normal behaviour. A non-zero `outside_root` with
+`paths=0` means Git's working tree and `APP_REPOSITORY_PATH` do not resolve to
+the same directory - only the count is reported, never the paths.
+
+Per-request lines carry the same bound:
+
+```text
+repository_context ... changed_files_count=5 duration_ms=...
+```
+
+Keep `APP_REPOSITORY_CONTEXT_CHANGED_FILES_TTL_SECONDS=0` (default) unless a
+long-running session must notice edits made after startup. With `0` the snapshot
+is taken once during lifespan startup, so "currently being edited" means
+"dirty when the gateway started" - the same rule the repository index follows.
+Any positive value schedules a background refresh at most once per window; the
+refresh runs on a worker thread, never inside a request, and each Git call is
+bounded by its own timeout.
+
+To A/B it, run the fixed probe set twice against the same backend with only this
+flag changed, on a deliberately dirty tree, and compare both score and
+`context.estimated_tokens`:
+
+```powershell
+.\uv.exe run python scripts\quality_harness.py --json --model qwen38-27b --max-tokens 8192 --reasoning-model qwen38-27b > logs\quality_changed_files_off.json
+# restart the gateway with APP_REPOSITORY_CONTEXT_CHANGED_FILES_ENABLED=true
+.\uv.exe run python scripts\quality_harness.py --json --model qwen38-27b --max-tokens 8192 --reasoning-model qwen38-27b > logs\quality_changed_files_on.json
+.\uv.exe run python scripts\evaluate_quality_harness.py logs\quality_changed_files_on.json --model qwen38-27b
+```
+
+The promotion reorders within the same budget, so `estimated_tokens` may shift
+as different symbols take the same space - what must not happen is the promoted
+arm exceeding `context.max_tokens` or admitting symbols the query never matched.
+Treat either of those as a bug, not as the signal working.
+
 ## Full Quality Baseline
 
 Run the fixed 8-probe set against the current local backend:

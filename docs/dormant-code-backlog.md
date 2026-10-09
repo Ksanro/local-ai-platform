@@ -3,8 +3,10 @@
 This backlog tracks code that exists in the repository but is not wired into
 the live gateway path.
 
-Last reviewed: 2026-09-19 (`packages.capabilities` inventory recounted with
-repository commands; the remaining rows still date from the 2026-08-01 pass).
+Last reviewed: 2026-10-09 (`packages.repository.git_changes` gained a live but
+opt-in consumer - change-aware repository-context ranking - recorded under
+"Cleanup Notes"; the `packages.capabilities` inventory recount from 2026-09-19
+stands, and the remaining rows still date from the 2026-08-01 pass).
 
 ## Live Boundary
 
@@ -207,6 +209,13 @@ would change the product shape from "gateway with context" to "engineering
 agent runtime", which should be a deliberate milestone.
 
 ## Cleanup Notes
+
+- `packages.repository.git_changes` is now consumed by the live gateway through
+  `packages.repository.changed_files`, but only when
+  `APP_REPOSITORY_CONTEXT_CHANGED_FILES_ENABLED=true` (default off). It stays a
+  read-only, two-command Git surface - now under a wall-clock budget per
+  command - and no diff, patch, or GitHub capability was activated by that
+  wiring.
 
 - `packages/pipeline/stages/__init__.py` imports dormant stages for package
   convenience, but `apps/gateway/main.py` registers only

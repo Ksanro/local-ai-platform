@@ -2,9 +2,14 @@
 
 This roadmap is based on the current live gateway, not on dormant scaffolding.
 
-Last reviewed: 2026-09-19 (records the completed dormant Capability Framework v1
+Last reviewed: 2026-10-09 (the read-only Git change snapshot is now wired into
+the live gateway as an opt-in, off-by-default change-aware ranking signal; the
+dormant `packages.capabilities` inventory note and the live-gateway priorities
+from the 2026-09-09 pass are unchanged).
+
+Previous review: 2026-09-19 (records the completed dormant Capability Framework v1
 prototype and the first read-only, script-reachable Git Integration slice; the
-live-gateway priorities are unchanged since the 2026-09-09 pass).
+live-gateway priorities were unchanged since the 2026-09-09 pass).
 
 ## Done Enough For Now
 
@@ -204,7 +209,7 @@ Both slices share the same `memory_v1.json` storage file, distinguished by
 Remaining dormant: controller/execution/verification wiring, semantic memory,
 packages.session/packages.controller integration.
 
-### Git Integration - first slice DONE (read-only, script-reachable)
+### Git Integration - slices 1 and 2 DONE (slice 2 is live but opt-in)
 
 `packages.repository.git_changes` (`capture_change_snapshot`,
 `parse_porcelain_v2`, `GitChangeStatus`, `GitFileChange`, `GitChangeSnapshot`)
@@ -225,11 +230,26 @@ allowed ones - cannot reach Git through this module. Because parsing is limited 
 NUL-delimited porcelain v2, taking a snapshot never stages, commits, resets,
 checks out, cleans, fetches, or pushes, and never rewrites `.git`.
 
-Still deliberately not done: gateway or pipeline wiring, change-aware context
-ranking, engineering-memory persistence of snapshots, diffs and patch
-generation, and the GitHub API. Git integration remains off the current
-latency/retrieval loop; change-aware context and measuring which files were
-actually touched stay deferred until a measured need appears.
+Still deliberately not done: engineering-memory persistence of snapshots, diffs
+and patch generation, and the GitHub API.
+
+Completed next slice (2026-10-09, opt-in and off by default): change-aware
+repository-context ranking. `packages.repository.changed_files` derives a
+bounded set of index module keys from a snapshot (rename and copy sources
+included, deletions excluded), `apps/gateway/main.py` captures it once during
+startup and keeps it warm through `packages.repository.changed_files_refresh`,
+and `RankingEngine` adds one flat `+25` bonus
+(`RankingConfig.WEIGHT_CHANGED_FILE`) to symbols in those modules only when they
+already carry a query-match or relationship reason. No new Git command, no new
+pipeline stage, no new persisted artifact.
+Enable with `APP_REPOSITORY_CONTEXT_CHANGED_FILES_ENABLED=true`;
+`APP_REPOSITORY_CONTEXT_CHANGED_FILES_TTL_SECONDS` (default `0`) is the only
+way to let the snapshot refresh after startup, and the refresh never runs in a
+request path.
+
+Still unmeasured: whether the promotion improves real answer quality, and which
+files an agent actually touched. Both need the A/B protocol in `TESTING.md`
+before the default changes.
 
 ## Deferred
 

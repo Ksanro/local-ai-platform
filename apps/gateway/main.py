@@ -6,6 +6,7 @@ instance for development servers and production WSGI servers.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -40,6 +41,8 @@ from packages.providers.registry import has_provider
 from packages.providers.registry_models import ModelRegistry
 from packages.providers.router import FallbackModelRouter, ModelRouter
 from packages.repository import StructIndex
+from packages.repository.changed_files import ChangedFilesSignal
+from packages.repository.changed_files_refresh import ChangedFilesRefresher
 from packages.repository.index.builder import RepositoryIndexBuilder
 
 logger = logging.getLogger(__name__)
@@ -158,6 +161,38 @@ async def lifespan(app: FastAPI):
         index if isinstance(index, StructIndex) else None
     )
 
+    # Opt-in change-aware ranking signal. The snapshot is captured once here,
+    # off the event loop and during startup, and reduced to a bounded set of
+    # index module keys - so the read-only Git commands never run inside a
+    # request. A positive TTL keeps the snapshot warm from a background task,
+    # also off the loop; the default of 0 creates no task at all. Git ownership
+    # stays in packages.repository.git_changes.
+    changed_files: ChangedFilesSignal | None = None
+    change_refresher: ChangedFilesRefresher | None = None
+    if settings.repository_context_changed_files_enabled:
+        changed_files = ChangedFilesSignal(
+            repo_path,
+            ttl_seconds=settings.repository_context_changed_files_ttl_seconds,
+        )
+        changed_paths = await asyncio.to_thread(changed_files.prime)
+        logger.info(
+            "changed_files_signal enabled=true paths=%d captures=%d "
+            "failures=%d outside_root=%d last_error=%s",
+            len(changed_paths),
+            changed_files.capture_count,
+            changed_files.failure_count,
+            changed_files.outside_root_count,
+            changed_files.last_error or "none",
+        )
+        change_refresher = ChangedFilesRefresher(changed_files)
+        task = change_refresher.start()
+        if task is not None:
+            logger.info(
+                "changed_files_refresh scheduled interval_seconds=%.1f",
+                change_refresher.interval_seconds,
+            )
+    app.state.changed_files_refresher = change_refresher
+
     if model_router is not None:
         engine = PipelineEngine()
         # ModelResolutionStage runs first — before PlanningStage.
@@ -172,6 +207,7 @@ async def lifespan(app: FastAPI):
                 context_delta_cache_size=settings.context_delta_cache_size,
                 max_context_tokens=settings.repository_context_max_tokens,
                 intent_context_budgets=settings.repository_context_intent_budget_map,
+                changed_files=changed_files,
             )
         )
         # ProviderStage is routing-agnostic — reads from context.resolved_model.
@@ -179,6 +215,11 @@ async def lifespan(app: FastAPI):
         app.state.pipeline = engine
 
     yield
+
+    # Stop the background change refresh before closing providers: no worker
+    # thread should outlive the application that scheduled it.
+    if change_refresher is not None:
+        await change_refresher.stop()
 
     # Clean up the router's provider instances on shutdown.
     router = getattr(app.state, "model_router", None)

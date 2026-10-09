@@ -37,6 +37,7 @@ what runs and what is dormant.
 - repository index built at gateway startup
 - deterministic planning and intent detection
 - ranked repository-context injection
+- opt-in change-aware ranking that prefers symbols in locally modified files
 - normalized request boundary preserving OpenAI protocol fields
 - optional history capping to reduce backend prefill latency
 - JSONL session logging and analyzer for real Cline measurements
@@ -60,6 +61,8 @@ APP_REPOSITORY_PATH=.
 APP_REPOSITORY_CONTEXT_ENABLED=true
 APP_REPOSITORY_CONTEXT_MAX_TOKENS=4096
 APP_REPOSITORY_CONTEXT_INTENT_BUDGETS=SEARCH:2048,TEST:2048,DEBUG:2048,REFACTOR:4096,IMPLEMENT:4096,EXPLAIN:4096
+APP_REPOSITORY_CONTEXT_CHANGED_FILES_ENABLED=false
+APP_REPOSITORY_CONTEXT_CHANGED_FILES_TTL_SECONDS=0
 APP_CONTEXT_INTENT_RULES={}
 APP_SESSION_LOG_ENABLED=true
 APP_HISTORY_CAP_ENABLED=true
@@ -114,6 +117,51 @@ Analyze them with:
 
 The analyzer reports prompt tokens, latency, provider wait time, context
 status, intent distribution, and history-capping behavior.
+
+## Change-Aware Repository Context (Optional)
+
+`APP_REPOSITORY_CONTEXT_CHANGED_FILES_ENABLED=true` lets the files you are
+currently editing influence repository-context ranking. At startup the gateway
+takes one read-only Git change snapshot with
+`packages.repository.git_changes` - the same utility
+`scripts/git_change_snapshot.py` uses, and no additional Git commands - and
+reduces it to a bounded set of repository index modules.
+
+Ranking then adds one flat relevance bonus (`+25`,
+`RankingConfig.WEIGHT_CHANGED_FILE`) to symbols living in those modules, and
+only to symbols that already matched the query - by name, by module path, as a
+test target, or through a relationship to the symbol the query resolved to. A
+symbol the query never matched keeps its position no matter how dirty its file
+is, because clearing the minimum score threshold is not relevance: every public
+class already carries the public-name and symbol-type bonuses. Changed files
+therefore break ranking ties and reorder near-equal candidates inside the same
+token budget - they cannot admit a candidate the ranking would not have ranked.
+
+Behaviour notes:
+
+- Off by default; with the flag unset, ranking is exactly what it was before.
+- Renames and copies promote both the new and the previous module path, because
+  the index is built once at startup. Deletions never promote.
+- Untracked files promote only if they were already indexed at startup.
+- Clean trees, non-Python changes, and directories without Git metadata all fall
+  back silently to the current behaviour.
+- Changed paths are matched after `realpath`, so a repository configured through
+  a symlink, junction, `subst` drive or 8.3 short name still works. Paths that
+  resolve outside the configured root are dropped, and their count appears in
+  the startup log line.
+- With the default TTL of `0`, "the files you are currently editing" means the
+  files that were dirty when the gateway started - the same rule the repository
+  index follows. Edits made after startup are picked up on the next restart, or
+  sooner by setting a positive `APP_REPOSITORY_CONTEXT_CHANGED_FILES_TTL_SECONDS`
+  (below).
+- `APP_REPOSITORY_CONTEXT_CHANGED_FILES_TTL_SECONDS` (default `0`) refreshes the
+  snapshot at most once per window, from a background task started during
+  lifespan startup. Refreshing never runs inside a request: each request reads
+  the cached set, and each capture is bounded by the Git command timeout. Set a
+  positive value only when mid-session edits must be picked up without a
+  restart.
+- Logs and stage metadata report the count of changed modules only - never paths
+  and never file contents.
 
 ## Quality Harness
 

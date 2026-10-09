@@ -89,6 +89,7 @@ Public API
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from enum import Enum, auto
 from typing import TYPE_CHECKING, Protocol
 
@@ -148,6 +149,63 @@ class RankingReason(Enum):
     TEST_CODE = auto()
     PRIVATE_SYMBOL = auto()
     LARGE_IMPLEMENTATION = auto()
+
+    # Working-tree reason (change-aware ranking, opt-in)
+    CHANGED_FILE = auto()
+
+
+#: Reasons that tie a candidate to the question that was actually asked.
+#:
+#: * Name and module matching (``EXACT_SYMBOL_NAME``,
+#:   ``EXACT_QUALIFIED_NAME``, ``PARTIAL_SYMBOL_NAME``, ``MODULE_MATCH``,
+#:   ``TOKEN_MATCH``, ``MODULE_TOKEN_MATCH``) is the direct evidence.
+#: * Relationship reasons (``DIRECT_CALLER``, ``DIRECT_CALLEE``,
+#:   ``SHARED_MODULE``, ``SHARED_CLASS``, ``SHARED_PARENT``) count as well.
+#:   This is a deliberate decision, not an oversight: they can only be
+#:   earned through the primary symbol the query resolved to, so the
+#:   candidate is connected to the request instead of merely existing in
+#:   the repository.
+#: * ``TEST_TARGET`` is query-driven by construction - it only appears when
+#:   the query itself asks about tests.
+#:
+#: Purely intrinsic bonuses (``PUBLIC_NAME``, ``SYMBOL_TYPE_PREFERENCE``,
+#: ``PUBLIC_API_BONUS``, ``DOCUMENTATION_BONUS``,
+#: ``IMPLEMENTATION_SIZE_BONUS``, ``IMPORT_PROXIMITY``) are deliberately
+#: absent.  Every public class carries the first two whether or not the
+#: query mentioned anything about it, so they say nothing about relevance.
+QUERY_RELEVANCE_REASONS: frozenset[RankingReason] = frozenset(
+    {
+        RankingReason.EXACT_SYMBOL_NAME,
+        RankingReason.EXACT_QUALIFIED_NAME,
+        RankingReason.PARTIAL_SYMBOL_NAME,
+        RankingReason.MODULE_MATCH,
+        RankingReason.TOKEN_MATCH,
+        RankingReason.MODULE_TOKEN_MATCH,
+        RankingReason.TEST_TARGET,
+        RankingReason.DIRECT_CALLER,
+        RankingReason.DIRECT_CALLEE,
+        RankingReason.SHARED_MODULE,
+        RankingReason.SHARED_CLASS,
+        RankingReason.SHARED_PARENT,
+    }
+)
+
+
+def carries_query_relevance(reasons: Iterable[RankingReason]) -> bool:
+    """Return whether at least one reason ties the symbol to the query.
+
+    Used to keep the working-tree bonus a *reordering* signal: a symbol that
+    only scores through intrinsic quality (a public class nobody asked about)
+    must not be promoted just because its file happens to be dirty.
+
+    Args:
+        reasons: The reasons attached to a candidate so far.
+
+    Returns:
+        ``True`` when a name, module, test-target or relationship signal is
+        present; ``False`` when the candidate matched nothing in the query.
+    """
+    return any(reason in QUERY_RELEVANCE_REASONS for reason in reasons)
 
 
 # ------------------------------------------------------------------

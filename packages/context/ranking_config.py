@@ -39,6 +39,7 @@ Positive factors (bonuses):
 - TOKEN_OVERLAP: Per-query-token overlap (accumulative, +10 per token)
 - MODULE_TOKEN_OVERLAP: Per-query-token module path overlap (+10 per token)
 - PUBLIC_NAME_BONUS: Name doesn't start with "_" (+5)
+- CHANGED_FILE_BONUS: Locally modified file that also matched the query (+25, once)
 
 Penalty factors:
 
@@ -173,6 +174,17 @@ class RankingConfig:
     WEIGHT_PUBLIC_NAME_BONUS: int = 5
     """Public name bonus: the symbol name does not start with "_".
     Applied to all non-private symbols."""
+
+    # Working-tree bonus (change-aware ranking, opt-in)
+    WEIGHT_CHANGED_FILE: int = 25
+    """Locally modified file bonus: the candidate's module is reported as
+    changed by the read-only Git change snapshot.  Applied at most once per
+    candidate, and only to candidates that already score above
+    ``MINIMUM_CANDIDATE_SCORE`` **and** carry a query-match or relationship
+    reason (see ``scoring.QUERY_RELEVANCE_REASONS``).  A public symbol that
+    matches nothing in the query is never promoted just because its file is
+    dirty.  Disabled unless a caller supplies a
+    changed-module set."""
 
     # ------------------------------------------------------------------
     # Penalty factors (negative scores)

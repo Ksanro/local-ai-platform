@@ -55,6 +55,17 @@ turn it:
 This eliminates redundant re-injection of the same symbols across turns.
 When disabled the stage behaves exactly as before.
 
+Change-aware ranking
+--------------------
+
+When a ``changed_files`` source is supplied (opt-in, off by default), the
+stage reads the bounded set of index module keys for locally modified files
+once per request and forwards it to the ranking engine, which adds one flat
+bonus to symbols that already match the query.  The read is a cache lookup:
+with the gateway's startup prime and its background refresher, no request path
+ever reaches Git, and a source that raises degrades to an empty set instead of
+breaking the request.  Only counts are logged - never paths.
+
 Public API
 ----------
 
@@ -89,6 +100,7 @@ from packages.pipeline.base import PipelineStage
 from packages.pipeline.context import PipelineContext
 from packages.pipeline.result import PipelineStageResult
 from packages.pipeline.user_messages import select_context_query_text
+from packages.repository.changed_files import ChangedModuleSource
 from packages.repository.index.models import RepositoryIndex
 from packages.serializers.factory import SerializerFactory
 from packages.serializers.openai import OpenAISerializer  # noqa: F401 - auto-registers
@@ -123,6 +135,7 @@ class RepositoryContextStage(PipelineStage):
         context_delta_cache_size: int = 256,
         max_context_tokens: int = 4096,
         intent_context_budgets: dict[str, int] | None = None,
+        changed_files: ChangedModuleSource | None = None,
     ) -> None:
         """Initialize with an optional repository index.
 
@@ -136,11 +149,15 @@ class RepositoryContextStage(PipelineStage):
                 in the LRU cache.
             max_context_tokens: Token budget for assembled repository context.
             intent_context_budgets: Optional per-intent budget overrides.
+            changed_files: Optional source of index module keys for locally
+                modified files, derived from the read-only Git change
+                snapshot.  ``None`` (the default) leaves ranking untouched.
         """
         self._index = index
         self._delta_enabled = context_delta_injection
         self._tracker = SentSymbolTracker(maxsize=context_delta_cache_size)
         self._max_context_tokens = max_context_tokens if max_context_tokens > 0 else 4096
+        self._changed_files = changed_files
         self._intent_context_budgets = {
             intent.upper(): tokens
             for intent, tokens in (intent_context_budgets or {}).items()
@@ -254,7 +271,12 @@ class RepositoryContextStage(PipelineStage):
                 )
 
             chars_per_token = self._resolve_chars_per_token(context)
-            builder = ContextBuilder(self._index, chars_per_token=chars_per_token)
+            changed_modules = self._resolve_changed_modules()
+            builder = ContextBuilder(
+                self._index,
+                chars_per_token=chars_per_token,
+                changed_modules=changed_modules,
+            )
             context_result = builder.build(query)
 
             # Check if ranking returned no relevant symbols.
@@ -265,9 +287,10 @@ class RepositoryContextStage(PipelineStage):
                 logger.info(
                     "repository_context request_id=%s context_enabled=%s "
                     "context_status=empty reason=no_relevant_symbols "
-                    "duration_ms=%.1f",
+                    "changed_files_count=%d duration_ms=%.1f",
                     request_id,
                     context_enabled,
+                    len(changed_modules),
                     elapsed_ms,
                 )
 
@@ -282,6 +305,7 @@ class RepositoryContextStage(PipelineStage):
                         "symbols_new": 0,
                         "symbols_suppressed": 0,
                         "max_context_tokens": max_context_tokens,
+                        "changed_files_count": len(changed_modules),
                     },
                 )
 
@@ -351,7 +375,8 @@ class RepositoryContextStage(PipelineStage):
                     "repository_context request_id=%s context_enabled=%s "
                     "context_status=%s symbols_selected=%d symbols_new=%d "
                     "symbols_suppressed=%d conversation_key=%s "
-                    "modules_selected=%d estimated_tokens=%d duration_ms=%.1f",
+                    "modules_selected=%d estimated_tokens=%d "
+                    "changed_files_count=%d duration_ms=%.1f",
                     request_id,
                     context_enabled,
                     context_status,
@@ -361,19 +386,22 @@ class RepositoryContextStage(PipelineStage):
                     conv_key_short,
                     modules_selected,
                     estimated_tokens,
+                    len(changed_modules),
                     elapsed_ms,
                 )
             else:
                 logger.info(
                     "repository_context request_id=%s context_enabled=%s "
                     "context_status=%s symbols_selected=%d "
-                    "modules_selected=%d estimated_tokens=%d duration_ms=%.1f",
+                    "modules_selected=%d estimated_tokens=%d "
+                    "changed_files_count=%d duration_ms=%.1f",
                     request_id,
                     context_enabled,
                     context_status,
                     len(package.supporting_symbols),
                     modules_selected,
                     estimated_tokens,
+                    len(changed_modules),
                     elapsed_ms,
                 )
 
@@ -390,6 +418,7 @@ class RepositoryContextStage(PipelineStage):
                     "symbols_new": symbols_new,
                     "symbols_suppressed": symbols_suppressed,
                     "max_context_tokens": max_context_tokens,
+                    "changed_files_count": len(changed_modules),
                 },
             )
 
@@ -441,6 +470,29 @@ class RepositoryContextStage(PipelineStage):
                 result.error,
             )
         return None
+
+    def _resolve_changed_modules(self) -> frozenset[str]:
+        """Read the locally modified module keys without touching Git here.
+
+        The gateway primes its signal during lifespan startup and refreshes it
+        from a background worker thread, so this is a frozen-set lookup in the
+        request path - never a ``git status``.  A source that raises degrades
+        to an empty set; the signal may never break or slow down a request.
+
+        Returns:
+            Index module keys of locally modified files, empty when the
+            feature is disabled.
+        """
+        if self._changed_files is None:
+            return frozenset()
+        try:
+            return frozenset(self._changed_files.module_paths())
+        except Exception as exc:  # graceful degradation
+            logger.warning(
+                "repository_context changed_files_status=unavailable error=%s",
+                type(exc).__name__,
+            )
+            return frozenset()
 
     def _resolve_context_budget(
         self,

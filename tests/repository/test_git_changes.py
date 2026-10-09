@@ -27,6 +27,7 @@ from packages.repository.git_changes import (
     GitError,
     GitFileChange,
     GitPorcelainParseError,
+    GitTimeoutError,
     GitUnavailableError,
     GitUnsafeCommandError,
     NotAGitRepositoryError,
@@ -789,6 +790,31 @@ class TestSubprocessBoundary:
         assert run.argv == [("git", *_STATUS_COMMAND)]
         assert run.kwargs[0]["shell"] is False
         assert run.kwargs[0]["cwd"] == str(tmp_path)
+
+    def test_read_only_commands_get_a_wall_clock_budget(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        run = _RecordingRun()
+        monkeypatch.setattr(git_changes.subprocess, "run", run)
+
+        run_git_command(_ROOT_COMMAND, tmp_path)
+
+        assert run.kwargs[0]["timeout"] == git_changes.GIT_COMMAND_TIMEOUT_SECONDS
+
+    def test_a_stalled_git_process_becomes_a_typed_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def stalled(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+            raise subprocess.TimeoutExpired(list(argv), float(kwargs["timeout"]))  # type: ignore[arg-type]
+
+        monkeypatch.setattr(git_changes.subprocess, "run", stalled)
+
+        with pytest.raises(GitTimeoutError) as error:
+            run_git_command(_STATUS_COMMAND, tmp_path)
+
+        assert error.value.command == _STATUS_COMMAND
+        assert error.value.timeout_seconds == git_changes.GIT_COMMAND_TIMEOUT_SECONDS
+        assert isinstance(error.value, GitError)
 
     def test_rejection_message_lists_the_allowed_commands(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
