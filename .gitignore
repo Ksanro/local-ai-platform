@@ -68,3 +68,6 @@ logs/
 data/engineering_memory/
 
 # Claude Code / extension local settings, caches, and tool output
+extract_data_atlas.py
+QRPY.txt
+rebuild_qrpy.py

@@ -180,8 +180,10 @@ PROBES: tuple[QualityProbe, ...] = (
         intent="DEBUG",
         prompt=(
             "A streamed chat response is logged with an empty answer_preview. "
-            "Which helper should I inspect, and which OpenAI streaming field "
-            "should it read?"
+            "Which lowest-level helper reads the streamed text out of a choice, "
+            "and which OpenAI streaming field does that helper read? Name the "
+            "helper symbol and give the full module path of the implementation "
+            "file so I can open it. Answer concisely. No preamble."
         ),
         expect=(
             fact("_choice_content"),

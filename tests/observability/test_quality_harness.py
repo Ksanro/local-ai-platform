@@ -236,6 +236,24 @@ def test_probe_set_fixed_maximum_is_documented() -> None:
     assert total_maximum == 20
 
 
+def test_debug_streaming_preview_probe_keeps_choice_content_fact() -> None:
+    """The DEBUG probe must still require the lowest-level choice helper."""
+    probe = next(item for item in PROBES if item.id == "debug_streaming_preview")
+
+    assert "answer_preview" in probe.prompt
+    assert "lowest-level helper" in probe.prompt
+    assert tuple(expected.label for expected in probe.expect) == (
+        "_choice_content",
+        "delta.content",
+        "apps/gateway/session_log.py",
+    )
+
+    choice_fact = next(
+        expected for expected in probe.expect if expected.label == "_choice_content"
+    )
+    assert choice_fact.variants == ("_choice_content",)
+
+
 class TestMultiTurnProbes:
     """Multi-turn Cline-like probes exercise conversation history handling."""
 
