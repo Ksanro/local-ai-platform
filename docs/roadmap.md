@@ -247,9 +247,16 @@ Enable with `APP_REPOSITORY_CONTEXT_CHANGED_FILES_ENABLED=true`;
 way to let the snapshot refresh after startup, and the refresh never runs in a
 request path.
 
-Still unmeasured: whether the promotion improves real answer quality, and which
-files an agent actually touched. Both need the A/B protocol in `TESTING.md`
-before the default changes.
+Exploratory live A/B on 2026-10-10 used a temporary dirty marker in
+`apps/gateway/core/config.py` against `qwen3.8-flash-next`. The off/on totals
+were 15/20 and 19/20, but the difference was caused by unrelated model-side
+variance in `explain_live_path`; the probe that retrieved the dirty module
+(`multiturn_config_systems`) scored 2/2 in both arms with identical prompt
+tokens and primary symbol. The run therefore did not measure a quality benefit.
+The feature stays off by default; a future experiment needs a probe whose
+expected retrieval order is sensitive to the changed-module bonus, plus
+replication to separate that effect from sampling noise. Measuring which files
+an agent actually touched also remains open.
 
 ## Deferred
 

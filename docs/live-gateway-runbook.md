@@ -14,8 +14,8 @@ Important: `apps/gateway/main.py` loads `.env` with `override=True`. Values in
 gateway. Before live probes, check `.env` for `APP_SESSION_LOG_PATH` and either
 use that same path in `--session-log-path` or update `.env` for the run.
 
-Current local backend: SGLang serves `qwen3.8-27b` at
-`http://100.106.236.88:30000/v1`, exposed through the gateway as
+Current local backend: SGLang serves `qwen3.8-flash-next` at
+`http://100.106.236.88:18300/v1`, exposed through the gateway as
 `qwen38-27b` with provider `openai`. The Codex sandbox may fail direct TCP
 checks to this port with `Bad access`; retry endpoint checks with approved
 unsandboxed `curl.exe` before treating SGLang as unavailable.
@@ -266,27 +266,30 @@ Treat either of those as a bug, not as the signal working.
 Run the fixed 8-probe set against the current local backend:
 
 ```powershell
-.\uv.exe run python scripts\quality_harness.py --json --model qwen38-27b --max-tokens 8192 --reasoning-model qwen38-27b > logs\quality_baseline_qwen38_27b_after_fixes.json
+.\uv.exe run python scripts\quality_harness.py --json --model qwen38-27b --max-tokens 8192 --reasoning-model qwen38-27b > logs\quality_baseline_qwen3_8_flash_next_20261010.json
 ```
 
-Use `--model qwen38-27b` (gateway alias for SGLang `qwen3.8-27b`) and
+Use `--model qwen38-27b` (gateway alias for SGLang `qwen3.8-flash-next`) and
 `--max-tokens 8192`; the model spends budget on hidden reasoning, so smaller
 limits risk empty or truncated answers. Evaluate the saved JSON:
 
 ```powershell
-.\uv.exe run python scripts\evaluate_quality_harness.py logs\quality_baseline_qwen38_27b_after_fixes.json --model qwen38-27b
+.\uv.exe run python scripts\evaluate_quality_harness.py logs\quality_baseline_qwen3_8_flash_next_20261010.json --model qwen38-27b
 ```
 
 Persist only on a clean pass (all expected facts, style clean, no errors or
 timeouts):
 
 ```powershell
-.\uv.exe run python scripts\evaluate_quality_harness.py logs\quality_baseline_qwen38_27b_after_fixes.json --model qwen38-27b --persist --notes "SGLang qwen3.8-27b full quality baseline after retrieval and EXPLAIN budget fixes"
+.\uv.exe run python scripts\evaluate_quality_harness.py logs\quality_baseline_qwen3_8_flash_next_20261010.json --model qwen38-27b --persist --notes "SGLang qwen3.8-flash-next baseline via gateway alias qwen38-27b"
 ```
 
-The 2026-08-22 baseline scored a clean TOTAL 20/20 with style 8/8 ok
-(28013 prompt tokens, 144.6 seconds) and was persisted as session
-`quality_harness-20260821T214629502370-6d519523`.
+The 2026-10-10 `qwen3.8-flash-next` baseline scored a clean TOTAL 20/20 with
+style 8/8 ok (25093 prompt tokens, 99.2 seconds) and was persisted as session
+`quality_harness-20261009T214258101237-9d6f90f9`. A same-backend
+`--compare-context` run scored 20/20 with context versus 3/20 without it and
+revalidated `chars_per_token=3.5`: all eight measured context costs stayed
+below their estimates (`0.82x-0.96x`, zero budget overages).
 
 ## Interpreting long runs, timeouts, and failed execution
 

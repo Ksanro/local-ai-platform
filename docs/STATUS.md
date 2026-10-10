@@ -3,11 +3,11 @@
 This file is the current runtime snapshot. It intentionally describes only
 what matters for the live gateway path and calls out dormant code explicitly.
 
-Last reviewed: 2026-10-09 (the read-only Git change snapshot gained its first
-live-gateway consumer: opt-in, off-by-default change-aware repository-context
-ranking. `packages.repository.git_changes` stays read-only and runs the same two
-allowlisted commands, now under a wall-clock budget; the live path adds no new
-stage and no new Git command.)
+Last reviewed: 2026-10-10 (`qwen38-27b` now aliases the
+`qwen3.8-flash-next` SGLang backend; its fresh 20/20 quality baseline,
+context-on/context-off comparison, and `chars_per_token=3.5` revalidation are
+recorded below. The opt-in change-aware repository-context ranking added on
+2026-10-09 remains off by default and awaits its own live A/B.)
 
 Previous review: 2026-09-19 (Git Change Snapshot v1 added as a script-reachable,
 read-only repository utility, and the dormant `packages.capabilities` inventory was
@@ -213,6 +213,10 @@ Live validation on qwen38-27b/SGLang (`--compare-context` with context): the
 budget; with `3.5` it is 0 of 8, with no fact misses and no style regressions.
 Baseline run: `logs\quality_compare_qwen38_token_estimate_20260909.json`;
 calibrated run: `logs\quality_compare_qwen38_chars_per_token_3_5_20260909.json`.
+The inherited `3.5` ratio was revalidated on 2026-10-10 after the gateway alias
+was moved to `qwen3.8-flash-next`: all 8 measured context costs stayed below
+their estimates (measured/estimated ratio `0.82x-0.96x`) with 0 budget
+overages. The same context-on/context-off run scored `20/20` versus `3/20`.
 History capping is not affected and still uses the platform default
 `CHARS_PER_TOKEN = 4.0` estimate. True tokenizer integration remains out of
 scope (deferred).
@@ -245,7 +249,7 @@ The current local `.env` routes one live backend through `APP_MODELS_CONFIG`
 
 | client model | provider | base_url | backend_model | context_window | notes |
 |---|---|---|---|---|---|
-| qwen38-27b | openai | http://100.106.236.88:30000/v1 | qwen3.8-27b | 262144 | SGLang server (owned_by: "sglang") |
+| qwen38-27b | openai | http://100.106.236.88:18300/v1 | qwen3.8-flash-next | 262144 | SGLang server; gateway alias retained for client compatibility |
 
 SGLang routing was configured and live-smoked on 2026-08-20. The gateway
 exposed `qwen38-27b` and
@@ -257,13 +261,31 @@ follow-up context selected `packages/pipeline/history._build_cap_groups` with
 1844 estimated context tokens and `symbols_suppressed=1`. Both answers scored
 all expected facts with no style violations.
 
-qwen38-27b via SGLang is the current validated backend. Its full quality
-baseline was completed on 2026-08-22
+The gateway alias `qwen38-27b` now routes to `qwen3.8-flash-next` via SGLang.
+Its full quality baseline was completed on 2026-10-10
 (`scripts/quality_harness.py --json --model qwen38-27b --max-tokens 8192
 --reasoning-model qwen38-27b`): clean TOTAL 20/20 expected facts, style 8/8
-ok, 28013 prompt tokens, 144.6 seconds, saved at
-`logs\quality_baseline_qwen38_27b_after_fixes.json` and persisted as
-engineering-memory session `quality_harness-20260821T214629502370-6d519523`.
+ok, 25093 prompt tokens, 99.2 seconds, saved at
+`logs\quality_baseline_qwen3_8_flash_next_20261010.json` and persisted as
+engineering-memory session `quality_harness-20261009T214258101237-9d6f90f9`.
+The same-backend context comparison scored 20/20 with context versus 3/20
+without it; context-on completed in 93.1 seconds versus 454.1 seconds without
+context because the no-context arm spent far more completion tokens guessing.
+
+The previous `qwen3.8-27b` baseline remains historical: on 2026-08-22 it
+scored 20/20 with style 8/8, 28013 prompt tokens, and 144.6 seconds, persisted
+as session `quality_harness-20260821T214629502370-6d519523`.
+
+An exploratory changed-file-ranking A/B was also run on 2026-10-10 against
+`qwen3.8-flash-next`, using a temporary dirty marker in
+`apps/gateway/core/config.py` and otherwise identical gateway processes. The
+off arm scored 15/20 and the on arm 19/20, but the difference came from
+`explain_live_path` model variance (the off arm exhausted all 8192 completion
+tokens), not the changed module. `multiturn_config_systems`, the probe that
+actually retrieved the dirty module, scored 2/2 in both arms with the same
+4172 prompt tokens and the same primary symbol. This is not evidence that the
+promotion improves quality; the feature remains off by default. Summary:
+`logs\quality_changed_files_ab_qwen3_8_flash_next_20261010_summary.json`.
 
 Previous measured backends included `qwen36` on vLLM at
 `http://100.106.236.88:8000/v1` and `qwen27` on llama.cpp at
