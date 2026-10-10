@@ -164,8 +164,9 @@ class ContextBuilder:
                 and expansion.
 
         Returns:
-            A ``ContextResult`` with candidates (enriched with source data)
-            and selected modules.
+            A ``ContextResult`` with candidates (enriched with source data),
+            selected modules, and how many candidates the ranking pass gave the
+            working-tree bonus to.
         """
         # Enumerate all symbols from the repository.
         all_symbols: list[Symbol] = list(self._index.symbols())
@@ -221,6 +222,9 @@ class ContextBuilder:
             changed_modules=self._changed_modules,
         )
         candidates = engine.rank(query.text, candidates, max_tokens=query.max_tokens)
+        # Measured on the ranking pass itself, before any later promotion or
+        # trimming: how many candidates the working-tree bonus actually moved.
+        changed_bonus_count = engine.changed_file_bonus_count
         candidates = self._promote_request_path_symbols(candidates, query.text)
         candidates = self._promote_session_log_preview_symbols(candidates, query.text)
         candidates = self._promote_repository_context_stage_symbols(candidates, query.text)
@@ -275,6 +279,7 @@ class ContextBuilder:
             candidates=candidates,
             selected_modules=selected_modules,
             budget=budget,
+            changed_bonus_count=changed_bonus_count,
         )
 
     def _promote_referenced_modules(

@@ -160,8 +160,35 @@ Behaviour notes:
   the cached set, and each capture is bounded by the Git command timeout. Set a
   positive value only when mid-session edits must be picked up without a
   restart.
-- Logs and stage metadata report the count of changed modules only - never paths
-  and never file contents.
+- Logs, stage metadata and session records report counts only - never paths,
+  module names, symbol names or file contents.
+
+Whether the bonus actually *changed* the context you sent is measurable from
+those counts. The stage re-ranks the same request without the bonus and compares
+the two composed contexts, so the fields describe an effect, not a presence:
+`changed_files_signal` (`ok`, `off`, or `unavailable`), `changed_files_count`
+(modified files mapped onto indexed modules), `changed_symbols_selected` (sent
+symbols carrying the bonus), `changed_context_differs` (whether the sent context
+differs from the no-bonus one - order included), `changed_symbols_promoted`
+(sent symbols the no-bonus context did not contain), `changed_primary_promoted`
+(whether the primary symbol itself moved) and `changed_baseline_status`
+(`none`, `built`, `skipped_no_bonus`, or `failed`). They are measured on the final
+package, after budget trimming and delta suppression. Promotion is proven by
+`changed_files_signal="ok"`, `changed_files_count >= 1`,
+`changed_baseline_status="built"` and `changed_context_differs=true`; with
+`changed_primary_promoted=false` and `changed_symbols_promoted=0` that is the
+reorder-only case, which is what a flat bonus usually does.
+`changed_symbols_selected` above zero with `changed_context_differs=false` is the
+other honest result: the bonus was present and changed nothing. A `failed`
+comparison is neither - it is a request that could not be measured. Building the
+comparison context is a second full build (about +50 ms per request on a dirty
+tree on this repository's index), so it is made only when the ranking pass gave
+the bonus to at least one candidate.
+
+```powershell
+# what the bonus did across a session log - one section of the normal report
+.\uv.exe run python scripts\analyze_sessions.py logs\sessions.jsonl
+```
 
 ## Quality Harness
 

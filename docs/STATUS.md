@@ -7,7 +7,11 @@ Last reviewed: 2026-10-10 (`qwen38-27b` now aliases the
 `qwen3.8-flash-next` SGLang backend; its fresh 20/20 quality baseline,
 context-on/context-off comparison, and `chars_per_token=3.5` revalidation are
 recorded below. The opt-in change-aware repository-context ranking added on
-2026-10-09 remains off by default and awaits its own live A/B.)
+2026-10-09 remains off by default and awaits its own live A/B. Its promotion is
+now observable counterfactually - the stage re-ranks the same request without the
+working-tree bonus and reports, in count-only fields, whether that changed the
+context it sent; `scripts/analyze_sessions.py` summarizes those fields from
+session JSONL without reading prompts, answers, paths or symbols.)
 
 Previous review: 2026-09-19 (Git Change Snapshot v1 added as a script-reachable,
 read-only repository utility, and the dormant `packages.capabilities` inventory was
@@ -89,8 +93,58 @@ like the index itself. A clean tree, a directory without Git metadata, and a
 failed snapshot all fall back to today's behaviour. Paths are matched after
 `realpath`, so a repository configured through a symlink, junction, `subst`
 drive or 8.3 short name still works, and the count of paths that resolve
-outside the indexed root is reported. Logs and stage data carry
-only the count of changed modules - never paths or file contents.
+outside the indexed root is reported. Logs and stage data carry counts only -
+never paths, module names or file contents. Seven count-only fields make the
+promotion itself observable, on the per-request log line, in the stage result,
+and in the session record's `context` block:
+
+- `changed_files_signal` - whether the working-tree source was usable: `off`
+  (none configured), `ok` (it answered, including with a clean tree), or
+  `unavailable` (it raised, or the stage failed before it could be read). A
+  request whose stage assembled nothing still states the state that was read,
+  so a degraded request never records as a disabled feature;
+- `changed_files_count` - how many locally modified files the signal mapped onto
+  indexed modules (`0` with `ok` means a clean tree);
+- `changed_symbols_selected` - how many of the symbols that were actually sent
+  carry the change-aware reason;
+- `changed_context_differs` - whether the context that was sent differs from the
+  same request composed without the bonus. This is the measurement: the whole
+  composed package is compared, so order counts, and a flat bonus - which is a
+  reordering signal - can no longer be mistaken for "nothing happened";
+- `changed_symbols_promoted` - how many of the sent symbols are absent from the
+  same request re-ranked without the bonus, including symbols outside the
+  changed modules that entered through relationship expansion once the primary
+  changed;
+- `changed_primary_promoted` - whether the bonus changed the primary symbol;
+- `changed_baseline_status` - whether that comparison ran: `none` (nothing to
+  compare), `built` (compared), `skipped_no_bonus` (no candidate received the
+  bonus, so the two contexts are identical by construction), or `failed` (the
+  comparison could not be built - an unmeasurable request, not an inert one).
+
+The counters describe the final context - after budget trimming and delta
+suppression - so a promoted candidate that did not survive the budget is not
+counted, while `changed_files_count` still reports the files that were seen.
+That split is what makes the claim falsifiable:
+`changed_files_signal="ok"`, `changed_files_count >= 1`,
+`changed_baseline_status="built"` and `changed_context_differs=true` proves the
+bonus changed what was sent; a record with `changed_primary_promoted=false` and
+`changed_symbols_promoted=0` inside that proof is the reorder-only case.
+`changed_symbols_selected` above zero with `changed_context_differs=false` and a
+status of `built` or `skipped_no_bonus` proves it was present and changed
+nothing, and `failed` proves nothing at all. `changed_files_count` above zero
+with `changed_symbols_selected` zero means the tree was dirty and nothing
+qualified, which is a selection-gate result rather than a broken signal.
+Building the comparison context costs a second full context build: measured on
+this repository's real index (328 modules, 8 changed) about 50 ms becomes about
+105 ms per request on a dirty tree, so it is paid only when the ranking pass gave
+the bonus to at least one candidate - `changed_modules` reaches nothing else in
+the builder, which makes the skip exact. The cost of a build that was made is
+reported as `changed_baseline_ms` on the log line only and never recorded.
+`scripts/analyze_sessions.py` aggregates the fields from session JSONL without
+reading any content, tallies `proved` (with a primary-changed,
+membership-changed and reorder-only breakdown) apart from `present but inert` and
+`unmeasured`, and separates records that predate them from every rate - see the
+runbook.
 
 For anaphoric multi-turn follow-ups such as "for that capping logic" or
 "given that split", retrieval includes the previous clean user task text so
@@ -508,6 +562,25 @@ Recommended live-path checks:
 The mypy gate passes with the dormant `packages/pipeline/stages/workflow_stage.py`
 module excluded via a pyproject override; CI's mypy step uses the same live-path
 scope.
+
+The count-only changed-file promotion counters ride the same gate:
+`tests/pipeline/test_changed_file_promotion_counts.py`,
+`tests/gateway/test_changed_file_session_metadata.py`,
+`tests/scripts/test_analyze_sessions_promotion.py`, plus the existing
+`tests/pipeline/test_repository_context_changed_files.py`,
+`tests/pipeline/test_repository_context_stage.py` and
+`tests/context/test_changed_file_ranking.py` - 139 tests. Measured on
+2026-10-10 (Python 3.13.14) with this work in the tree,
+`bash scripts/precommit_test_gate.sh --full` ran the whole suite at the documented
+dormant baseline: `43 failed, 4645 passed, 3 skipped`, gate output
+`full suite OK (43 failures, baseline 43)` - the 43 being the 26 in
+`tests/autonomous`, 12 in `tests/observability`, 4 in
+`tests/integration/test_engineering_flow` and 1 in `tests/modification` that
+CLAUDE.md records as expected, none of them in the live path. The live-path gate
+alone, `bash scripts/precommit_test_gate.sh`, ran `2043 passed` with 0 failures.
+On this machine the gate is invoked through Git's bundled bash
+(`& 'C:\Program Files\Git\bin\bash.exe' scripts/precommit_test_gate.sh`), because
+a bare `bash` resolves to the WSL stub, which has no distribution installed.
 
 ## Current Open Issues
 

@@ -247,6 +247,53 @@ Enable with `APP_REPOSITORY_CONTEXT_CHANGED_FILES_ENABLED=true`;
 way to let the snapshot refresh after startup, and the refresh never runs in a
 request path.
 
+Completed the same slice's observability gap (2026-10-10): the promotion is now
+measured counterfactually, not inferred from presence.
+`packages.pipeline.stages.repository_context` re-ranks the same request without
+the working-tree bonus and reports `changed_files_signal`,
+`changed_files_count`, `changed_symbols_selected`, `changed_context_differs`,
+`changed_symbols_promoted`, `changed_primary_promoted` and
+`changed_baseline_status` on the request log line, in the stage result and
+in the session record's `context` block; the counters describe the context that
+was actually sent, so a promoted symbol trimmed by the budget or filtered by
+delta injection is not counted. Promotion is proven by
+`changed_files_signal="ok"`, `changed_files_count >= 1`,
+`changed_baseline_status="built"` and `changed_context_differs=true` - which
+includes the reorder-only case, `changed_primary_promoted=false` with
+`changed_symbols_promoted=0`, because a flat bonus is a reordering signal and
+comparing the primary plus the rest as sets read it as "nothing changed".
+`changed_symbols_promoted` counts every sent symbol absent from the no-bonus
+context, so it can include a symbol outside the changed modules that entered
+through relationship expansion after a primary change. `changed_baseline_status`
+separates a comparison that ran (`built`) from one that could not be built
+(`failed`, which is unmeasurable rather than inert) and from one that was
+provably unnecessary (`skipped_no_bonus`).
+`changed_symbols_selected` above zero with `changed_context_differs` false is
+the opposite result, and it is the one the earlier four-field version could not
+express. The comparison build is read-only: it never touches the delta tracker,
+is never serialized into the request, and its cost is reported as
+`changed_baseline_ms` on the log line only. That cost is real: a second full
+context build roughly doubles the stage on a dirty tree - measured on this
+repository's real index of 328 modules with 8 changed, about 50 ms becomes about
+105 ms - so it is paid only when `RankingEngine.rank()` gave the bonus to at
+least one candidate, a count `ContextResult.changed_bonus_count` carries for the
+purpose. `changed_modules` reaches nothing else in the builder, which makes the
+skip exact. A stage that composes nothing still states the signal state it read,
+or `unavailable` when it failed before reading it, so a degraded request cannot
+record as a disabled feature.
+`scripts/analyze_sessions.py` summarizes the fields from session JSONL in a
+changed-file promotion section, splitting proved (primary changed, membership
+changed, reorder only) from present but inert and unmeasured, and counting records
+that predate the fields separately so they can never enter a rate. It never
+accepts a repository path,
+query, symbol or path filter, and prints no path, symbol or content - the counts
+are the whole contract. A separate A/B of two gateway runs is no longer needed
+to answer "did the bonus change anything", so the standalone
+`scripts/changed_files_observability.py` it briefly lived in is gone. This closes
+the "how do we know a promotion happened" question that made the 2026-10-10 A/B
+run hard to read; the benchmark harness has no changed-files switch and was not
+extended.
+
 Exploratory live A/B on 2026-10-10 used a temporary dirty marker in
 `apps/gateway/core/config.py` against `qwen3.8-flash-next`. The off/on totals
 were 15/20 and 19/20, but the difference was caused by unrelated model-side
@@ -257,6 +304,14 @@ The feature stays off by default; a future experiment needs a probe whose
 expected retrieval order is sensitive to the changed-module bonus, plus
 replication to separate that effect from sampling noise. Measuring which files
 an agent actually touched also remains open.
+
+Open question for the next measured pass: should the flat `+25` changed-file
+bonus outrank an exact symbol-name match? The counters can now answer that
+without a second gateway run - compare `changed_primary_promoted` against
+queries that name a symbol exactly, and check whether the promoted primary is
+the named one or merely the dirty one. Until that evidence exists the weight
+stays at `RankingConfig.WEIGHT_CHANGED_FILE` with no change to its ordering
+against name matches.
 
 ## Deferred
 

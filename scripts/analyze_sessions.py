@@ -13,6 +13,8 @@ Reads a JSONL session log and prints a structured summary including:
 - **Timing breakdown**: pipeline_ms vs provider_wait_ms
 - **Latency-by-prompt-size buckets** with Pearson correlation
 - **Context cost**: repository-context tokens, prompt share, and assembly time
+- **Changed-file promotion**: whether the working-tree bonus changed the context
+  that was sent, tallied by signal state and by whether the comparison ran
 
 Usage
 -----
@@ -346,6 +348,9 @@ def analyze(records: list[dict[str, Any]]) -> None:
 
     # --- Context cost ---
     _print_context_cost(records)
+
+    # --- Changed-file promotion (counterfactual, count-only) ---
+    _print_changed_file_promotion(records)
 
     # --- History capping stats ---
     _print_history_capping(records)
@@ -751,6 +756,207 @@ def _print_context_cost(records: list[dict[str, Any]]) -> None:
         print(f"    Mean:    {_mean(repo_ms_values):.1f} ms")
     else:
         print("  Assembly time: no per-stage data available.")
+    print()
+
+
+#: The changed-file promotion fields as ``apps/gateway/session_log.py`` writes
+#: them.  A record without ``changed_files_signal`` predates the counterfactual
+#: measurement and is reported separately instead of reading as a zero.
+_PROMOTION_FIELDS = (
+    "changed_files_count",
+    "changed_symbols_selected",
+    "changed_primary_promoted",
+    "changed_symbols_promoted",
+    "changed_context_differs",
+    "changed_baseline_status",
+    "changed_files_signal",
+)
+
+#: The baseline states a record can carry.  ``failed`` and an absent state both
+#: mean the comparison was never made, so neither can be read either way.
+_BASELINE_STATES = ("none", "built", "skipped_no_bonus", "failed")
+_BASELINE_MEASURED = ("built", "skipped_no_bonus")
+
+
+def changed_file_promotion_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
+    """Aggregate the count-only changed-file promotion fields of a session log.
+
+    The fields say whether the working-tree bonus *changed* the context that was
+    sent - the stage re-ranked the same request without the bonus and compared
+    the two composed packages - so the verdicts are read off
+    ``changed_context_differs`` and ``changed_baseline_status``, not off whether
+    changed files happened to exist:
+
+    - ``proved``: ``changed_files_signal`` is ``ok``, at least one file was
+      modified, the comparison was ``built``, and the sent context differs;
+    - ``inert``: the signal is ``ok``, at least one sent symbol carried the
+      bonus, the comparison was made or was provably unnecessary, and nothing
+      differs;
+    - ``unmeasured``: the comparison ``failed``, or the record never stated the
+      comparison fields.  It is reported on its own line and counted in neither
+      verdict, because an unmeasurable request looks exactly like a zero only
+      when nobody separates them.
+
+    Args:
+        records: Session log record dicts, as read from JSONL.
+
+    Returns:
+        Counts and rates keyed by signal and baseline state.  Records written
+        before the promotion fields existed are tallied in ``"before_fields"``
+        and excluded from every denominator, so old logs can neither inflate nor
+        deflate a rate.
+    """
+    fielded: list[dict[str, Any]] = []
+    before_fields = 0
+    incomplete = 0
+    by_signal = {"ok": 0, "off": 0, "unavailable": 0, "unknown": 0}
+    by_status = {state: 0 for state in _BASELINE_STATES}
+    by_status["unknown"] = 0
+
+    for record in records:
+        context = record.get("context") or {}
+        if "changed_files_signal" not in context:
+            before_fields += 1
+            continue
+        if any(key not in context for key in _PROMOTION_FIELDS):
+            # A record that states the signal but not every field means a
+            # partially deployed writer.  It still counts as a zero elsewhere,
+            # so the tally says so rather than looking clean.
+            incomplete += 1
+        fielded.append(context)
+        state = str(context.get("changed_files_signal", ""))
+        by_signal[state if state in by_signal else "unknown"] += 1
+        baseline = str(context.get("changed_baseline_status", "") or "")
+        by_status[baseline if baseline in by_status else "unknown"] += 1
+
+    def _count(context: dict[str, Any], key: str) -> int:
+        try:
+            return int(context.get(key, 0) or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    def _status(context: dict[str, Any]) -> str:
+        return str(context.get("changed_baseline_status", "") or "")
+
+    def _differs(context: dict[str, Any]) -> bool:
+        return context.get("changed_context_differs") is True
+
+    def _flag(context: dict[str, Any], key: str) -> bool:
+        return context.get(key) is True
+
+    dirty = [c for c in fielded if _count(c, "changed_files_count") > 0]
+    primary_promoted = [c for c in fielded if _flag(c, "changed_primary_promoted")]
+    unmeasured = [c for c in fielded if _status(c) not in _BASELINE_MEASURED + ("none",)]
+    usable = [
+        c
+        for c in fielded
+        if str(c.get("changed_files_signal")) == "ok" and _status(c) in _BASELINE_MEASURED
+    ]
+    proved = [
+        c
+        for c in usable
+        if _count(c, "changed_files_count") >= 1
+        and _status(c) == "built"
+        and _differs(c)
+    ]
+    proved_primary = [c for c in proved if _flag(c, "changed_primary_promoted")]
+    proved_membership = [c for c in proved if _count(c, "changed_symbols_promoted") > 0]
+    proved_reorder_only = [
+        c
+        for c in proved
+        if not _flag(c, "changed_primary_promoted")
+        and _count(c, "changed_symbols_promoted") == 0
+    ]
+    inert = [
+        c
+        for c in usable
+        if _count(c, "changed_symbols_selected") > 0 and not _differs(c)
+    ]
+
+    return {
+        "records": len(records),
+        "with_fields": len(fielded),
+        "before_fields": before_fields,
+        "incomplete_fields": incomplete,
+        "by_signal": by_signal,
+        "by_baseline_status": by_status,
+        "with_changed_files": len(dirty),
+        "primary_promoted": len(primary_promoted),
+        "symbols_promoted": sum(_count(c, "changed_symbols_promoted") for c in fielded),
+        "symbols_selected": sum(_count(c, "changed_symbols_selected") for c in fielded),
+        "proved": len(proved),
+        "proved_primary": len(proved_primary),
+        "proved_membership": len(proved_membership),
+        "proved_reorder_only": len(proved_reorder_only),
+        "present_but_inert": len(inert),
+        "unmeasured": len(unmeasured),
+        "rate_with_changed_files": (len(dirty) / len(fielded)) if fielded else 0.0,
+        "rate_primary_promoted": (len(primary_promoted) / len(fielded)) if fielded else 0.0,
+    }
+
+
+def _print_changed_file_promotion(records: list[dict[str, Any]]) -> None:
+    """Print the changed-file promotion section.
+
+    Args:
+        records: A list of session log record dicts.
+    """
+    print("-" * 40)
+    print("CHANGED-FILE PROMOTION")
+    print("-" * 40)
+
+    summary = changed_file_promotion_summary(records)
+    if summary["with_fields"] == 0:
+        print(f"  records:                {summary['records']}")
+        print(f"  predating the fields:   {summary['before_fields']}")
+        print("  No record states the promotion fields.")
+        print()
+        return
+
+    by_signal = summary["by_signal"]
+    by_status = summary["by_baseline_status"]
+    print(f"  records:                {summary['records']}")
+    print(f"  stating the fields:     {summary['with_fields']}")
+    print(f"  predating the fields:   {summary['before_fields']} (excluded below)")
+    if summary["incomplete_fields"]:
+        print(f"  missing a field:        {summary['incomplete_fields']} (read as zero)")
+    print()
+    print("  changed_files_signal:")
+    for state in ("ok", "off", "unavailable", "unknown"):
+        if by_signal[state]:
+            print(f"    {state:<18}{by_signal[state]:>6}")
+    print("  changed_baseline_status:")
+    for state in ("built", "skipped_no_bonus", "none", "failed", "unknown"):
+        if by_status[state]:
+            print(f"    {state:<18}{by_status[state]:>6}")
+    print()
+    print("  what the bonus did to the context that was sent:")
+    print(
+        f"    changed_files_count > 0:      {summary['with_changed_files']:>6} "
+        f"({summary['rate_with_changed_files']:.1%} of fielded)"
+    )
+    print(
+        f"    changed_primary_promoted:     {summary['primary_promoted']:>6} "
+        f"({summary['rate_primary_promoted']:.1%} of fielded)"
+    )
+    print(f"    sum changed_symbols_promoted: {summary['symbols_promoted']:>6}")
+    print(f"    sum changed_symbols_selected: {summary['symbols_selected']:>6}")
+    print()
+    print(
+        "    proves a change (signal=ok, count>=1, baseline built, context differs): "
+        f"{summary['proved']}"
+    )
+    print(f"        primary changed:          {summary['proved_primary']:>6}")
+    print(f"        membership changed:       {summary['proved_membership']:>6}")
+    print(f"        reorder only:             {summary['proved_reorder_only']:>6}")
+    print(
+        "    present but inert (bonus selected, context identical): "
+        f"{summary['present_but_inert']}"
+    )
+    print(
+        "    unmeasured (comparison failed or fields absent): "
+        f"{summary['unmeasured']}"
+    )
     print()
 
 

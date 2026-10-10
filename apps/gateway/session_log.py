@@ -28,6 +28,57 @@ The middleware reads context metadata from ``request.scope`` (populated
 by the chat endpoint handler) and appends one JSON line per completed
 request.  Write failures are silently dropped so they never affect the
 response.
+
+Record schema
+-------------
+
+Each line is one JSON object.  The ``context`` section summarises what the
+repository-context stage assembled for the request:
+
+* ``status`` — ``disabled``, ``assembled``, ``no_new_symbols``, ``empty``,
+  ``degraded``.
+* ``symbols_selected`` / ``symbols_new`` / ``symbols_suppressed`` — how many
+  symbols were sent, how many were new to this conversation, and how many the
+  delta tracker removed.
+* ``estimated_tokens`` / ``max_tokens`` — the size of the injected context and
+  the budget it was fitted into.
+* ``primary_symbol`` — the symbol the context is organized around.
+* ``changed_files_signal`` — whether the working-tree signal was usable for this
+  request: ``off`` (no change-aware source configured), ``ok`` (the source
+  answered, including with a perfectly clean tree), or ``unavailable`` (the
+  source raised, or the stage failed before it could be read).  A request that
+  never assembled context still states the state that was read.
+* ``changed_files_count`` — how many locally modified files the signal mapped
+  onto indexed modules.  Zero in the ``off`` and ``unavailable`` states.
+* ``changed_symbols_selected`` — how many of the symbols actually sent carry the
+  working-tree bonus, after budget trimming and delta suppression.  This says
+  how much of the context the bonus touched, not that it changed anything.
+* ``changed_context_differs`` — whether the context that was sent differs from
+  the same request composed without the bonus.  This is the measurement: the
+  comparison covers the whole composed package, so a change of order counts even
+  when the primary and the membership are identical.
+* ``changed_primary_promoted`` — whether the bonus changed the primary symbol.
+  The stage re-ranks the same request without the bonus and compares the two
+  contexts, so this is a counterfactual, not a presence flag.
+* ``changed_symbols_promoted`` — how many sent symbols are absent from that
+  no-bonus context, including symbols outside the changed modules that entered
+  through relationship expansion once the primary changed.
+* ``changed_baseline_status`` — whether that comparison was made at all:
+  ``none`` (nothing to compare — signal off, unavailable, or a clean tree),
+  ``built`` (compared), ``skipped_no_bonus`` (no candidate received the bonus, so
+  the two contexts are identical by construction), or ``failed`` (the comparison
+  could not be built, which is an unmeasurable request, not an inert one).
+
+Building the comparison context costs a second full context build, which on a
+dirty tree roughly doubles this stage — measured on this repository's real index
+of 328 modules with 8 changed, about 50 ms becomes about 105 ms.  It is therefore
+built only when the ranking pass gave the bonus to at least one candidate; the
+cost of a build that was made is reported as ``changed_baseline_ms`` on the
+request log line and deliberately never recorded here.
+
+The changed-file fields are counts, two booleans, and two state tokens.  Changed
+file paths, module names derived from them, symbol names, and Git output are
+never recorded.
 """
 
 from __future__ import annotations
@@ -42,6 +93,7 @@ from typing import Any
 
 from apps.gateway.core.config import get_settings
 from packages.context.content import content_to_text
+from packages.pipeline.stages.repository_context import INERT_PROMOTION
 
 logger = logging.getLogger(__name__)
 
@@ -332,6 +384,15 @@ class SessionLoggerMiddleware:
             "estimated_tokens": scope.get("session_estimated_tokens", 0),
             "max_tokens": scope.get("session_context_max_tokens", 0),
             "primary_symbol": scope.get("session_primary_symbol", ""),
+            # Count-only view of change-aware ranking: whether the working-tree
+            # bonus changed the context that was sent, measured against the same
+            # request re-ranked without the bonus.  Changed file paths are never
+            # recorded, and the defaults come from the stage's own inert values
+            # so a record can never lack a field the stage can emit.
+            **{
+                key: scope.get(f"session_{key}", default)
+                for key, default in INERT_PROMOTION.items()
+            },
         }
 
         # Intent from PlanningStage.

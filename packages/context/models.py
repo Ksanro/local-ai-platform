@@ -111,8 +111,14 @@ class ContextResult:
         candidates: Ordered list of candidate symbols.
         selected_modules: Unique module names in insertion order, bounded by ``max_modules``.
         budget: Token budget estimate for the assembled context.
+        changed_bonus_count: How many candidates the ranking pass gave the
+            working-tree bonus to.  Zero proves that the same request ranked
+            without the signal would order identically, which is what lets a
+            caller skip building a comparison context.  It is a count - no
+            module, path or symbol name is carried here.
     """
 
     candidates: list[ContextCandidate] = field(default_factory=list)
     selected_modules: list[str] = field(default_factory=list)
     budget: ContextBudgetResult = field(default_factory=ContextBudgetResult)
+    changed_bonus_count: int = 0

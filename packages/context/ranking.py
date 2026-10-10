@@ -203,6 +203,18 @@ class RankingEngine:
         self._expansion_enabled = expansion_enabled
         self._token_estimator = token_estimator
         self._changed_modules = frozenset(self._module_key(module) for module in changed_modules)
+        self._changed_file_bonus_count = 0
+
+    @property
+    def changed_file_bonus_count(self) -> int:
+        """How many candidates the last ``rank()`` gave the working-tree bonus.
+
+        Zero means the changed-module set touched no candidate at all, which is
+        the exact condition under which ranking with the signal and ranking
+        without it produce the same ordered result.  It is a count, never a
+        module or path name.
+        """
+        return self._changed_file_bonus_count
 
     @property
     def relationship_enabled(self) -> bool:
@@ -264,7 +276,9 @@ class RankingEngine:
         relevance - every public symbol carries ``PUBLIC_NAME`` and
         ``SYMBOL_TYPE_PREFERENCE`` - so the signal reorders symbols the query
         actually matched instead of promoting whatever else sits in a dirty
-        file.
+        file.  ``changed_file_bonus_count`` reports how many candidates that
+        pass touched, which is the only honest test of whether the bonus can
+        change the result at all.
 
         Args:
             query_text: Raw query text from the user.
@@ -276,6 +290,12 @@ class RankingEngine:
         """
 
         query_tokens = normalise_query_text(query_text)
+
+        # Per-pass measurement of the working-tree signal: how many candidates
+        # actually received the bonus.  Zero is proof that ranking with the
+        # changed-module set and ranking without it order the same way, which is
+        # what lets the caller skip building a comparison context.
+        self._changed_file_bonus_count = 0
 
         # Score each candidate with multi-factor engineering ranking.
         scored: list[tuple[int, str, str, int, list[RankingReason], _ContextCandidate]] = []
@@ -318,6 +338,7 @@ class RankingEngine:
         # mentioned it - so a dirty tree must never promote a symbol that
         # matched nothing.
         if self._changed_modules:
+            bonus_applied = 0
             for i, (s, qname, stype, lineno, reasons, candidate) in enumerate(scored):
                 if (
                     s >= RankingConfig.MINIMUM_CANDIDATE_SCORE
@@ -332,6 +353,8 @@ class RankingEngine:
                         reasons + [RankingReason.CHANGED_FILE],
                         candidate,
                     )
+                    bonus_applied += 1
+            self._changed_file_bonus_count = bonus_applied
 
         # Sort: score descending, then qualified_name ascending,
         # then symbol_type preference descending, then module ascending.

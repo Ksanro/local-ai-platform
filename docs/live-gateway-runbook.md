@@ -231,11 +231,97 @@ ranking fell back to its normal behaviour. A non-zero `outside_root` with
 `paths=0` means Git's working tree and `APP_REPOSITORY_PATH` do not resolve to
 the same directory - only the count is reported, never the paths.
 
-Per-request lines carry the same bound:
+Per-request lines carry the same bound, and name the promotion in counts only:
 
 ```text
-repository_context ... changed_files_count=5 duration_ms=...
+repository_context request_id=... context_status=ok ... estimated_tokens=1840 changed_files_signal=ok changed_files_count=5 changed_symbols_selected=2 changed_primary_promoted=True changed_symbols_promoted=1 changed_context_differs=True changed_baseline_status=built changed_baseline_ms=0.4 duration_ms=...
 ```
+
+The same seven fields also land in the session record's `context` block, so a
+session log alone is enough to measure the signal (`changed_baseline_ms` is a
+cost, so it stays on the log line and is never recorded):
+
+| field | meaning |
+| --- | --- |
+| `changed_files_signal` | whether the working-tree source was usable: `off` (none configured), `ok` (it answered, a clean tree included), `unavailable` (it raised, or the stage failed before it could be read) |
+| `changed_files_count` | locally modified files the signal mapped onto indexed modules (`0` together with `ok` means a clean tree) |
+| `changed_symbols_selected` | symbols in the context that was actually sent that carry the working-tree bonus |
+| `changed_context_differs` | whether the sent context differs from the same request composed without the bonus - order included, which is what a flat bonus usually moves |
+| `changed_symbols_promoted` | symbols sent now that the same request re-ranked without the bonus did not send |
+| `changed_primary_promoted` | whether the bonus changed the primary symbol |
+| `changed_baseline_status` | whether that comparison ran: `none`, `built`, `skipped_no_bonus`, or `failed` |
+
+`changed_symbols_selected` answers "was the bonus in the context";
+`changed_context_differs` answers "did it change the context", because the stage
+builds the no-bonus context for the same request and compares the two composed
+packages. The two `promoted` fields are detail on top of that difference: which
+part of it the primary and the added symbols account for. Read together:
+
+- `changed_files_signal=ok`, `changed_files_count >= 1`,
+  `changed_baseline_status=built` and `changed_context_differs=true` - the bonus
+  changed what was sent. That includes the reorder-only case, where
+  `changed_primary_promoted=false` and `changed_symbols_promoted=0` while the
+  same symbols went out in a different order - which for a flat bonus is the
+  normal outcome, not an edge case;
+- `changed_symbols_selected > 0` with `changed_context_differs=false` and a
+  baseline status of `built` or `skipped_no_bonus` - the bonus was present and
+  changed nothing, which the earlier four counters could not tell apart from a
+  promotion;
+- `changed_files_count > 0` with `changed_symbols_selected = 0` - the tree was
+  dirty and nothing qualified, which is the selection gate, not a failure;
+- `changed_baseline_status=failed` - the comparison could not be built, so the
+  request is unmeasurable; it is neither a promotion nor a measured zero;
+- `changed_files_signal=unavailable` - the source failed, so every other field on
+  that record is a zero rather than a measurement;
+- `changed_files_signal=off` on a request with `status` `disabled` or `degraded` -
+  no source is configured, or the stage failed before reading it. A stage that
+  did read the signal states what it read even when it assembled nothing, so
+  `off` on a dirty tree means the feature is genuinely switched off.
+
+All of them describe the final context - after budget trimming and delta
+suppression - so a promoted candidate that did not survive the budget is not
+counted. The comparison context is never sent, never stored, and never written to
+a record. Building it costs a second full context build, which on a dirty tree
+roughly doubles this stage - measured on this repository's real index of 328
+modules with 8 changed, about 50 ms becomes about 105 ms - so it is built only
+when the ranking pass gave the bonus to at least one candidate, and the cost of a
+build that was made is what `changed_baseline_ms` states. Note that
+`changed_files_signal` also appears in the startup line quoted above, where it
+names the snapshot rather than a per-request state.
+
+To read the counters across a run without opening a single prompt, answer or
+path, use the session analyzer - the promotion is one section of its normal
+report:
+
+```powershell
+.\uv.exe run python scripts\analyze_sessions.py logs\sessions.jsonl
+```
+
+Its `CHANGED-FILE PROMOTION` section tallies records by `changed_files_signal`
+and by `changed_baseline_status`, counts the records with
+`changed_files_count > 0` and with `changed_primary_promoted`, sums
+`changed_symbols_promoted` and `changed_symbols_selected`, and splits the three
+verdicts above: `proves a change` (broken down into `primary changed`,
+`membership changed` and `reorder only`), `present but inert`, and `unmeasured`.
+A record whose comparison `failed`, and one that never states the comparison
+fields, land in `unmeasured` and in neither verdict. Records written before the
+fields existed are listed as `predating the fields` and excluded from every rate,
+so an old log can neither inflate nor deflate the measurement. Point it at the
+path the gateway writes to (`APP_SESSION_LOG_PATH`, default
+`logs/sessions.jsonl`); it reads files, never a config, and prints no path,
+symbol or content.
+
+That section replaces the old two-file A/B: one run now states whether the bonus
+changed anything, so `logs\changed_files_off.jsonl` and
+`logs\changed_files_on.jsonl` no longer need to exist side by side to answer the
+question. A run that reads entirely as `present but inert` on a dirty tree means
+the measured baseline and the sent context came out identical - which is a real
+result, and a normal one for a query the changed module was going to lead on
+anyway. It does not mean the requests bypassed the stage: `changed_files_signal=ok`
+with `changed_files_count >= 1` and `changed_symbols_selected > 0` is only
+producible by the stage and the signal having run. Requests that never reached the
+stage read as `changed_files_signal=off`, or as records without the fields, and
+`unmeasured` records say the comparison itself did not run.
 
 Keep `APP_REPOSITORY_CONTEXT_CHANGED_FILES_TTL_SECONDS=0` (default) unless a
 long-running session must notice edits made after startup. With `0` the snapshot
@@ -260,6 +346,15 @@ The promotion reorders within the same budget, so `estimated_tokens` may shift
 as different symbols take the same space - what must not happen is the promoted
 arm exceeding `context.max_tokens` or admitting symbols the query never matched.
 Treat either of those as a bug, not as the signal working.
+
+Before scoring either arm, confirm the bonus actually reached the context. In the
+enabled run's session log, the `CHANGED-FILE PROMOTION` section of
+`scripts\analyze_sessions.py` must show at least one record with
+`changed_files_signal="ok"`, `changed_files_count >= 1` and either
+`changed_symbols_promoted >= 1` or `changed_primary_promoted=true`. A record with
+`changed_symbols_selected > 0` and `changed_symbols_promoted = 0` is the other
+honest result - the bonus was present and changed nothing - and it means the two
+arms measured the same retrieval twice.
 
 ## Full Quality Baseline
 

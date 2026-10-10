@@ -160,6 +160,40 @@ def test_reason_is_recorded_only_for_changed_modules() -> None:
     assert RankingReason.CHANGED_FILE not in promoted[UNCHANGED_SYMBOL]
 
 
+def test_engine_counts_the_candidates_it_gave_the_bonus_to() -> None:
+    """The count is what lets a caller prove a comparison cannot differ.
+
+    ``UnrelatedThing`` sits in the changed module and clears the floor without
+    the query, and ``_hidden`` never clears it, so neither may be counted: the
+    number has to mean "the bonus moved this many candidates", not "this many
+    candidates live in a dirty file".
+    """
+    engine = RankingEngine(changed_modules=frozenset({CHANGED_MODULE}))
+    engine.rank(QUERY, _candidates())
+
+    assert engine.changed_file_bonus_count == 1
+
+    disabled = RankingEngine()
+    disabled.rank(QUERY, _candidates())
+    assert disabled.changed_file_bonus_count == 0
+
+    clean = RankingEngine(changed_modules=frozenset())
+    clean.rank(QUERY, _candidates())
+    assert clean.changed_file_bonus_count == 0
+
+
+def test_the_count_is_per_pass_and_not_cumulative() -> None:
+    """A fresh ``rank()`` restates the number instead of adding to it."""
+    engine = RankingEngine(changed_modules=frozenset({CHANGED_MODULE}))
+    engine.rank(QUERY, _candidates())
+    engine.rank(QUERY, _candidates())
+
+    assert engine.changed_file_bonus_count == 1
+
+    engine.rank(QUERY, _candidates())
+    assert engine.changed_file_bonus_count == 1
+
+
 def test_filtered_symbol_is_never_admitted() -> None:
     """The bonus cannot rescue a symbol that ranking would have dropped."""
     ranked = _rank(frozenset({CHANGED_MODULE}))
@@ -260,3 +294,14 @@ def test_builder_does_not_grow_the_context() -> None:
     assert len(promoted.candidates) == len(baseline.candidates)
     assert sorted(promoted.selected_modules) == sorted(baseline.selected_modules)
     assert promoted.budget.estimated_tokens == baseline.budget.estimated_tokens
+
+
+def test_builder_reports_the_bonus_count_on_the_result() -> None:
+    """The count survives the builder so a caller never has to re-rank for it."""
+    index = _index()
+    baseline = ContextBuilder(index).build(_query())
+    promoted = ContextBuilder(index, changed_modules=frozenset({CHANGED_MODULE})).build(_query())
+
+    assert promoted.changed_bonus_count == 1
+    assert baseline.changed_bonus_count == 0
+    assert ContextBuilder(index).build(_query()).changed_bonus_count == 0

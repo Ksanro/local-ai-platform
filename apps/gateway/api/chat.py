@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import time
 import uuid
+from collections.abc import MutableMapping
 from typing import Any, cast
 
 from fastapi import APIRouter, HTTPException, Request
@@ -20,6 +21,7 @@ from apps.gateway.core.config import get_settings
 from packages.pipeline.engine import PipelineEngine
 from packages.pipeline.exceptions import PipelineError
 from packages.pipeline.request import PipelineRequest
+from packages.pipeline.stages.repository_context import INERT_PROMOTION
 from packages.providers.exceptions import (
     ProviderAuthenticationError,
     ProviderConnectionError,
@@ -102,6 +104,39 @@ def _status_for_exception(exc: Exception | None) -> int:
     return 502
 
 
+def _surface_changed_file_promotion(
+    scope: MutableMapping[str, Any],
+    pkg: dict[str, Any],
+) -> None:
+    """Copy the count-only changed-file promotion fields onto the scope.
+
+    The repository-context stage re-ranks the same request without the
+    working-tree bonus and compares the two contexts, so these fields state
+    whether the bonus *changed* what is being sent rather than merely that it
+    was present.  Only counters, one boolean derived from comparing the two
+    composed packages, and state tokens are surfaced - the changed file paths
+    behind them never reach a session record.  Each field is coerced to the type
+    it is contracted to, and defaults come from ``INERT_PROMOTION``, the single
+    source of truth the stage itself uses.
+
+    Args:
+        scope: The ASGI scope the session logger reads.
+        pkg: The ``repository_context`` stage result data.
+    """
+    for key, inert in INERT_PROMOTION.items():
+        value = pkg.get(key, inert)
+        # Coerce by the type the field is contracted to: a missing or odd-typed
+        # counter states the inert value rather than guessing, and never turns a
+        # truthy leftover into a reading of "promoted".
+        if isinstance(inert, bool):
+            coerced: Any = bool(value)
+        elif isinstance(inert, str):
+            coerced = value if isinstance(value, str) else inert
+        else:
+            coerced = value if isinstance(value, int) and not isinstance(value, bool) else inert
+        scope[f"session_{key}"] = coerced
+
+
 def _surface_session_metadata(
     request: Request,
     engine: PipelineEngine,
@@ -167,6 +202,18 @@ def _surface_session_metadata(
     )
 
     # --- Repository context metadata ---
+    # The changed-file promotion counters are count-only, so every branch below
+    # states them explicitly: a session record always carries the keys, and the
+    # inert defaults mean "nothing here is attributable to the bonus".
+    for key, value in INERT_PROMOTION.items():
+        scope[f"session_{key}"] = value
+    # A stage that assembled nothing - no index, or a failure part-way through -
+    # returns no data to read from, so the signal state it did determine travels
+    # on the pipeline metadata.  Without that, a configured source would record
+    # as "off", which claims something different from "the stage never finished".
+    degraded_signal = resp_meta.get("changed_files_signal")
+    if isinstance(degraded_signal, str) and degraded_signal:
+        scope["session_changed_files_signal"] = degraded_signal
     repo_result = stage_results.get("repository_context")
     if repo_result is not None and repo_result.success:
         pkg = repo_result.data
@@ -197,6 +244,7 @@ def _surface_session_metadata(
                 scope["session_context_max_tokens"] = pkg.get("max_context_tokens", 0)
                 prim = getattr(package, "primary_symbol", "") if package else ""
                 scope["session_primary_symbol"] = prim
+                _surface_changed_file_promotion(scope, pkg)
             else:
                 # Empty or no_new_symbols path.
                 symbols_new = pkg.get("symbols_new", 0)
@@ -210,6 +258,7 @@ def _surface_session_metadata(
                 scope["session_estimated_tokens"] = 0
                 scope["session_context_max_tokens"] = pkg.get("max_context_tokens", 0)
                 scope["session_primary_symbol"] = ""
+                _surface_changed_file_promotion(scope, pkg)
         else:
             scope["session_context_status"] = "disabled"
             scope["session_symbols_selected"] = 0
