@@ -184,7 +184,23 @@ class RankingConfig:
     reason (see ``scoring.QUERY_RELEVANCE_REASONS``).  A public symbol that
     matches nothing in the query is never promoted just because its file is
     dirty.  Disabled unless a caller supplies a
-    changed-module set."""
+    changed-module set.
+
+    Whether this size is right is still an open decision, not a settled one.
+    Two things are measured, both offline and deterministically, by
+    ``scripts/quality_harness.py --changed-file-probe`` (which runs the real
+    ``RepositoryContextStage`` twice, with a dirty module injected rather than
+    read from Git) and ``--changed-file-sweep`` (which reports, per fixed query,
+    the smallest bonus that hands the primary to a symbol in another module):
+
+    * between candidates of equal relevance - and on this repository most
+      queries have at least one of those, in another file - the reorder happens
+      at **any** nonzero value, so the size of this constant buys nothing there;
+    * against a candidate that only matched the query through a name segment or
+      a path token, this value is exactly how far behind it may sit and still
+      take the primary.  ``+5`` is a documented candidate for that reason, not
+      shipped behavior; ``--changed-file-weight`` compares the two without
+      editing this file.  See the 2026-10-11 note in ``docs/STATUS.md``."""
 
     # ------------------------------------------------------------------
     # Penalty factors (negative scores)

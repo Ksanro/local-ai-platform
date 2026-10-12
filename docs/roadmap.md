@@ -19,9 +19,13 @@ live-gateway priorities were unchanged since the 2026-09-09 pass).
 - provider registry and factory
 - model registry
 - True Multi-Provider (live):
-  - model "qwen38-27b" -> provider "openai" -> http://100.106.236.88:30000/v1
-    (SGLang backend_model "qwen3.8-27b", context_window 262144)
-  - Previous measured backends: model "qwen36" via vLLM
+  - model "qwen38-27b" -> provider "openai" -> http://100.106.236.88:18300/v1
+    (vLLM server, backend_model "qwen3.8-flash-next", context_window 262144;
+    "openai" is the OpenAI-compatible client used to talk to it, checked against
+    /v1/models on 2026-10-12)
+  - Previous measured backends: the same alias on SGLang
+    (http://100.106.236.88:30000/v1, backend_model "qwen3.8-27b"), model "qwen36"
+    via vLLM
     (http://100.106.236.88:8000/v1) and model "qwen27" via llama.cpp
     (http://100.106.236.88:8080/v1); keep older measurements labeled with their
     model/backend.
@@ -81,7 +85,12 @@ in sections 2 and 3.
 The fixed probe set proves repository context adds answer-quality signal
 (`20/20` with context versus `2/20` without context in the qwen36
 `--compare-context` run, including the 2 multi-turn probes). The current
-qwen38-27b/SGLang full baseline is clean at `20/20` with style `8/8`.
+qwen38-27b/SGLang full baseline of 2026-10-10 (the backend that alias pointed at
+before it moved to vLLM) is clean at `20/20` with style `8/8`. That was the
+8-probe set; `PROBES` now has 10 entries and 26 expected facts, the two added ones
+being `explain_changed_files_contextbuilder` and
+`explain_changed_files_repository_index` - the scored halves of the change-aware
+ranking decision under Git Integration below.
 
 Done in this area:
 
@@ -300,18 +309,112 @@ were 15/20 and 19/20, but the difference was caused by unrelated model-side
 variance in `explain_live_path`; the probe that retrieved the dirty module
 (`multiturn_config_systems`) scored 2/2 in both arms with identical prompt
 tokens and primary symbol. The run therefore did not measure a quality benefit.
-The feature stays off by default; a future experiment needs a probe whose
-expected retrieval order is sensitive to the changed-module bonus, plus
-replication to separate that effect from sampling noise. Measuring which files
-an agent actually touched also remains open.
+The feature stays off by default. What that experiment needed - a probe whose
+context actually differs between a feature-off and a feature-on arm, plus replication
+that can tell the effect apart from sampling noise - is now registered, as
+`explain_changed_files_repository_index` run with `--repeat 3` beside its negative
+control `explain_changed_files_contextbuilder`; the paragraphs below record what the
+offline cases say and what the live half found when it ran on 2026-10-12.
+Measuring which files an agent actually touched also remains open.
 
-Open question for the next measured pass: should the flat `+25` changed-file
-bonus outrank an exact symbol-name match? The counters can now answer that
-without a second gateway run - compare `changed_primary_promoted` against
-queries that name a symbol exactly, and check whether the promoted primary is
-the named one or merely the dirty one. Until that evidence exists the weight
-stays at `RankingConfig.WEIGHT_CHANGED_FILE` with no change to its ordering
-against name matches.
+Measured offline on 2026-10-11, and still open as a decision. The question - can
+the working-tree bonus outrank a symbol the query matched by name? - needed one
+term splitting in two, because `EXACT_SYMBOL_NAME` fires when *any* segment of a
+qualified name equals a query token, and the module-path segments count:
+
+- a **name match** can be an accident of where a symbol lives;
+- **named in the query** means the prompt contains the symbol's own name, and is
+  the case the bonus has no business losing.
+
+What `scripts/quality_harness.py --changed-file-probe` measured over this
+repository's real index, running `RepositoryContextStage` on both arms with a dirty
+module injected (never read from Git, so the working tree is irrelevant), at the
+configured 4096-token budget:
+
+- the query that names `ContextBuilder` holds its primary at `+5` and `+10` and
+  loses it from `+15`, when a dirty `packages/context/budget.py` puts `155 + 15`
+  against the leader's `170` and sorts first on the tie-break;
+- and losing it costs nothing. The bonus puts the budget file's two symbols in front
+  of the builder file's three instead of in place of them, so `ContextBuilder`,
+  `_enforce_budget` and `packages/context/builder.py` are in the text both arms would
+  have sent. A moved primary with an intact context is not an effect an answer can
+  show, and that is why this pair is the control rather than the claim;
+- a dirty file the prompt never mentions stays out at any weight, reported as
+  `changed_baseline_status=skipped_no_bonus`;
+- `--changed-file-sweep` gives the same flip point per query without touching Git
+  at all: across 12 fixed queries, 6 are already tied with a candidate in another
+  file and flip at `+1`, and the rest at 10, 15, 21, 30, 30 and 70. There is no
+  single "name floor" to sit under - a tie needs no size to be decided.
+- bonus size is not the main lever on what gets sent. With
+  `packages/repository/index/models.py` dirty, "how does model resolution pick a
+  backend" sends 12 symbols the no-bonus context did not at `+5` and `+10`, and 13
+  at `+25`, with the primary unchanged every time: `model` is a path token of that
+  module, `MODULE_MATCH` counts as query relevance, and the gate lets the file in.
+  Reducing the weight does not touch that.
+- one query does lose something, and it loses a whole file. "How does the repository
+  index builder construct the index, including its collaborators for files and
+  models?" with
+  `packages/repository/index/models.py` dirty sends 10 symbols instead of 14: the
+  dirty module's symbols take the front of the order, the budget runs out inside
+  `packages/repository/index/models.py`, and `packages/repository/index/builder.py`
+  leaves the context. `PythonAstExtractor`, `RelationshipRegistry`, and
+  `CallExtractor` are available in the off arm and unavailable in the on arm -
+  `facts_lost` reports all three, and no symbol of that file survives anywhere in the
+  changed context to be counted as still-visible. It happens at `+1` exactly as at
+  `+25` (`changed_symbols_promoted=0`, `changed_primary_promoted=1`), and it is a
+  representation effect as well as an eviction at the configured budget: at 6144
+  tokens both files' symbols fit and `PythonAstExtractor` returns, but the builder is
+  supporting context and its constructor-body details `RelationshipRegistry` and
+  `CallExtractor` remain unavailable. At 4096 all three details are lost.
+
+So the evidence says a smaller bonus is defensible and a large one is not needed,
+but it does not say `+5` is right either: `WEIGHT_CHANGED_FILE` stays at the `+25`
+that shipped, and `+5` is recorded here as a candidate, comparable without a code
+change through `--changed-file-probe --changed-file-weight 5`.
+`tests/context/test_changed_file_ranking.py` pins the arithmetic that both modes
+read - a tie flips at `+1`, a competitor flips at the gap or the gap plus one
+depending on the tie-break, and the gate holds at any weight - and asserts nothing
+about the shipped value.
+
+Half answered on 2026-10-12, half still open: whether the promotion helps answer
+quality at all. What the live A/B settled is that it costs this query its answer;
+what it did not settle is whether it buys any query anything, because no run yet
+shows a promotion improving an answer. The instrument for that question is now
+registered rather than to be
+invented, and it is two probes rather than one, because the first version of the
+comparison measured a retrieval change that turned out to cost no context. The
+offline cases say which pairs can differ, and both are in the normal scored probe
+set: `explain_changed_files_repository_index` asks
+`REPOSITORY_INDEX_BUILD_QUERY`, whose dirty `packages/repository/index/models.py`
+pushes `packages/repository/index/builder.py` out of the context entirely, so a
+changed-arm answer cannot reach its three facts from the prompt;
+`explain_changed_files_contextbuilder` asks `CONTEXT_BUILDER_BUDGET_QUERY`, whose
+dirty `packages/context/budget.py` reorders the context and loses nothing, so it is
+expected to tie and tells a real effect apart from a probe that merely has a dirty
+file near it. Either is selectable with `--probe <id> --repeat 3`, so the replicated
+A/B (feature off on one gateway, feature on in another, the pair's own module dirty in
+the tree, isolated session logs read back through `scripts/analyze_sessions.py`, both
+arms at the configured `APP_REPOSITORY_CONTEXT_MAX_TOKENS=4096`) needed only a
+gateway pointed at a reachable backend. It was not run on 2026-10-11, when nothing
+answered on either end; it ran on 2026-10-12 against vLLM at
+`http://100.106.236.88:18300/v1`, and the discriminating pair separated the way the
+offline case said it would: feature off `9/9` across three repeats, feature on `0/9`
+across three, the enabled arm sending 8 symbols where the disabled arm sent 11 with
+`packages/repository/index/builder.py` gone from its context outright, and its
+session records showing `changed_context_differs=true`,
+`changed_primary_promoted=true` and `changed_baseline_status=built` while the
+disabled arm reports the signal `off`. Per-repeat numbers and the two limits that
+belong to this measurement - the flag is global, so the enabled arm took the bonus
+across the 18 locally modified indexed modules rather than the experiment's single
+marker, and two of its three answers ran to the 8192-token completion ceiling - are
+in `docs/live-gateway-runbook.md`. The offline probes stay supporting diagnostics:
+the live run priced what this retrieval change costs on one query and did not show
+what it buys on any, so the weight remains an open decision.
+`tests/observability/test_quality_harness.py` runs the real
+stage over this checkout's index on both arms of both pairs and asserts the context
+difference, so what the A/B sees is a regression test, not a guess. Measuring
+which files an agent actually touched also remains open.
+
 
 ## Deferred
 

@@ -3,15 +3,25 @@
 This file is the current runtime snapshot. It intentionally describes only
 what matters for the live gateway path and calls out dormant code explicitly.
 
-Last reviewed: 2026-10-10 (`qwen38-27b` now aliases the
-`qwen3.8-flash-next` SGLang backend; its fresh 20/20 quality baseline,
-context-on/context-off comparison, and `chars_per_token=3.5` revalidation are
-recorded below. The opt-in change-aware repository-context ranking added on
-2026-10-09 remains off by default and awaits its own live A/B. Its promotion is
-now observable counterfactually - the stage re-ranks the same request without the
-working-tree bonus and reports, in count-only fields, whether that changed the
-context it sent; `scripts/analyze_sessions.py` summarizes those fields from
-session JSONL without reading prompts, answers, paths or symbols.)
+Last reviewed: 2026-10-12 (`qwen38-27b` aliases the `qwen3.8-flash-next`
+checkpoint on the vLLM backend at `http://100.106.236.88:18300/v1`, which is
+reachable; SGLang is no longer in use - the measurements below that name it were
+made on it before the endpoint moved. Its 2026-10-10 20/20 quality baseline,
+context-on/context-off
+comparison, and `chars_per_token=3.5` revalidation are recorded below. The
+opt-in change-aware repository-context ranking added on 2026-10-09 remains off by
+default, and its live A/B was run on 2026-10-12: one prompt, one
+`APP_REPOSITORY_CONTEXT_MAX_TOKENS=4096` budget, three repeats, the two gateways
+differing only in `APP_REPOSITORY_CONTEXT_CHANGED_FILES_ENABLED` - feature off
+`9/9`, feature on `0/9`, because the dirty module evicted
+`packages/repository/index/builder.py` from the enabled arm's context. Its
+promotion is observable
+counterfactually - the stage re-ranks the same request without the working-tree
+bonus and reports, in count-only fields, whether that changed the context it sent;
+`scripts/analyze_sessions.py` summarizes those fields from session JSONL without
+reading prompts, answers, paths or symbols. On 2026-10-11 the size of that bonus
+was measured offline and left at `+25`, and the 2026-10-12 live run priced only
+the cost side of turning it on, so the number stays an open decision - see below.)
 
 Previous review: 2026-09-19 (Git Change Snapshot v1 added as a script-reachable,
 read-only repository utility, and the dormant `packages.capabilities` inventory was
@@ -37,7 +47,7 @@ FastAPI /v1/chat/completions
   -> RepositoryContextStage
   -> PipelineEngine history cap
   -> ProviderStage
-  -> vLLM / OpenAI-compatible backend (SGLang)
+  -> vLLM backend (OpenAI-compatible, via the "openai" provider)
 ```
 
 ### ModelResolutionStage
@@ -83,6 +93,100 @@ query mentioned it. Edited files therefore break relevance ties in their favour
 without pulling unrelated symbols in; the token budget still decides how many
 symbols fit, so the signal reorders the same candidate pool instead of enlarging
 it.
+
+How large that bonus should be is measured, and still open. Two terms have to be
+kept apart, because `EXACT_SYMBOL_NAME` fires when *any* segment of a qualified
+name equals a query token - the module-path segments included. A **name match**
+can therefore come from a file path alone; being **named in the query** means the
+prompt contains the symbol's own name. Measured over this repository's real index
+(508 modules, 8571 symbols on this checkout, dirty modules injected rather than
+read from Git, so the working tree is irrelevant) by `scripts/quality_harness.py
+--changed-file-probe`, which runs `RepositoryContextStage` on both arms at the
+configured 4096-token budget and reads its own counters back:
+
+- a query that names `ContextBuilder` holds its primary at `+5` and `+10` and
+  loses it from `+15` to `ContextBudget` in a dirty `packages/context/budget.py`,
+  which sits 15 points behind and sorts first on the tie-break - so the ceiling
+  for that case is the gap itself, not the gap plus one;
+- what that swap costs is nothing, and that is worth recording because it is the
+  claim this feature first tried to make live. The bonus puts the dirty file's two
+  symbols in front of the builder file's three rather than in place of them, so
+  `ContextBuilder`, `_enforce_budget` and `packages/context/builder.py` are all in
+  the text of both arms and a changed-arm answer can be exactly as correct as the
+  baseline one. A moved primary is not a measured effect;
+- a dirty file the query never mentions changes nothing at any weight, and says so
+  with `changed_baseline_status=skipped_no_bonus`;
+- `--changed-file-sweep` reports, for 12 fixed queries, the smallest bonus that
+  would hand the primary to a symbol in another file. Six of the twelve are
+  decided by a tie and flip at `+1`; the other six flip at 10, 15, 21, 30, 30 and
+  70. The size of the bonus therefore buys nothing in the tie case, which is the
+  case the feature exists for, and only decides how far behind a name-matched
+  competitor the working tree can reach.
+- the size is also not what changes most contexts. With
+  `packages/repository/index/models.py` dirty, the query "how does model
+  resolution pick a backend" sends 12 symbols the no-bonus context did not at both
+  `+5` and `+10` (13 at `+25`) while the primary stays put: the token `model` is a
+  segment of that module path and `MODULE_MATCH` counts as query relevance, so the
+  gate admits the whole file. Shrinking the bonus does not undo that.
+- one query does lose something, and what it loses is a file. "How does the
+  repository index builder construct the index, including its collaborators for
+  files and models?" with `packages/repository/index/models.py` dirty sends 10 symbols
+  instead of 14: the dirty module's symbols take the front of the order, the
+  budget runs out inside `packages/repository/index/models.py`, and
+  `packages/repository/index/builder.py` leaves the context outright.
+  `PythonAstExtractor`, `RelationshipRegistry`, and `CallExtractor` are available
+  in the arm with the bonus off and unavailable in the arm with it on -
+  `facts_lost` says all three, none can be copied from the question, and no symbol
+  of that file survives to be
+  counted as still-visible. It happens at `+1` exactly as at `+25`
+  (`changed_symbols_promoted=0`, `changed_primary_promoted=1`), so the lever is
+  the gate and representation choice rather than the number. At 6144 tokens both
+  files' symbols fit and `PythonAstExtractor` returns, but the builder is supporting
+  context, whose summary omits the constructor-body details `RelationshipRegistry`
+  and `CallExtractor`. The case is stated at the configured 4096-token budget, where
+  all three details are lost.
+
+`+5` came out of this pass as a candidate, not as shipped behavior. The value in
+`RankingConfig.WEIGHT_CHANGED_FILE` is unchanged at `+25`; the live replicated
+comparison ran on 2026-10-12 against the vLLM backend and separated the arms the way
+the offline case predicts - `9/9` expected facts with the flag off over three
+repeats, `0/9` with it on, one identical prompt and one
+`APP_REPOSITORY_CONTEXT_MAX_TOKENS=4096`, the enabled arm sending 8 symbols where
+the disabled arm sent 11 and losing `packages/repository/index/builder.py`
+altogether (`prompt_tokens` 3589 against 3342). Two limits on that number are part
+of it: the flag is global, so the enabled arm applied the bonus across the 18
+locally modified indexed modules of this tree rather than the experiment's single
+marker, and two of its three answers ran to the 8192-token completion ceiling
+instead of ending short. What the run does not supply is the other half of the
+decision - no query has yet been measured that the bonus *helps*.
+That comparison now has its instrument, and the two halves of it ask one question
+each. The eviction case is registered in the ordinary scored probe set as
+`explain_changed_files_repository_index`, and its three facts -
+`PythonAstExtractor`, `RelationshipRegistry`, and `CallExtractor` - are the three
+implementation collaborators the offline arm reports losing: none appears in the
+prompt to be copied from it, and none survives in the
+context the dirty file replaces the builder with. `CONTEXT_BUILDER_BUDGET_QUERY`
+and `REPOSITORY_INDEX_BUILD_QUERY` are the prompts both halves of a pair send, and
+`CHANGED_FILE_AB_PAIRS` names the pairs, so an offline case and its live probe
+cannot drift into measuring two retrievals - the flaw in the first version of this
+comparison, which appended its own wording to the scored probe and then attributed
+a retrieval difference to the bonus.
+`explain_changed_files_contextbuilder` stays registered as the negative control of
+the same design: identical prompt on both sides, an arm-to-arm reorder that costs
+no context, and 3/3 expected on both sides.
+`tests/observability/test_quality_harness.py` runs the real
+`RepositoryContextStage` over this checkout's index for both arms of both pairs and
+asserts the difference in what the two contexts can support, so the claim is a
+regression test and not a handcrafted pair of answers. The `--changed-file-probe`
+cases stay supporting diagnostics for retrieval, and their verdict rule keeps them
+honest: a case holds only when both arms sent its expected primary, so an arm that
+was already wrong before the bonus was switched on reports `BAD_BASELINE` rather
+than passing. Registered here, the probes join the fixed set, which is now 10 probes
+and 26 expected facts - the `20/20` baselines in these docs are the earlier
+denominator. The live run happened on 2026-10-12 and is recorded in
+`docs/live-gateway-runbook.md`; the weight remains comparable without editing code
+through
+`--changed-file-probe --changed-file-weight 5`.
 `APP_REPOSITORY_CONTEXT_CHANGED_FILES_TTL_SECONDS` (default `0`) optionally
 refreshes the snapshot once per window through
 `packages.repository.changed_files_refresh`, a background task started during
@@ -240,7 +344,7 @@ context-selection determinism question, not a token-estimation-accuracy one.
 That question was closed on 2026-08-22 (see the determinism note below).
 
 The context-selection determinism question was closed on 2026-08-22 on the
-current stack (qwen38-27b via SGLang, `EXPLAIN:4096`):
+stack in use then (qwen38-27b via SGLang, `EXPLAIN:4096`):
 
 - Phase 1 (in-process): 3 EXPLAIN probes x 3 repeats produced byte-identical
   context fields on every repeat - `explain_live_path` prompt_tokens=4132,
@@ -252,7 +356,8 @@ current stack (qwen38-27b via SGLang, `EXPLAIN:4096`):
   unchanged repo and `.env`, re-runs of `explain_live_path` and
   `multiturn_config_systems` matched Phase 1 exactly.
 
-Conclusion: on the current repo and `.env`, qwen38/SGLang + `EXPLAIN:4096`
+Conclusion for that pass: on the repo and `.env` as they stood on 2026-08-22,
+qwen38/SGLang + `EXPLAIN:4096`
 context selection is deterministic within a gateway process and across
 gateway restarts. Remaining run-to-run variance is model-side sampling
 (answer wording, `completion_tokens`, wall-clock seconds). No code fix was
@@ -303,7 +408,13 @@ The current local `.env` routes one live backend through `APP_MODELS_CONFIG`
 
 | client model | provider | base_url | backend_model | context_window | notes |
 |---|---|---|---|---|---|
-| qwen38-27b | openai | http://100.106.236.88:18300/v1 | qwen3.8-flash-next | 262144 | SGLang server; gateway alias retained for client compatibility |
+| qwen38-27b | openai | http://100.106.236.88:18300/v1 | qwen3.8-flash-next | 262144 | vLLM server (`owned_by: vllm`, `max_model_len: 400000` on `/v1/models`, checked 2026-10-12); gateway alias retained for client compatibility |
+
+The endpoint answers a direct `GET /v1/models` from this machine, so a connection
+failure on a live probe is the local gateway on `:8001` not running, not the
+backend being down. The configured `context_window` (262144) stays below the
+server's advertised `max_model_len` (400000); nothing was changed for this
+review, and the router does not read the server value.
 
 SGLang routing was configured and live-smoked on 2026-08-20. The gateway
 exposed `qwen38-27b` and
@@ -315,8 +426,9 @@ follow-up context selected `packages/pipeline/history._build_cap_groups` with
 1844 estimated context tokens and `symbols_suppressed=1`. Both answers scored
 all expected facts with no style violations.
 
-The gateway alias `qwen38-27b` now routes to `qwen3.8-flash-next` via SGLang.
-Its full quality baseline was completed on 2026-10-10
+The gateway alias `qwen38-27b` now routes to `qwen3.8-flash-next` via vLLM,
+serving the same checkpoint. Its full quality baseline was completed on
+2026-10-10, when this alias still resolved to the SGLang deployment
 (`scripts/quality_harness.py --json --model qwen38-27b --max-tokens 8192
 --reasoning-model qwen38-27b`): clean TOTAL 20/20 expected facts, style 8/8
 ok, 25093 prompt tokens, 99.2 seconds, saved at
@@ -379,7 +491,8 @@ runs should use `--max-tokens 2048` or higher.
 - repository-context injection
 - delta context injection
 - opt-in change-aware repository-context ranking (symbols the query already
-  matched get one bounded `+25` bonus when their file is locally modified; off
+  matched get one bounded `+25` bonus when their file is locally modified; the
+  size is an open decision, see the 2026-10-11 note above; off
   by default, `apps/gateway/main.py` ->
   `RepositoryContextStage` -> `ContextBuilder` -> `RankingEngine`)
 - history capping
@@ -586,8 +699,9 @@ a bare `bash` resolves to the WSL stub, which has no distribution installed.
 
 - Repository context can dominate prompt size; history capping alone is not the
   full latency lever. Configurable repository-context budget enforcement and
-  targeted retrieval promotions now exist; the current qwen38-27b/SGLang full
-  baseline is clean at `20/20` with style `8/8`, while the qwen36
+  targeted retrieval promotions now exist; the 2026-10-10 qwen38-27b/SGLang full
+  baseline (the backend that alias pointed at before the move to vLLM) is clean
+  at `20/20` with style `8/8`, while the qwen36
   `--compare-context` run showed `20/20` with context versus `2/20` without
   context on the fixed probe set.
   `SEARCH`/`TEST`/`DEBUG`/`EXPLAIN` have measured budget overrides; `REFACTOR`

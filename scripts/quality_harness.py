@@ -13,6 +13,25 @@ Usage
     .\uv.exe run python scripts\quality_harness.py --no-context
     .\uv.exe run python scripts\quality_harness.py --compare-context
     .\uv.exe run python scripts\quality_harness.py --no-intent-overrides
+    .\uv.exe run python scripts\quality_harness.py --changed-file-probe
+    .\uv.exe run python scripts\quality_harness.py --changed-file-probe --changed-file-weight 5
+    .\uv.exe run python scripts\quality_harness.py --changed-file-sweep
+    .\uv.exe run python scripts\quality_harness.py --probe explain_changed_files_contextbuilder
+    .\uv.exe run python scripts\quality_harness.py --probe explain_changed_files_repository_index
+
+Run either of the last two with `--repeat 3` against two gateways configured
+differently - `APP_REPOSITORY_CONTEXT_CHANGED_FILES_ENABLED` off on one, on on the
+other, with the same dirty working tree.  The `--changed-file-*` modes above are the
+offline retrieval diagnostics for the same decisions.  Each pair - offline case and
+scored probe - asks one identical prompt and checks one identical set of facts, held
+in the shared constants (`CONTEXT_BUILDER_BUDGET_QUERY`,
+`REPOSITORY_INDEX_BUILD_QUERY`) and enumerated in `CHANGED_FILE_AB_PAIRS`, because two
+arms that ask different questions measure different retrievals and no answer
+difference can be attributed to the bonus; an answer-quality claim needs the live
+scored run.  `explain_changed_files_repository_index` is the pair whose offline case
+measures a context the changed arm cannot support, so it is the one that can separate
+two answers; `explain_changed_files_contextbuilder` is its negative control, where
+retrieval moves and nothing is lost.
 """
 
 from __future__ import annotations
@@ -24,9 +43,14 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+# The offline probes below import platform packages; a script run as
+# `python scripts\quality_harness.py` has `scripts/` on sys.path, not the root.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 DEFAULT_BASE_URL = "http://127.0.0.1:8001/v1"
 DEFAULT_MODEL = os.environ.get("APP_DEFAULT_MODEL") or os.environ.get(
@@ -161,6 +185,56 @@ class DeltaContextResult:
     followup_context: dict[str, Any] = field(default_factory=dict)
     error: str = ""
 
+
+#: The retrieval reorder case, kept in a constant so the offline diagnostic
+#: (``CHANGED_FILE_PROBES`` id ``named_in_query``) and the scored live probe
+#: (``PROBES`` id ``explain_changed_files_contextbuilder``) ask the same question.
+#: This pair is reported as **context-neutral**: the bonus moves the primary, and
+#: every fact below is still in the text of both arms, so it cannot separate two
+#: answers.  It is registered because an A/B that shows nothing must be able to
+#: show nothing for the right reason; the pair that can discriminate is
+#: ``REPOSITORY_INDEX_BUILD_QUERY`` below.
+CONTEXT_BUILDER_BUDGET_QUERY = "How does ContextBuilder enforce the token budget?"
+CONTEXT_BUILDER_BUDGET_FACTS: tuple[ExpectedFact, ...] = (
+    fact("ContextBuilder"),
+    fact("_enforce_budget"),
+    fact("packages/context/builder.py", "packages/context/builder"),
+)
+
+#: The pair that can discriminate, and the one the live A/B is run with.  The
+#: prompt asks about one file and injects a second as locally modified, and the
+#: facts are the ones only the asked-about file can support.  Measured offline on
+#: this repository's index at the configured 4096-token budget: with the bonus off
+#: the context sends 14 symbols from both files and all three facts reach the
+#: prompt; with `packages/repository/index/models` dirty at the shipped `+25` the
+#: whole of `packages/repository/index/builder.py` is evicted, 10 symbols from one
+#: file are sent, and none of the three survives.  The query, the injected module
+#: and the facts are constants because the offline diagnostic (``CHANGED_FILE_PROBES``
+#: id ``evicts_the_asked_about_file``) and the scored live probe (``PROBES`` id
+#: ``explain_changed_files_repository_index``) have to be measuring the same
+#: retrieval: an A/B whose arms ask different questions cannot attribute an answer
+#: difference to the ranking bonus, which is the flaw that made the first version of
+#: this comparison uninterpretable.
+REPOSITORY_INDEX_BUILD_QUERY = (
+    "How does the repository index builder construct the index, including its "
+    "collaborators for files and models?"
+)
+REPOSITORY_INDEX_BUILD_DIRTY_MODULE = "packages/repository/index/models"
+REPOSITORY_INDEX_BUILD_TARGET_MODULE = "packages/repository/index/builder"
+REPOSITORY_INDEX_BUILD_FACTS: tuple[ExpectedFact, ...] = (
+    fact("PythonAstExtractor"),
+    fact("RelationshipRegistry"),
+    fact("CallExtractor"),
+)
+
+#: The offline case and the scored probe of each changed-file A/B, paired by id.
+#: Both halves of a pair must ask one question and check one set of facts, and a
+#: test walks this table rather than the two registries separately, so a case can
+#: not be added on one side and forgotten on the other.
+CHANGED_FILE_AB_PAIRS: tuple[tuple[str, str], ...] = (
+    ("named_in_query", "explain_changed_files_contextbuilder"),
+    ("evicts_the_asked_about_file", "explain_changed_files_repository_index"),
+)
 
 PROBES: tuple[QualityProbe, ...] = (
     QualityProbe(
@@ -302,6 +376,50 @@ PROBES: tuple[QualityProbe, ...] = (
             fact("packages/providers/vllm.py", "packages/providers/vllm"),
             fact("apps/gateway/core/config.py", "apps/gateway/core/config"),
         ),
+    ),
+    QualityProbe(
+        # The context-neutral half of the changed-file decision: this pair is the
+        # negative control.  Run it with `--repeat 3` against a gateway started with
+        # `APP_REPOSITORY_CONTEXT_CHANGED_FILES_ENABLED=false` and one started with
+        # it `true`, over a working tree that has `packages/context/budget.py`
+        # dirty - the condition the offline `named_in_query` case measures, and at
+        # the shipped `+25` it does report a swap: `ContextBudget` takes the
+        # primary.  What the measurement below showed is that the swap costs
+        # nothing.  `ContextBuilder`, `_enforce_budget` and
+        # `packages/context/builder.py` are all in the text of both arms (the
+        # builder symbols simply drop from positions 0-2 to 2-4 of five), so an
+        # answer built on the changed context can still be perfectly correct.
+        # Expect the two arms to score the same here.  They do not in
+        # `explain_changed_files_repository_index`, and that contrast - one pair
+        # where retrieval moves and the answer cannot follow, one where a file
+        # leaves the prompt entirely - is what makes the positive result mean
+        # something.
+        id="explain_changed_files_contextbuilder",
+        intent="EXPLAIN",
+        prompt=CONTEXT_BUILDER_BUDGET_QUERY,
+        expect=CONTEXT_BUILDER_BUDGET_FACTS,
+    ),
+    QualityProbe(
+        # The scored half of the eviction case below, and the measurement the
+        # changed-file decision actually turns on.  Run it with `--repeat 3` against
+        # a gateway started with
+        # `APP_REPOSITORY_CONTEXT_CHANGED_FILES_ENABLED=false` and one started with it
+        # `true`, over a working tree that has ``packages/repository/index/models.py``
+        # dirty.  Both arms are sent the identical prompt - this probe's text is the
+        # same constant the offline case runs - so a score difference is attributable
+        # to the bonus and to nothing else.  With the bonus at zero the context carries
+        # ``packages/repository/index/builder.py``; with it on, the dirty module's
+        # symbols take the budget and the builder file is not in the prompt at all, so
+        # all three implementation collaborators have to come from the model's own
+        # knowledge of a file it was never shown.  Measured live on 2026-10-12 that is
+        # what happened: feature off scored 3/3 on each of three repeats, feature on
+        # 0/3 on each of three, 11 symbols sent with the flag off against 8 with it on.
+        # Per-repeat numbers, counters and the confounds that belong to the run are in
+        # `docs/live-gateway-runbook.md`.
+        id="explain_changed_files_repository_index",
+        intent="EXPLAIN",
+        prompt=REPOSITORY_INDEX_BUILD_QUERY,
+        expect=REPOSITORY_INDEX_BUILD_FACTS,
     ),
 )
 
@@ -562,7 +680,7 @@ def run_probe(
         if isinstance(exc, TimeoutError):
             result.error = (
                 f"TimeoutError: timed out after {timeout}s "
-                f"(harness client timeout; gateway/SGLang may still be generating)"
+                f"(harness client timeout; gateway/backend may still be generating)"
             )
             result.metadata["timed_out"] = True
             result.metadata["timeout_seconds"] = timeout
@@ -856,6 +974,736 @@ def _console_safe(text: str) -> str:
     encoding = sys.stdout.encoding or "utf-8"
     return text.encode(encoding, errors="replace").decode(encoding)
 
+# ---------------------------------------------------------------------------
+# Changed-file ranking probes (deterministic: no gateway, no model, no tokens)
+#
+# ``repository_context_changed_files_enabled`` is off by default and unresolved,
+# which makes the opt-in a guess rather than a measurement.  These probes answer
+# the question the ranking arithmetic cannot: does the bonus change the context a
+# request would send, and can it take the primary away from the symbol the query
+# named?  Each probe runs the real ``RepositoryContextStage`` twice over an index
+# built from this checkout - once with no changed-module source, once with one
+# module injected as dirty - and reads the stage's own counterfactual fields, so
+# the verdict is the measurement the session log reports rather than a
+# re-derivation of it.  Nothing here touches Git: the dirty module is injected, so
+# the working tree is irrelevant and a clean checkout measures the same thing.
+#
+# Two terms are kept apart on purpose, because they are not the same condition:
+#
+# * **name match** - some segment of the qualified name equals a query token
+#   (``packages/context/scoring.py``, ``EXACT_SYMBOL_NAME``).  The segments
+#   include the module-path segments, so ``packages/context/builder``
+#   ``.ContextBuilder`` name-matches the token ``builder`` without the prompt
+#   having named anything.
+# * **named in the query** - the query text contains the symbol's own name, e.g.
+#   ``ContextBuilder``.  This is the case a working-tree bonus has no business
+#   losing, and ``ChangedFileProbe.named_in_query`` is how a probe says it.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ChangedFileProbe:
+    """A retrieval case in which one module is injected as locally modified.
+
+    ``expected_primary`` is the symbol that must stay first in the arm where
+    ``dirty_module`` is dirty.  ``names_primary`` is what the author of the case
+    claims about it - the stricter **named in the query** rather than the weaker
+    **name match** - and ``named_in_query()`` below is the check on that claim, so
+    a probe cannot quietly assert a preference its own query text does not
+    support.  A ``False`` case documents an effect; it does not claim the ranking
+    rules grant a preference.  ``dirty_module`` is never read from Git, so the
+    case measures the same way on any checkout.  ``facts`` are the facts the scored
+    live probe will ask the same question about: they are checked for availability
+    in the text each arm would have sent, so an outcome reports what the bonus cost
+    in context rather than only where it moved the primary.
+    """
+
+    id: str
+    query: str
+    dirty_module: str
+    expected_primary: str
+    names_primary: bool = False
+    facts: tuple[ExpectedFact, ...] = ()
+    note: str = ""
+
+    def named_in_query(self) -> bool:
+        """Whether this query text contains the expected primary's own name.
+
+        The stricter of the two terms, and the check on ``names_primary``: the
+        module path and the module stem are dropped, so only the symbol's own name
+        and the names it is nested in are looked for.  ``packages/context/
+        builder.ContextBuilder`` is named by a prompt that says ``ContextBuilder``
+        and is merely **name matched** by one that says ``context builder``,
+        because ``EXACT_SYMBOL_NAME`` also reads the module-path segments.
+        """
+        own = self.expected_primary.rsplit("/", 1)[-1].split(".")
+        parts = own[1:] if len(own) > 1 else own
+        return any(part.lower() in self.query.lower() for part in parts if part)
+
+
+@dataclass
+class ChangedFileOutcome:
+    """What one changed-file probe measured, bonus off then on.
+
+    The four ``changed_*`` fields are the stage's own counterfactual counters,
+    copied out of ``PipelineStageResult.data``.  There is deliberately no set
+    difference in here: a flat bonus reorders, and ``len(set(new) - set(old))``
+    cannot see a reorder, which is why the stage compares the composed packages.
+
+    The ``*_facts`` fields measure something the counters cannot: which of the
+    probe's facts appear in the text each arm would have sent to a model.  A bonus
+    can leave every symbol of a case's expected primary intact and still cost a
+    whole file's context, and that is the difference a changed-file A/B is meant to
+    detect, so it is reported next to the counters rather than inferred from them.
+    """
+
+    id: str
+    ok: bool = False
+    expected_primary: str = ""
+    dirty_module: str = ""
+    weight: int = 0
+    names_primary: bool = False
+    baseline_primary: str = ""
+    changed_primary: str = ""
+    baseline_symbols: int = 0
+    changed_symbols: int = 0
+    max_context_tokens: int = 0
+    context_differs: bool = False
+    primary_promoted: bool = False
+    symbols_promoted: int = 0
+    baseline_facts: tuple[str, ...] = ()
+    changed_facts: tuple[str, ...] = ()
+    facts_lost: tuple[str, ...] = ()
+    baseline_status: str = ""
+    error: str = ""
+
+
+CHANGED_FILE_PROBES: tuple[ChangedFileProbe, ...] = (
+    ChangedFileProbe(
+        id="named_in_query",
+        query=CONTEXT_BUILDER_BUDGET_QUERY,
+        dirty_module="packages/context/budget",
+        expected_primary="packages/context/builder.ContextBuilder._enforce_budget",
+        names_primary=True,
+        facts=CONTEXT_BUILDER_BUDGET_FACTS,
+        note=(
+            "The query contains the name ContextBuilder, and the injected file "
+            "genuinely competes - ContextBudget name-matches the token 'budget'. "
+            "Measured here: the named symbol holds at +5 (nothing differs at all), "
+            "the supporting symbols differ from +10 with the primary held, and "
+            "ContextBudget takes the primary from +15, because it sits 15 points "
+            "behind and sorts first on the tie-break. So +25 loses the case the "
+            "constant is supposed to protect and +5 does not. What this case cannot "
+            "do is stand in for an answer claim: at every weight from +10 up, the "
+            "three facts stay available in both arms, because the bonus adds the "
+            "budget file's two symbols in front of the builder file's three rather "
+            "than replacing them. The primary moves and the context needed to answer "
+            "does not, so probe explain_changed_files_contextbuilder is a negative "
+            "control - both arms should score 3/3 - and never the evidence that the "
+            "bonus costs an answer anything."
+        ),
+    ),
+    ChangedFileProbe(
+        id="path_token_gate",
+        query="how does model resolution pick a backend",
+        dirty_module="packages/repository/index/models",
+        expected_primary="packages/pipeline/stages/model_resolution.ModelResolutionStage",
+        names_primary=False,
+        note=(
+            "A known effect of the relevance gate, recorded rather than fixed. "
+            "The token 'model' is a segment of the injected module path, so every "
+            "symbol in that file clears the gate and the bonus moves a dozen of "
+            "them into the sent set: changed_symbols_promoted is 12 at +5 and +10 "
+            "and 13 at +25, with the primary unchanged at every weight. The size "
+            "of the weight is not what changes the context here - the gate is, and "
+            "shrinking the bonus to +5 does not undo it."
+        ),
+    ),
+    ChangedFileProbe(
+        id="evicts_the_asked_about_file",
+        query=REPOSITORY_INDEX_BUILD_QUERY,
+        dirty_module=REPOSITORY_INDEX_BUILD_DIRTY_MODULE,
+        expected_primary="packages/repository/index/builder.RepositoryIndexBuilder",
+        names_primary=False,
+        facts=REPOSITORY_INDEX_BUILD_FACTS,
+        note=(
+            "The case the size of the bonus is not about, and the one the live A/B "
+            "runs on. The prompt asks how the index builder constructs the index and "
+            "names the models file second, so both files clear the relevance gate on "
+            "a path token. At the configured 4096-token budget the bonus lifts the "
+            "dirty module's ten symbols to the front of the order - "
+            "changed_symbols_promoted is 0, because none of them was absent from the "
+            "context before, and changed_primary_promoted is 1 - and the budget then "
+            "runs out inside packages/repository/index/models: "
+            "packages/repository/index/builder.py leaves the context outright, 14 "
+            "symbols become 10, and its PythonAstExtractor, RelationshipRegistry "
+            "and CallExtractor collaborators are all absent from what a request "
+            "would have been sent. All three are in the arm with the bonus off and "
+            "none is named in the question. That is the "
+            "measurable loss the scored half of this case needs, and it is not "
+            "something a supporting symbol softens: nothing in the changed context "
+            "names the builder at all. It is weight-independent (+1 through +30 are "
+            "identical), so the lever is the gate and the budget, not the number. "
+            "At 6144 tokens the builder symbols fit in both arms and "
+            "PythonAstExtractor returns, but the changed arm still carries only a "
+            "supporting representation of the builder: constructor-body details "
+            "RelationshipRegistry and CallExtractor remain unavailable. The case is "
+            "stated at 4096 - the "
+            "stage default, APP_REPOSITORY_CONTEXT_MAX_TOKENS and the EXPLAIN intent "
+            "budget this probe asks under, all of which agree. Scored live by probe "
+            "explain_changed_files_repository_index, which asks this same prompt and "
+            "checks these same facts."
+        ),
+    ),
+    ChangedFileProbe(
+        id="dirty_file_the_query_ignores",
+        query="Where is cap_history defined?",
+        dirty_module="packages/repository/index/models",
+        expected_primary="packages/pipeline/history.cap_history",
+        names_primary=True,
+        note=(
+            "A dirty file the prompt never mentioned. Nothing in it carries a "
+            "query reason, so no candidate receives the bonus, "
+            "changed_baseline_status is 'skipped_no_bonus' and the two arms are "
+            "identical by construction at every weight. This is the gate doing "
+            "its job, and it is the one changed-file behaviour that is fully "
+            "settled."
+        ),
+    ),
+)
+
+
+def repository_index_settings(repo_root: str | None = None) -> tuple[Path, bool, str]:
+    """Return what to index for a changed-file probe: root, test exclusion, globs.
+
+    The gateway's own settings are used when they can be loaded, because a probe
+    that ranked a different tree than a request would would be measuring a
+    repository nobody queries.  ``repository_path`` is relative to the working
+    directory, as the gateway resolves it.
+    """
+    root = Path(repo_root) if repo_root else Path.cwd()
+    exclude_tests = False
+    exclude_globs = "scripts/**"
+    if repo_root is None:
+        try:
+            from apps.gateway.core.config import get_settings
+
+            settings = get_settings()
+            configured = Path(settings.repository_path)
+            root = configured if configured.is_absolute() else root / configured
+            exclude_tests = settings.repository_exclude_tests
+            exclude_globs = settings.repository_exclude_globs
+        except Exception as exc:  # noqa: BLE001 - settings are optional here
+            print(
+                f"note: using default index settings, settings unavailable: {exc}",
+                file=sys.stderr,
+            )
+    return root.resolve(), exclude_tests, exclude_globs
+
+
+class _InjectedDirtyModule:
+    """A changed-module source that answers with what the probe injected.
+
+    The same pattern ``tests/pipeline/test_changed_file_promotion_counts.py``
+    uses: the stage sees a real ``ChangedModuleSource``, and no Git command runs
+    anywhere near it.
+    """
+
+    def __init__(self, modules: frozenset[str]) -> None:
+        self._modules = modules
+
+    def module_paths(self) -> frozenset[str]:
+        """Return the injected index module keys."""
+        return self._modules
+
+
+def _probe_stage(
+    index: Any,
+    source: Any,
+    *,
+    stage_kwargs: dict[str, Any] | None = None,
+) -> Any:
+    """Build ``RepositoryContextStage`` the way the gateway builds it.
+
+    The budget the probe measures is the budget a request would have used, so it
+    comes from the stage's own resolution of the configured values rather than
+    from a number written into this file.  When settings cannot be loaded the
+    stage's defaults apply, which is the same fallback a bare import has.
+    ``stage_kwargs`` overrides that for a caller that must not depend on a
+    developer's ``.env`` - the tests, which run the same code path on a fixture
+    index.
+    """
+    from packages.pipeline.stages.repository_context import RepositoryContextStage
+
+    kwargs: dict[str, Any] = {"index": index, "changed_files": source}
+    if stage_kwargs is None:
+        try:
+            from apps.gateway.core.config import get_settings
+
+            settings = get_settings()
+            kwargs.update(
+                context_delta_injection=settings.context_delta_injection,
+                context_delta_cache_size=settings.context_delta_cache_size,
+                max_context_tokens=settings.repository_context_max_tokens,
+                intent_context_budgets=settings.repository_context_intent_budget_map,
+            )
+        except Exception as exc:  # noqa: BLE001 - settings are optional here
+            print(
+                f"note: using stage default budgets, settings unavailable: {exc}",
+                file=sys.stderr,
+            )
+    else:
+        kwargs.update(stage_kwargs)
+    return RepositoryContextStage(**kwargs)
+
+
+def _stage_arm(
+    index: Any,
+    query: str,
+    modules: frozenset[str],
+    *,
+    stage_kwargs: dict[str, Any] | None = None,
+) -> tuple[list[str], dict[str, Any]]:
+    """Send one query through the stage; return (sent symbols, result data).
+
+    Args:
+        index: The built ``RepositoryIndex``.
+        query: The user turn, as a request would carry it.
+        modules: Module keys to inject as locally modified; empty means the
+            signal is off, which is the arm a disabled feature runs.
+
+    Returns:
+        The symbols the stage actually sent, primary first, and the stage
+        result's data - where the promotion counters live.
+    """
+    import asyncio
+
+    from packages.pipeline.context import PipelineContext
+
+    stage = _probe_stage(
+        index, _InjectedDirtyModule(modules) if modules else None, stage_kwargs=stage_kwargs
+    )
+    context = PipelineContext(
+        request_id="changed-file-probe",
+        request={"messages": [{"role": "user", "content": query}]},
+    )
+    result = asyncio.run(stage.execute(context))
+    data = dict(result.data or {})
+    package = data.get("package")
+    sent = [
+        name
+        for name in ((package.primary_symbol, *package.supporting_symbols) if package else ())
+        if name
+    ]
+    return sent, data
+
+
+def context_facts_available(
+    package: Any,
+    query: str,
+    facts: tuple[ExpectedFact, ...],
+) -> tuple[str, ...]:
+    """Which of ``facts`` the context of one arm could actually support.
+
+    The package is serialized into messages the way the gateway serializes it, and
+    the same ``score_answer`` matching the live probe uses decides availability.  So
+    this is not a claim about what a model would say - it is the objective half of
+    that claim: a fact whose text never reaches the prompt cannot be answered from
+    the context, in either arm of an A/B.
+    """
+    if package is None or not facts:
+        return ()
+
+    from packages.serializers.openai import OpenAISerializer
+
+    request = OpenAISerializer().serialize(package, [{"role": "user", "content": query}])
+    text = "\n".join(str(message.get("content", "")) for message in request.messages)
+    hits, _misses = score_answer(text, facts)
+    return tuple(hits)
+
+
+def changed_file_probe_outcome(
+    probe: ChangedFileProbe,
+    *,
+    baseline: list[str],
+    changed: list[str],
+    promotion: dict[str, Any],
+    weight: int,
+    max_context_tokens: int = 0,
+    baseline_facts: tuple[str, ...] = (),
+    changed_facts: tuple[str, ...] = (),
+) -> ChangedFileOutcome:
+    """Judge one probe from the two arms and the stage's own counters.  Pure.
+
+    Args:
+        probe: The case, including the primary that must survive.
+        baseline: Symbols sent with the signal off.
+        changed: Symbols sent with ``probe.dirty_module`` injected as dirty.
+        promotion: The ``changed_*`` fields read off the changed arm's stage
+            result - the same fields that land in a session record.
+        weight: The ``WEIGHT_CHANGED_FILE`` the changed arm used.
+        max_context_tokens: The budget the stage resolved for both arms.
+        baseline_facts: Facts available in the context of the arm with the signal
+            off, as reported by ``context_facts_available``.
+        changed_facts: The same for the arm that ran with the dirty module.
+
+    Returns:
+        The outcome.  ``ok`` is ``True`` only when **both** arms sent the expected
+        symbol first, because the claim a case makes is that the symbol survives
+        the bonus - and an arm that was already wrong before the bonus was switched
+        on cannot demonstrate that.  Judging the changed arm alone would let a case
+        whose premise does not hold report a pass, so a mismatching
+        ``baseline_primary`` fails the case as surely as a mismatching
+        ``changed_primary``.  How much else moved is read from the stage's counters
+        rather than from a set difference: ``len(set(new) - set(old))`` cannot see a
+        reorder, and a flat bonus is mostly a reorder.
+    """
+    return ChangedFileOutcome(
+        id=probe.id,
+        ok=(
+            bool(baseline)
+            and bool(changed)
+            and baseline[0] == probe.expected_primary
+            and changed[0] == probe.expected_primary
+        ),
+        expected_primary=probe.expected_primary,
+        dirty_module=probe.dirty_module,
+        weight=weight,
+        names_primary=probe.named_in_query(),
+        baseline_primary=baseline[0] if baseline else "",
+        changed_primary=changed[0] if changed else "",
+        baseline_symbols=len(baseline),
+        changed_symbols=len(changed),
+        max_context_tokens=max_context_tokens,
+        context_differs=bool(promotion.get("changed_context_differs", False)),
+        primary_promoted=bool(promotion.get("changed_primary_promoted", False)),
+        symbols_promoted=int(promotion.get("changed_symbols_promoted", 0) or 0),
+        baseline_facts=baseline_facts,
+        changed_facts=changed_facts,
+        facts_lost=tuple(fact for fact in baseline_facts if fact not in changed_facts),
+        baseline_status=str(promotion.get("changed_baseline_status", "") or ""),
+    )
+
+
+def run_changed_file_probe(
+    probe: ChangedFileProbe,
+    index: Any,
+    *,
+    weight: int | None = None,
+    stage_kwargs: dict[str, Any] | None = None,
+) -> ChangedFileOutcome:
+    """Run one query through the stage with the signal off, then with a dirty file.
+
+    Args:
+        probe: The case to run.
+        index: A built ``RepositoryIndex``.  Callers hold it; building one takes
+            seconds, and a probe sweep should pay that once.
+        weight: Override ``WEIGHT_CHANGED_FILE`` for the run.  Diagnostic only -
+            it is how a probe is shown to be sensitive to the number under test,
+            and the configured value is restored in a ``finally`` block.
+        stage_kwargs: Passed to the stage instead of the configured budget, for a
+            caller that must not depend on a developer's ``.env``.
+
+    Returns:
+        The measured outcome.  An exception from the stage is reported in
+        ``error`` with ``ok`` left ``False``, so one bad case cannot end a sweep.
+    """
+    from packages.context.ranking_config import RankingConfig
+
+    effective = RankingConfig.WEIGHT_CHANGED_FILE if weight is None else weight
+    original = RankingConfig.WEIGHT_CHANGED_FILE
+    RankingConfig.WEIGHT_CHANGED_FILE = effective
+    try:
+        baseline, baseline_data = _stage_arm(
+            index, probe.query, frozenset(), stage_kwargs=stage_kwargs
+        )
+        changed, data = _stage_arm(
+            index, probe.query, frozenset({probe.dirty_module}), stage_kwargs=stage_kwargs
+        )
+    except Exception as exc:  # noqa: BLE001 - a probe reports, it does not raise
+        return ChangedFileOutcome(
+            id=probe.id,
+            expected_primary=probe.expected_primary,
+            dirty_module=probe.dirty_module,
+            weight=effective,
+            names_primary=probe.named_in_query(),
+            error=f"{type(exc).__name__}: {exc}",
+        )
+    finally:
+        RankingConfig.WEIGHT_CHANGED_FILE = original
+
+    if data.get("package") is None:
+        return ChangedFileOutcome(
+            id=probe.id,
+            expected_primary=probe.expected_primary,
+            dirty_module=probe.dirty_module,
+            weight=effective,
+            names_primary=probe.named_in_query(),
+            error="the stage assembled no context for this query",
+        )
+    return changed_file_probe_outcome(
+        probe,
+        baseline=baseline,
+        changed=changed,
+        promotion=data,
+        weight=effective,
+        max_context_tokens=int(data.get("max_context_tokens", 0) or 0),
+        baseline_facts=context_facts_available(
+            baseline_data.get("package"), probe.query, probe.facts
+        ),
+        changed_facts=context_facts_available(data.get("package"), probe.query, probe.facts),
+    )
+
+
+def resolve_changed_file_case(
+    probe_id: str,
+    probes: tuple[ChangedFileProbe, ...] = CHANGED_FILE_PROBES,
+) -> ChangedFileProbe:
+    """Look one offline changed-file case up by id.
+
+    A case and the scored probe that asks its question are two halves of one
+    measurement, and the pairing is held by id rather than by adjacency in a tuple,
+    so a test or a CLI filter that names a case that does not exist gets this error
+    instead of a bare ``StopIteration`` from a generator expression.
+    """
+    for probe in probes:
+        if probe.id == probe_id:
+            return probe
+    known = ", ".join(sorted(item.id for item in probes))
+    raise KeyError(f"unknown changed-file case '{probe_id}'; registered: {known}")
+
+
+def run_changed_file_probes(
+    probes: tuple[ChangedFileProbe, ...],
+    index: Any,
+    *,
+    weight: int | None = None,
+    stage_kwargs: dict[str, Any] | None = None,
+) -> list[ChangedFileOutcome]:
+    """Run each changed-file probe over one shared index."""
+    return [
+        run_changed_file_probe(probe, index, weight=weight, stage_kwargs=stage_kwargs)
+        for probe in probes
+    ]
+
+
+def changed_file_verdict(outcome: ChangedFileOutcome) -> str:
+    """One word for what an outcome measured.
+
+    ``HOLD`` and ``SWAP`` are both verdicts about the bonus.  ``BAD_BASELINE`` is
+    neither: the arm with the signal off did not send the symbol the case says it
+    must, so the case does not measure what it claims, and the changed arm agreeing
+    proves nothing about the bonus.  It must not be printed as a pass, and printing
+    it as a swap would blame the wrong arm.
+    """
+    if outcome.ok:
+        return "HOLD"
+    if outcome.changed_primary != outcome.expected_primary:
+        return "SWAP"
+    return "BAD_BASELINE"
+
+
+def print_changed_file_table(outcomes: list[ChangedFileOutcome]) -> None:
+    """Render changed-file probe outcomes.
+
+    Symbol names and module keys are printed on purpose: this is an offline
+    developer tool that sends no request and writes no session record, so the
+    rule that keeps names out of the promotion fields does not apply here.
+    """
+    print("\n" + "=" * 100)
+    print("CHANGED-FILE RANKING (bonus off, then one injected dirty module)")
+    print("-" * 100)
+    for outcome in outcomes:
+        named = "named in query" if outcome.names_primary else "name match only"
+        print(
+            f"{outcome.id:<28} {changed_file_verdict(outcome):<13}"
+            f"weight={outcome.weight:<4} dirty={outcome.dirty_module} [{named}]"
+        )
+        print(f"{'':<28} off={outcome.baseline_primary or '-'}")
+        print(
+            f"{'':<28} on ={outcome.changed_primary or '-'} "
+            f"budget={outcome.max_context_tokens} "
+            f"symbols={outcome.baseline_symbols}->{outcome.changed_symbols}"
+        )
+        print(
+            f"{'':<28} differs={outcome.context_differs} "
+            f"primary_promoted={outcome.primary_promoted} "
+            f"symbols_promoted={outcome.symbols_promoted} "
+            f"baseline_status={outcome.baseline_status or '-'}"
+        )
+        if outcome.baseline_facts or outcome.changed_facts:
+            print(
+                f"{'':<28} facts available off={len(outcome.baseline_facts)} "
+                f"on={len(outcome.changed_facts)} "
+                f"lost={','.join(outcome.facts_lost) or '-'}"
+            )
+        if outcome.error:
+            print(f"{'':<28} error: {outcome.error}")
+    print("=" * 100)
+
+
+@dataclass(frozen=True)
+class ChangedFileSweepRow:
+    """How much bonus a fixed query needs before another file takes its primary.
+
+    ``flip_weight`` is the smallest nonzero ``WEIGHT_CHANGED_FILE`` that puts a
+    symbol from a different module ahead of the query's leader.  It is arithmetic
+    rather than a search: a competitor that is exactly as relevant as the leader
+    needs only ``+1``, because the documented tie-break then has nothing to fall
+    back on, and a competitor ``gap`` points behind needs ``gap`` if it sorts
+    before the leader by qualified name (it wins the tie) or ``gap + 1``
+    otherwise.
+    """
+
+    query: str
+    leader: str
+    leader_module: str
+    leader_score: int
+    flip_weight: int
+    flip_candidate: str
+    flip_gap: int
+    ties: int
+    relevant: int
+
+
+#: The fixed sweep set.  It includes the probe queries, and is otherwise made of
+#: questions about this repository that name nothing, so the arithmetic is not
+#: read only through the cases the probes already assert.
+CHANGED_FILE_SWEEP_QUERIES: tuple[str, ...] = (
+    "How does ContextBuilder enforce the token budget?",
+    "how does model resolution pick a backend",
+    "Where is cap_history defined?",
+    "what does the session logger middleware record",
+    "how are repository index modules built",
+    "how does the planning stage choose a ranking profile",
+    "what controls the context token budget",
+    "how does the gateway write the session log",
+    "where is the provider request serialized",
+    "how does the chat endpoint map errors to statuses",
+    "how are symbols enriched with source data",
+    "which helper extracts the last task text",
+)
+
+
+def _tie_break_key(candidate: Any) -> tuple[str, int, str]:
+    """The documented tie-break, without the score: name, type, module."""
+    from packages.context.ranking_config import RankingConfig
+
+    return (
+        candidate.qualified_name,
+        -RankingConfig.SYMBOL_TYPE_RANK.get(str(candidate.symbol_type).upper(), 0),
+        candidate.module,
+    )
+
+
+def changed_file_flip_weight(leader: Any, competitor: Any) -> int:
+    """Smallest bonus that hands ``leader``'s slot to ``competitor``."""
+    gap = int(leader.score) - int(competitor.score)
+    if gap <= 0:
+        return 1
+    return gap if _tie_break_key(competitor) < _tie_break_key(leader) else gap + 1
+
+
+def changed_file_sweep(
+    index: Any,
+    queries: Sequence[str],
+    *,
+    max_tokens: int = 4096,
+) -> list[ChangedFileSweepRow]:
+    """Measure each query's flip weight from one ranking pass, with no bonus on.
+
+    One ranking pass answers the whole "every indexed module dirty in turn"
+    question, because the bonus is applied to a single candidate at a time: the
+    module that takes the primary cheapest is the one holding the candidate with
+    the smallest flip weight.  Ranking matches what ``ContextBuilder`` feeds the
+    engine - all index symbols, relationship signals on - so the arithmetic is
+    read off the same scores a request would have ranked.
+
+    Args:
+        index: A built ``RepositoryIndex``.
+        queries: The fixed query set to measure.
+        max_tokens: Token budget handed to the ranking pass, as the stage does.
+
+    Returns:
+        One row per query that reached any symbol, in the order given.
+    """
+    from packages.context.models import ContextCandidate
+    from packages.context.ranking import RankingEngine
+    from packages.context.scoring import carries_query_relevance
+    from packages.repository.symbols.graph import SymbolGraph, SymbolGraphView
+
+    graph_view = SymbolGraphView(SymbolGraph(modules=index.modules))
+
+    def _pool() -> list[Any]:
+        return [
+            ContextCandidate(
+                symbol_id=symbol.id,
+                qualified_name=symbol.qualified_name,
+                module=symbol.module,
+                symbol_type=(
+                    symbol.symbol_type.value
+                    if hasattr(symbol.symbol_type, "value")
+                    else str(symbol.symbol_type)
+                ),
+            )
+            for symbol in index.symbols()
+        ]
+
+    rows: list[ChangedFileSweepRow] = []
+    for query in queries:
+        ranked = RankingEngine(symbol_graph_view=graph_view).rank(
+            query, _pool(), max_tokens=max_tokens
+        )
+        relevant = [c for c in ranked if carries_query_relevance(c.reasons)]
+        if not relevant:
+            continue
+        leader = relevant[0]
+        others = [c for c in relevant[1:] if c.module != leader.module]
+        if not others:
+            continue
+        best_flip = min(changed_file_flip_weight(leader, c) for c in others)
+        via = min(
+            (c.qualified_name for c in others if changed_file_flip_weight(leader, c) == best_flip)
+        )
+        rows.append(
+            ChangedFileSweepRow(
+                query=query,
+                leader=leader.qualified_name,
+                leader_module=leader.module,
+                leader_score=leader.score,
+                flip_weight=best_flip,
+                flip_candidate=via,
+                flip_gap=leader.score
+                - next(c.score for c in others if c.qualified_name == via),
+                ties=sum(1 for c in others if c.score == leader.score),
+                relevant=len(relevant),
+            )
+        )
+    return rows
+
+
+def print_changed_file_sweep(rows: list[ChangedFileSweepRow]) -> None:
+    """Render the flip-weight sweep, symbol names included."""
+    print("\n" + "=" * 100)
+    print("CHANGED-FILE FLIP WEIGHT (arithmetic from one ranking pass per query)")
+    print("-" * 100)
+    for row in rows:
+        print(f"{row.query}")
+        print(
+            f"{'':<4} leader={row.leader} ({row.leader_score}) in {row.leader_module}"
+        )
+        print(
+            f"{'':<4} flip_at={row.flip_weight} gap={row.flip_gap} "
+            f"other-module ties={row.ties} via={row.flip_candidate}"
+        )
+    if rows:
+        flips = [row.flip_weight for row in rows]
+        print(
+            f"{'':<4} over {len(rows)} queries: smallest flip weight "
+            f"{min(flips)}, queries decided by a tie {sum(1 for f in flips if f == 1)}"
+        )
+    print("=" * 100)
+
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     """Parse CLI arguments."""
@@ -901,6 +1749,41 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         default=None,
         metavar="<id>",
         help="run only the named fixed probe(s); may be repeated",
+    )
+    parser.add_argument(
+        "--changed-file-probe",
+        action="store_true",
+        help=(
+            "run the fixed query through the repository-context stage with the "
+            "signal off and with one module injected as dirty, and report whether "
+            "the expected primary survived; offline, no gateway, no Git"
+        ),
+    )
+    parser.add_argument(
+        "--changed-file-sweep",
+        action="store_true",
+        help=(
+            "report, for a fixed query set, the smallest changed-file bonus that "
+            "would hand the primary to a symbol in another file; offline "
+            "arithmetic from one ranking pass per query"
+        ),
+    )
+    parser.add_argument(
+        "--changed-file-weight",
+        type=int,
+        default=None,
+        metavar="<points>",
+        help=(
+            "score RankingConfig.WEIGHT_CHANGED_FILE uses during "
+            "--changed-file-probe (default: whatever the code ships with). "
+            "Diagnostic - it shows what the probe is sensitive to"
+        ),
+    )
+    parser.add_argument(
+        "--repo-root",
+        default=None,
+        metavar="<path>",
+        help="repository to index for the changed-file modes (default: gateway setting)",
     )
     parser.add_argument(
         "--repeat",
@@ -1015,6 +1898,52 @@ def _aggregate_repeat_runs(
     return aggregate
 
 
+def _run_changed_file_mode(args: argparse.Namespace) -> int:
+    """Index the repository once and run the changed-file modes over it.
+
+    The dirty modules are injected by the probes, never read from Git, so the
+    working tree does not affect what either mode prints.
+    """
+    from packages.repository.index.builder import RepositoryIndexBuilder
+
+    root, exclude_tests, exclude_globs = repository_index_settings(args.repo_root)
+    started = time.perf_counter()
+    try:
+        index = RepositoryIndexBuilder(
+            exclude_tests=exclude_tests, exclude_globs=exclude_globs
+        ).build(root)
+    except Exception as exc:  # noqa: BLE001 - the probe cannot rank what it cannot read
+        print(f"ERROR: could not index {root}: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 1
+
+    payload: dict[str, Any] = {}
+    failed = False
+    if args.changed_file_probe:
+        outcomes = run_changed_file_probes(
+            CHANGED_FILE_PROBES, index, weight=args.changed_file_weight
+        )
+        payload["probes"] = [outcome.__dict__ for outcome in outcomes]
+        failed = not outcomes or not all(outcome.ok for outcome in outcomes)
+        if not args.json:
+            print(f"indexed {root} in {time.perf_counter() - started:.1f}s")
+            print_changed_file_table(outcomes)
+            for outcome in outcomes:
+                probe = resolve_changed_file_case(outcome.id)
+                if probe.note:
+                    print(f"{outcome.id}: {probe.note}")
+    if args.changed_file_sweep:
+        rows = changed_file_sweep(index, CHANGED_FILE_SWEEP_QUERIES)
+        payload["sweep"] = [row.__dict__ for row in rows]
+        if args.json:
+            print(json.dumps(payload, indent=2))
+            return 1 if failed else 0
+        print(f"indexed {root} in {time.perf_counter() - started:.1f}s")
+        print_changed_file_sweep(rows)
+    if args.json:
+        print(json.dumps(payload, indent=2))
+    return 1 if failed else 0
+
+
 def main(argv: list[str]) -> int:
     """Run all quality probes."""
     args = parse_args(argv)
@@ -1027,6 +1956,25 @@ def main(argv: list[str]) -> int:
             file=sys.stderr,
         )
         return 2
+    offline_changed_file = args.changed_file_probe or args.changed_file_sweep
+    if offline_changed_file and (args.compare_context or args.no_context or args.delta_context):
+        print(
+            "ERROR: the changed-file modes are offline ranking; they cannot be "
+            "combined with gateway modes",
+            file=sys.stderr,
+        )
+        return 2
+    if args.changed_file_weight is not None and not args.changed_file_probe:
+        print(
+            "ERROR: --changed-file-weight only applies to --changed-file-probe",
+            file=sys.stderr,
+        )
+        return 2
+
+    # The changed-file modes need no gateway and no model, so they dispatch before
+    # the warnings about completion budgets would mean anything.
+    if offline_changed_file:
+        return _run_changed_file_mode(args)
 
     # --probe with --delta-context is disallowed
     if args.probe and args.delta_context:

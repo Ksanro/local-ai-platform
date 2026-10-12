@@ -7,6 +7,9 @@ that live in a locally modified module.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
+
 from packages.context.builder import ContextBuilder
 from packages.context.models import ContextCandidate, ContextQuery
 from packages.context.ranking import RankingEngine
@@ -305,3 +308,197 @@ def test_builder_reports_the_bonus_count_on_the_result() -> None:
     assert promoted.changed_bonus_count == 1
     assert baseline.changed_bonus_count == 0
     assert ContextBuilder(index).build(_query()).changed_bonus_count == 0
+
+
+# ------------------------------------------------------------------
+# Name priority versus the working tree
+#
+# Two conditions get conflated whenever the size of the working-tree bonus is
+# argued about, and only one of them is the strong one:
+#
+# * a **name match** is ``RankingReason.EXACT_SYMBOL_NAME``, which fires when any
+#   segment of the qualified name equals a query token - including the segments
+#   of the module path.  A prompt that names nothing can still name-match a
+#   symbol through its file path.
+# * **named in the query** is stricter: the prompt text contains the symbol's own
+#   name (or the name it is defined in).  This is the case a dirty file must not
+#   outvote.
+#
+# How far behind a competitor a given bonus can reach is a property of a real
+# index, so it is not asserted here from a number copied out of a notebook:
+# ``scripts/quality_harness.py --changed-file-sweep`` prints it per query, and
+# ``--changed-file-probe`` measures the same thing end to end through
+# ``RepositoryContextStage``.  What these tests pin is the arithmetic both modes
+# read - the flip point is the gap, or the gap plus one when the tie-break still
+# favours the leader - and they never pin the shipped value of the weight.
+# ------------------------------------------------------------------
+
+NAMED_QUERY = "How does ContextBuilder enforce the token budget?"
+NAMED_SYMBOL = "packages/context/builder.ContextBuilder"
+NAMED_MODULE = "packages/context/builder"
+MATCHED_SYMBOL = "packages/context/budget.ContextBudget"
+MATCHED_MODULE = "packages/context/budget"
+FILE_ONLY_SYMBOL = "packages/monitoring/metrics_server.MetricsServer"
+FILE_ONLY_MODULE = "packages/monitoring/metrics_server"
+
+
+#: The same pair under a query that names nothing.  ``ContextBuilder`` still
+#: earns ``EXACT_SYMBOL_NAME`` there, from the ``context`` and ``builder`` segments
+#: of its own module path - which is the difference between the two terms.
+PATH_TOKEN_QUERY = "repository context"
+
+#: A competitor that sorts after the leader, so the tie-break protects the leader.
+LATER_SYMBOL = "packages/runtime/token_budget.AllocateBudget"
+LATER_MODULE = "packages/runtime/token_budget"
+
+
+def _name_candidates() -> list[ContextCandidate]:
+    """The leader, a name-matched competitor, a later-sorting one, no relevance."""
+    return [
+        _candidate(NAMED_SYMBOL, NAMED_MODULE),
+        _candidate(MATCHED_SYMBOL, MATCHED_MODULE),
+        _candidate(LATER_SYMBOL, LATER_MODULE),
+        _candidate(FILE_ONLY_SYMBOL, FILE_ONLY_MODULE),
+    ]
+
+
+def _rank_names(
+    query: str = NAMED_QUERY, changed: frozenset[str] = frozenset()
+) -> list[ContextCandidate]:
+    """Rank the name fixture through a plain engine."""
+    return RankingEngine(changed_modules=changed).rank(query, _name_candidates())
+
+
+def _named_in(query: str, qualified_name: str) -> bool:
+    """Whether the query text contains the symbol's own name, not a path segment.
+
+    The module stem is deliberately excluded: in ``packages/context/budget.
+    ContextBudget`` only ``ContextBudget`` (and anything it is nested in) is a
+    name - ``budget`` is a file, and a prompt that says "token budget" says
+    nothing about this symbol.
+    """
+    own = qualified_name.rsplit("/", 1)[-1].split(".")
+    parts = own[1:] if len(own) > 1 else own
+    return any(part.lower() in query.lower() for part in parts if part)
+
+
+@contextmanager
+def _weight(value: int) -> Iterator[None]:
+    """Rank with a different working-tree weight for the duration of a block."""
+    original = RankingConfig.WEIGHT_CHANGED_FILE
+    RankingConfig.WEIGHT_CHANGED_FILE = value
+    try:
+        yield
+    finally:
+        RankingConfig.WEIGHT_CHANGED_FILE = original
+
+
+def test_name_fixture_separates_the_two_name_conditions() -> None:
+    """Guard the fixture: named in the query, name matched, and neither."""
+    ranked = {c.qualified_name: (c.score, c.reasons) for c in _rank_names()}
+    named_score, named_reasons = ranked[NAMED_SYMBOL]
+    matched_score, matched_reasons = ranked[MATCHED_SYMBOL]
+    file_score, file_reasons = ranked[FILE_ONLY_SYMBOL]
+
+    assert _named_in(NAMED_QUERY, NAMED_SYMBOL)
+    assert not _named_in(NAMED_QUERY, MATCHED_SYMBOL)
+    # Both carry the same reason, so the reason is not what separates them.
+    assert RankingReason.EXACT_SYMBOL_NAME in named_reasons
+    assert RankingReason.EXACT_SYMBOL_NAME in matched_reasons
+    assert not carries_query_relevance(file_reasons)
+    assert named_score > matched_score > file_score
+
+
+def test_a_query_that_names_nothing_still_matches_symbols_by_name() -> None:
+    """The definition ``EXACT_SYMBOL_NAME`` actually implements.
+
+    ``scoring.py`` fires it when *any* segment of the qualified name equals a
+    query token, and module-path segments count.  "repository context" names no
+    symbol at all, yet both fixture symbols earn the +100 exact-name bonus from
+    the ``context`` segment of their own paths - and tie at the same score, which
+    is the case where the working tree decides the primary at *any* nonzero
+    weight.  Any sentence about the bonus "not outvoting a name match" has to say
+    which of the two conditions it means; ``--changed-file-probe``'s
+    ``path_token_gate`` case is the same effect on this repository's real index.
+    """
+    ranked = {c.qualified_name: (c.score, c.reasons) for c in _rank_names(PATH_TOKEN_QUERY)}
+
+    assert RankingReason.EXACT_SYMBOL_NAME in ranked[NAMED_SYMBOL][1]
+    assert not _named_in(PATH_TOKEN_QUERY, NAMED_SYMBOL)
+    assert not _named_in(PATH_TOKEN_QUERY, MATCHED_SYMBOL)
+    assert ranked[NAMED_SYMBOL][0] == ranked[MATCHED_SYMBOL][0]
+    assert ranked[NAMED_SYMBOL][0] > ranked[LATER_SYMBOL][0]
+
+
+def test_changed_file_cannot_take_the_primary_from_a_symbol_the_query_named() -> None:
+    """The requirement the weight is argued over, at every weight below the gap.
+
+    ``packages/context/budget.py`` is a genuine competitor - ContextBudget
+    name-matches the token ``budget`` - and it is the file the user happens to be
+    editing.  The named symbol has to stay first until the bonus reaches the gap.
+    """
+    scores = {c.qualified_name: c.score for c in _rank_names()}
+    gap = scores[NAMED_SYMBOL] - scores[MATCHED_SYMBOL]
+
+    for value in (1, 5, gap - 1):
+        with _weight(value):
+            ranked = _rank_names(changed=frozenset({MATCHED_MODULE}))
+
+        assert ranked[0].qualified_name == NAMED_SYMBOL
+        # The bonus was applied - it is simply not enough to outvote the name.
+        assert RankingReason.CHANGED_FILE in ranked[1].reasons
+
+
+def test_the_bonus_decides_a_relevance_tie_at_any_nonzero_weight() -> None:
+    """What the signal is for, and why it does not need to be large."""
+    for value in (1, RankingConfig.WEIGHT_CHANGED_FILE):
+        with _weight(value):
+            ranked = RankingEngine(changed_modules=frozenset({CHANGED_MODULE})).rank(
+                QUERY, _candidates()
+            )
+
+        assert ranked[0].qualified_name == CHANGED_SYMBOL
+
+
+def test_the_flip_point_is_the_gap_itself_when_the_tie_break_favours_the_file() -> None:
+    """At an equal-plus-gap score, order falls to the tie-break, not to the leader.
+
+    ``packages/context/budget.ContextBudget`` sorts before
+    ``packages/context/builder.ContextBuilder``, so a bonus equal to the gap
+    already hands it the primary.  That is why the ceiling is "below the gap"
+    rather than "at or below the gap", and it is the arithmetic
+    ``scripts/quality_harness.py --changed-file-sweep`` reports per query.
+    """
+    scores = {c.qualified_name: c.score for c in _rank_names()}
+    gap = scores[NAMED_SYMBOL] - scores[MATCHED_SYMBOL]
+
+    with _weight(gap):
+        ranked = _rank_names(changed=frozenset({MATCHED_MODULE}))
+
+    assert ranked[0].qualified_name == MATCHED_SYMBOL
+
+
+def test_the_flip_point_is_the_gap_plus_one_when_the_leader_sorts_first() -> None:
+    """The other half of the same arithmetic, for a competitor that sorts later."""
+    scores = {c.qualified_name: c.score for c in _rank_names()}
+    gap = scores[NAMED_SYMBOL] - scores[LATER_SYMBOL]
+
+    with _weight(gap):
+        assert _rank_names(changed=frozenset({LATER_MODULE}))[0].qualified_name == NAMED_SYMBOL
+    with _weight(gap + 1):
+        assert _rank_names(changed=frozenset({LATER_MODULE}))[0].qualified_name == LATER_SYMBOL
+
+
+def test_a_dirty_file_alone_never_promotes_a_symbol_at_any_weight() -> None:
+    """The relevance gate, not the number, is what keeps file state out.
+
+    This holds whatever the owner decides ``WEIGHT_CHANGED_FILE`` should be, which
+    is why the sweep and the probes - not a constant copied into a test - are the
+    place the size question is answered.
+    """
+    for value in (1, 5, RankingConfig.WEIGHT_CHANGED_FILE, 1000):
+        with _weight(value):
+            ranked = _rank_names(changed=frozenset({FILE_ONLY_MODULE}))
+
+        assert ranked[-1].qualified_name == FILE_ONLY_SYMBOL
+        assert RankingReason.CHANGED_FILE not in ranked[-1].reasons

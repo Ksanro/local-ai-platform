@@ -6,17 +6,32 @@ import io
 import json
 import sys
 import unittest.mock
+from pathlib import Path
 
 import pytest
 
+from packages.context.ranking_config import RankingConfig
+from packages.repository.index.models import RepositoryIndex, RepositoryStatistics
+from packages.repository.symbols.models import Module, Symbol, SymbolType
 from scripts.quality_harness import (
+    CHANGED_FILE_AB_PAIRS,
+    CHANGED_FILE_PROBES,
+    CONTEXT_BUILDER_BUDGET_FACTS,
+    CONTEXT_BUILDER_BUDGET_QUERY,
     DEFAULT_MAX_TOKENS,
     DEFAULT_TIMEOUT,
     DELTA_CONTEXT_PROBE,
     PROBES,
     QUALITY_SYSTEM_PROMPT,
     REASONING_PREAMBLE_PREFIXES,
+    REPOSITORY_INDEX_BUILD_DIRTY_MODULE,
+    REPOSITORY_INDEX_BUILD_FACTS,
+    REPOSITORY_INDEX_BUILD_QUERY,
+    REPOSITORY_INDEX_BUILD_TARGET_MODULE,
     TOOL_CHATTER_MARKERS,
+    ChangedFileOutcome,
+    ChangedFileProbe,
+    ExpectedFact,
     QualityProbe,
     QualityResult,
     _compute_truncation_risk,
@@ -25,15 +40,26 @@ from scripts.quality_harness import (
     _read_session_log_records_with_retry,
     _record_for_last_user,
     _resolve_probes,
+    _stage_arm,
     _warn_default_timeout_for_reasoning_model,
     _warn_low_reasoning_budget,
     build_payload,
+    changed_file_flip_weight,
+    changed_file_probe_outcome,
+    changed_file_sweep,
+    changed_file_verdict,
+    context_facts_available,
     detect_style_violations,
     extract_answer,
     fact,
     main,
     parse_args,
+    print_changed_file_sweep,
+    print_changed_file_table,
     print_comparison_table,
+    repository_index_settings,
+    resolve_changed_file_case,
+    run_changed_file_probe,
     run_delta_context_probe,
     run_probe,
     score_answer,
@@ -230,10 +256,18 @@ def test_probe_set_covers_live_intents() -> None:
 
 
 def test_probe_set_fixed_maximum_is_documented() -> None:
-    """The quality baseline denominator should change only intentionally."""
+    """The quality baseline denominator should change only intentionally.
+
+    20 while the fixed set was 8 probes; 23 since
+    ``explain_changed_files_contextbuilder`` joined it as the scored half of the
+    change-aware ranking decision; 26 since ``explain_changed_files_repository_index``
+    joined it as the scored half of the case where the bonus costs context rather
+    than merely reordering it.  The ``20/20`` figures in ``docs/`` are historical
+    runs against the earlier set, not a ceiling.
+    """
     total_maximum = sum(len(probe.expect) for probe in PROBES)
 
-    assert total_maximum == 20
+    assert total_maximum == 26
 
 
 def test_debug_streaming_preview_probe_keeps_choice_content_fact() -> None:
@@ -580,7 +614,7 @@ def test_print_comparison_table_marks_arm_errors_and_prints_footer(
             seconds=120.0,
             error=(
                 "TimeoutError: timed out after 120.0s "
-                "(harness client timeout; gateway/SGLang may still be generating)"
+                "(harness client timeout; gateway/backend may still be generating)"
             ),
         )
     ]
@@ -621,7 +655,7 @@ def test_run_probe_timeout_records_descriptive_error_and_metadata(
     assert result.ok is False
     assert result.error == (
         "TimeoutError: timed out after 300.0s "
-        "(harness client timeout; gateway/SGLang may still be generating)"
+        "(harness client timeout; gateway/backend may still be generating)"
     )
     assert result.metadata["timed_out"] is True
     assert result.metadata["timeout_seconds"] == 300.0
@@ -749,13 +783,18 @@ class TestExistingBehaviorUnchanged:
         assert intents == {"SEARCH", "DEBUG", "TEST", "EXPLAIN", "REFACTOR", "IMPLEMENT"}
 
     def test_probe_set_fixed_maximum_unchanged(self) -> None:
-        """Total expected-fact count must remain 20."""
+        """Total expected-fact count must stay pinned.
+
+        Pinned so a new probe is always a deliberate edit: registering
+        ``explain_changed_files_contextbuilder`` took this from 20 to 23, and
+        ``explain_changed_files_repository_index`` took it to 26.
+        """
         total_maximum = sum(len(probe.expect) for probe in PROBES)
-        assert total_maximum == 20
+        assert total_maximum == 26
 
     def test_probe_tuple_length_unchanged(self) -> None:
-        """PROBES must still have 8 entries."""
-        assert len(PROBES) == 8
+        """PROBES must stay pinned; the changed-file A/B cases made it 10."""
+        assert len(PROBES) == 10
 
 
 class TestParseArgsProbe:
@@ -1121,3 +1160,1011 @@ class TestJsonShapeCompatibility:
         assert result["error"].startswith("TimeoutError: timed out after 55.5s")
         assert result["metadata"]["timed_out"] is True
         assert result["metadata"]["timeout_seconds"] == 55.5
+
+
+# ---------------------------------------------------------------------------
+# Changed-file ranking probes (offline: no gateway, no model)
+#
+# Each probe runs the real ``RepositoryContextStage`` over a fixture index with a
+# changed-module source injected, exactly as
+# ``tests/pipeline/test_changed_file_promotion_counts.py`` does, and reads the
+# stage's own counterfactual counters back out of the result.  The dirty module is
+# a fixture value, never a Git query, so these tests pass identically on a clean
+# checkout and never depend on what the working tree happens to hold.
+#
+# Fixture scores for ``PROBE_QUERY``, read from the implementation:
+#
+#     165  packages/context/builder.ContextBuilder   named in the query
+#     155  packages/context/budget.ContextBudget     name match on "budget"
+#     125  packages/context/composer.ContextComposer name match on "context"
+#     125  packages/context/session.ContextSession   name match on "context"
+#
+# so the dirty file is ten points behind the leader it competes with, and two
+# symbols are exactly tied below it - one for the primary case, one for the
+# reorder-only case a set difference cannot see.
+# ---------------------------------------------------------------------------
+
+PROBE_QUERY = "How does ContextBuilder enforce the token budget?"
+PROBE_NAMED_SYMBOL = "packages/context/builder.ContextBuilder"
+PROBE_NAMED_MODULE = "packages/context/builder"
+PROBE_DIRTY_SYMBOL = "packages/context/budget.ContextBudget"
+PROBE_DIRTY_MODULE = "packages/context/budget"
+PROBE_TIED_SYMBOL = "packages/context/composer.ContextComposer"
+PROBE_TIED_MODULE = "packages/context/composer"
+PROBE_LATE_SYMBOL = "packages/context/session.ContextSession"
+PROBE_LATE_MODULE = "packages/context/session"
+
+#: Pins the budget instead of reading a developer's ``.env``; the probe CLI uses
+#: the gateway's own settings so it measures the budget a request would get.
+PROBE_STAGE_KWARGS: dict[str, object] = {
+    "context_delta_injection": False,
+    "max_context_tokens": 4096,
+}
+
+
+def _probe(
+    *,
+    probe_id: str = "fixture",
+    query: str = PROBE_QUERY,
+    dirty_module: str = PROBE_DIRTY_MODULE,
+    expected_primary: str = PROBE_NAMED_SYMBOL,
+    names_primary: bool = True,
+    facts: tuple[ExpectedFact, ...] = (),
+    note: str = "",
+) -> ChangedFileProbe:
+    """One changed-file probe with every field filled in."""
+    return ChangedFileProbe(
+        id=probe_id,
+        query=query,
+        dirty_module=dirty_module,
+        expected_primary=expected_primary,
+        names_primary=names_primary,
+        facts=facts,
+        note=note,
+    )
+
+
+def _probe_index() -> RepositoryIndex:
+    """Four symbols: named, competitor in a dirty file, and an exactly tied pair."""
+    specs = (
+        (PROBE_NAMED_SYMBOL, PROBE_NAMED_MODULE, SymbolType.CLASS, 12),
+        (PROBE_DIRTY_SYMBOL, PROBE_DIRTY_MODULE, SymbolType.CLASS, 8),
+        (PROBE_TIED_SYMBOL, PROBE_TIED_MODULE, SymbolType.CLASS, 4),
+        (PROBE_LATE_SYMBOL, PROBE_LATE_MODULE, SymbolType.CLASS, 6),
+    )
+    symbols = [
+        Symbol(
+            id=qname,
+            name=qname.rsplit(".", 1)[-1],
+            qualified_name=qname,
+            symbol_type=symbol_type,
+            module=module,
+            lineno=lineno,
+        )
+        for qname, module, symbol_type, lineno in specs
+    ]
+    modules: dict[str, Module] = {}
+    for symbol in symbols:
+        modules.setdefault(symbol.module, Module(path=symbol.module, symbols=[])).symbols.append(
+            symbol
+        )
+    return RepositoryIndex(
+        modules=modules,
+        _symbols=symbols,
+        _relationships=[],
+        _statistics=RepositoryStatistics(
+            module_count=len(modules),
+            class_count=len(symbols),
+            function_count=0,
+            method_count=0,
+            symbol_count=len(symbols),
+        ),
+    )
+
+
+def _fixture_flip_weight() -> int:
+    """The smallest bonus that hands the fixture's primary to the dirty file."""
+    rows = changed_file_sweep(_probe_index(), [PROBE_QUERY])
+    assert rows, "the fixture index must rank something"
+    return rows[0].flip_weight
+
+
+def test_probe_fixture_sends_every_symbol_with_the_named_one_first() -> None:
+    """Guard the fixture: all four symbols are sent, the named one leads."""
+    outcome = run_changed_file_probe(
+        _probe(), _probe_index(), weight=1, stage_kwargs=PROBE_STAGE_KWARGS
+    )
+
+    assert outcome.baseline_symbols == 4
+    assert outcome.baseline_primary == PROBE_NAMED_SYMBOL
+    assert outcome.max_context_tokens == 4096
+
+
+def test_context_facts_available_scores_the_serialized_context_of_one_arm() -> None:
+    """The metric reads the text a request would have carried, and only that.
+
+    A package that names a symbol puts that symbol's qualified name into the
+    serialized context, so a fact about it is available there, and a module path
+    fact is available when the package carries the module.  A fact whose text
+    appears nowhere in the package is unavailable whether or not the repository
+    contains it.  This is the whole reason ``facts_lost`` can report a loss the
+    symbol counters cannot see: each arm is scored on its own text, with the same
+    matcher the live scored probe uses.
+    """
+    from packages.context.context_package import ContextPackage
+
+    facts = (
+        fact("ContextBuilder"),
+        fact("ContextSession"),
+        fact("packages/context/builder.py", "packages/context/builder"),
+        fact("NeverRanked"),
+    )
+    sent = ContextPackage(
+        primary_symbol=PROBE_NAMED_SYMBOL,
+        supporting_symbols=[PROBE_LATE_SYMBOL],
+        related_modules=[PROBE_NAMED_MODULE],
+    )
+
+    assert context_facts_available(sent, PROBE_QUERY, facts) == (
+        "ContextBuilder",
+        "ContextSession",
+        "packages/context/builder.py",
+    )
+    assert context_facts_available(None, PROBE_QUERY, facts) == ()
+    assert context_facts_available(sent, PROBE_QUERY, ()) == ()
+
+
+def test_changed_file_probe_facts_are_checked_against_the_context_of_each_arm() -> None:
+    """What the ``*_facts`` fields mean, on a fixture whose content is known.
+
+    The probe serializes each arm's package the way the gateway would and asks the
+    same matcher the scored live probe asks.  A fact only counts as available if
+    its text reaches the prompt - which is why ``NeverRanked`` stays out of both
+    arms even though it is a plausible symbol name, and why a probe can report a
+    loss that the symbol counters cannot see.
+    """
+    probe = _probe(facts=(fact("ContextBuilder"), fact("ContextSession"), fact("NeverRanked")))
+    outcome = run_changed_file_probe(
+        probe, _probe_index(), weight=1, stage_kwargs=PROBE_STAGE_KWARGS
+    )
+
+    assert outcome.baseline_facts == ("ContextBuilder", "ContextSession")
+    assert outcome.changed_facts == ("ContextBuilder", "ContextSession")
+    assert outcome.facts_lost == ()
+
+
+def test_changed_file_probe_outcome_reports_the_facts_the_changed_arm_lost() -> None:
+    """A fact present off and absent on is the loss, and is named as one."""
+    outcome = changed_file_probe_outcome(
+        _probe(probe_id="registry_case"),
+        baseline=[PROBE_NAMED_SYMBOL],
+        changed=[PROBE_DIRTY_SYMBOL],
+        promotion={},
+        weight=25,
+        baseline_facts=("ContextBuilder", "_enforce_budget"),
+        changed_facts=("_enforce_budget",),
+    )
+
+    assert outcome.baseline_facts == ("ContextBuilder", "_enforce_budget")
+    assert outcome.changed_facts == ("_enforce_budget",)
+    assert outcome.facts_lost == ("ContextBuilder",)
+
+
+def test_print_changed_file_table_shows_the_facts_each_arm_could_support(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The table reports the context loss, because the counters alone hide it."""
+    outcome = changed_file_probe_outcome(
+        _probe(probe_id="registry_case"),
+        baseline=[PROBE_NAMED_SYMBOL],
+        changed=[PROBE_DIRTY_SYMBOL],
+        promotion={"changed_context_differs": True},
+        weight=25,
+        baseline_facts=("ContextBuilder", "_enforce_budget"),
+        changed_facts=("_enforce_budget",),
+    )
+
+    print_changed_file_table([outcome])
+
+    printed = capsys.readouterr().out
+    assert "facts available off=2 on=1" in printed
+    assert "lost=ContextBuilder" in printed
+
+
+def test_print_changed_file_table_omits_the_facts_line_without_facts(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A case with no registered facts does not print an empty claim."""
+    print_changed_file_table(
+        [
+            changed_file_probe_outcome(
+                _probe(probe_id="registry_case"),
+                baseline=[PROBE_NAMED_SYMBOL],
+                changed=[PROBE_DIRTY_SYMBOL],
+                promotion={},
+                weight=25,
+            )
+        ]
+    )
+
+    assert "facts available" not in capsys.readouterr().out
+
+
+def test_changed_file_probe_holds_the_named_primary_below_the_flip_weight() -> None:
+    """What the registry asserts about a request: the named symbol stays first."""
+    outcome = run_changed_file_probe(
+        _probe(),
+        _probe_index(),
+        weight=_fixture_flip_weight() - 1,
+        stage_kwargs=PROBE_STAGE_KWARGS,
+    )
+
+    assert outcome.ok
+    assert outcome.baseline_primary == PROBE_NAMED_SYMBOL
+    assert outcome.changed_primary == PROBE_NAMED_SYMBOL
+    assert outcome.symbols_promoted == 0
+    assert not outcome.context_differs
+
+
+def test_changed_file_probe_reports_a_swap_at_the_flip_weight() -> None:
+    """The probe measures something: reach the gap and it says the primary moved."""
+    outcome = run_changed_file_probe(
+        _probe(),
+        _probe_index(),
+        weight=_fixture_flip_weight(),
+        stage_kwargs=PROBE_STAGE_KWARGS,
+    )
+
+    assert not outcome.ok
+    assert outcome.baseline_primary == PROBE_NAMED_SYMBOL
+    assert outcome.changed_primary == PROBE_DIRTY_SYMBOL
+    assert outcome.primary_promoted
+    assert outcome.context_differs
+    assert outcome.baseline_status == "built"
+
+
+def test_changed_file_probe_sees_a_reorder_a_set_difference_could_not() -> None:
+    """The counters come from the stage, which compares the composed packages.
+
+    Two fixture symbols are exactly tied, so promoting the dirty one rearranges
+    the supporting list without changing its membership or the primary.  The set
+    difference this harness used to compute as its own ``churn`` reads that as
+    "nothing changed"; the stage's ``changed_context_differs`` is the reason the
+    claim has to come from the stage.
+    """
+    outcome = run_changed_file_probe(
+        _probe(probe_id="reorder", dirty_module=PROBE_LATE_MODULE, names_primary=False),
+        _probe_index(),
+        weight=1,
+        stage_kwargs=PROBE_STAGE_KWARGS,
+    )
+
+    assert outcome.ok
+    assert outcome.context_differs
+    assert not outcome.primary_promoted
+    assert outcome.symbols_promoted == 0
+
+
+def test_changed_file_probe_reports_the_gate_when_the_query_ignores_the_file() -> None:
+    """A dirty file the query never reaches is inert, and says so by status.
+
+    ``changed_symbols_selected`` would read zero here too, which is exactly the
+    ambiguity the counterfactual was added to remove: the file is dirty, nothing
+    in it is relevant, so the two arms are identical by construction.
+    """
+    outcome = run_changed_file_probe(
+        _probe(probe_id="inert", dirty_module="packages/monitoring/metrics_server"),
+        _probe_index(),
+        weight=1000,
+        stage_kwargs=PROBE_STAGE_KWARGS,
+    )
+
+    assert outcome.ok
+    assert outcome.symbols_promoted == 0
+    assert not outcome.context_differs
+    assert outcome.baseline_status == "skipped_no_bonus"
+
+
+def test_run_changed_file_probe_uses_the_configured_weight_by_default() -> None:
+    """Without an override the probe runs the value the code ships with."""
+    configured = RankingConfig.WEIGHT_CHANGED_FILE
+
+    outcome = run_changed_file_probe(_probe(), _probe_index(), stage_kwargs=PROBE_STAGE_KWARGS)
+
+    assert outcome.weight == configured
+
+
+def test_run_changed_file_probe_restores_the_configured_weight() -> None:
+    """The override is for one run, not for the process."""
+    configured = RankingConfig.WEIGHT_CHANGED_FILE
+
+    run_changed_file_probe(
+        _probe(), _probe_index(), weight=configured + 100, stage_kwargs=PROBE_STAGE_KWARGS
+    )
+
+    assert RankingConfig.WEIGHT_CHANGED_FILE == configured
+
+
+def test_run_changed_file_probe_reports_a_broken_index_without_raising() -> None:
+    """A sweep of probes must not be ended by one unusable case."""
+    outcome = run_changed_file_probe(_probe(), None, stage_kwargs=PROBE_STAGE_KWARGS)
+
+    assert not outcome.ok
+    assert outcome.error
+
+
+def test_changed_file_probe_outcome_reads_the_stage_counters() -> None:
+    """Which primary is sent is the verdict; the stage's fields are the detail."""
+    outcome = changed_file_probe_outcome(
+        _probe(),
+        baseline=[PROBE_NAMED_SYMBOL, PROBE_DIRTY_SYMBOL],
+        changed=[PROBE_NAMED_SYMBOL, PROBE_TIED_SYMBOL, PROBE_DIRTY_SYMBOL],
+        promotion={
+            "changed_context_differs": True,
+            "changed_primary_promoted": False,
+            "changed_symbols_promoted": 0,
+            "changed_baseline_status": "built",
+        },
+        weight=5,
+        max_context_tokens=4096,
+    )
+
+    assert outcome.ok
+    assert outcome.context_differs
+    assert not outcome.primary_promoted
+    assert outcome.symbols_promoted == 0
+    assert outcome.baseline_status == "built"
+    assert outcome.baseline_symbols == 2
+    assert outcome.changed_symbols == 3
+
+
+def test_changed_file_probe_outcome_fails_when_nothing_is_sent() -> None:
+    """An empty changed arm cannot have kept a primary."""
+    outcome = changed_file_probe_outcome(
+        _probe(),
+        baseline=[PROBE_NAMED_SYMBOL],
+        changed=[],
+        promotion={},
+        weight=5,
+    )
+
+    assert not outcome.ok
+    assert outcome.changed_primary == ""
+    assert outcome.symbols_promoted == 0
+    assert outcome.baseline_status == ""
+
+
+def test_changed_file_probe_outcome_fails_when_the_baseline_was_already_wrong() -> None:
+    """A changed arm agreeing proves nothing when the off arm did not agree.
+
+    The regression: ``ok`` used to read the changed arm alone, so a case whose
+    bonus-off primary was some other symbol reported a hold the moment the dirty
+    arm happened to match.  What a case claims is that its symbol *survives* the
+    bonus, and an arm that never sent it demonstrates nothing about survival.
+    """
+    outcome = changed_file_probe_outcome(
+        _probe(),
+        baseline=[PROBE_DIRTY_SYMBOL, PROBE_NAMED_SYMBOL],
+        changed=[PROBE_NAMED_SYMBOL, PROBE_DIRTY_SYMBOL],
+        promotion={
+            "changed_context_differs": True,
+            "changed_primary_promoted": True,
+            "changed_symbols_promoted": 1,
+            "changed_baseline_status": "built",
+        },
+        weight=25,
+    )
+
+    assert outcome.baseline_primary == PROBE_DIRTY_SYMBOL
+    assert outcome.changed_primary == PROBE_NAMED_SYMBOL
+    assert not outcome.ok
+    assert changed_file_verdict(outcome) == "BAD_BASELINE"
+
+
+def test_changed_file_verdict_distinguishes_the_three_ways_a_case_can_fail() -> None:
+    """``HOLD``, ``SWAP`` and ``BAD_BASELINE`` name three different arms.
+
+    One word per outcome, and the word has to blame the right side: a reorder that
+    kept the primary is a hold, a dirty arm that lost it is the bonus's doing, and a
+    baseline that never sent it is a case stated wrong - which is also the outcome
+    that would make a "measurable loss" claim about an arm that had nothing to lose.
+    """
+    held = changed_file_probe_outcome(
+        _probe(),
+        baseline=[PROBE_NAMED_SYMBOL, PROBE_TIED_SYMBOL],
+        changed=[PROBE_NAMED_SYMBOL, PROBE_DIRTY_SYMBOL],
+        promotion={"changed_context_differs": True},
+        weight=25,
+    )
+    swapped = changed_file_probe_outcome(
+        _probe(),
+        baseline=[PROBE_NAMED_SYMBOL],
+        changed=[PROBE_DIRTY_SYMBOL],
+        promotion={"changed_context_differs": True, "changed_primary_promoted": True},
+        weight=25,
+    )
+    bad_baseline = changed_file_probe_outcome(
+        _probe(),
+        baseline=[PROBE_DIRTY_SYMBOL],
+        changed=[PROBE_NAMED_SYMBOL],
+        promotion={},
+        weight=25,
+    )
+
+    assert changed_file_verdict(held) == "HOLD"
+    assert changed_file_verdict(swapped) == "SWAP"
+    assert changed_file_verdict(bad_baseline) == "BAD_BASELINE"
+
+
+def test_print_changed_file_table_blames_the_right_arm_for_a_bad_premise(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A wrong baseline is reported as a broken premise, never as a swap."""
+    outcome = changed_file_probe_outcome(
+        _probe(probe_id="bad_premise"),
+        baseline=[PROBE_DIRTY_SYMBOL],
+        changed=[PROBE_NAMED_SYMBOL],
+        promotion={},
+        weight=25,
+    )
+
+    print_changed_file_table([outcome])
+
+    printed = capsys.readouterr().out
+    assert "BAD_BASELINE" in printed
+    assert "SWAP" not in printed
+
+
+# ---------------------------------------------------------------------------
+# The live half of the same decisions.  ``CHANGED_FILE_PROBES`` says what the
+# bonus does to retrieval; whether that changes an answer is a claim about the
+# gateway, so each case's query is also registered as an ordinary scored probe and
+# run with `--probe <id> --repeat 3` against a feature-off and a feature-on gateway.
+# A pair is only interpretable if both halves ask the identical question and check
+# the identical facts, which is what the equality assertions below pin - the first
+# version of this comparison had the scored probe append extra wording the offline
+# diagnostic never sent, so the two arms retrieved different things and no answer
+# difference could be attributed to the bonus.  A pair is only worth running at all
+# if its two arms differ in what they can *support*, and that is settled below
+# against this repository's real index and the real ``RepositoryContextStage``.  It
+# cannot be settled by writing two answers by hand and scoring them: that proves the
+# matcher works, not that a live A/B can tell the arms apart.
+# ---------------------------------------------------------------------------
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+CHANGED_FILE_AB_PROBE_ID = "explain_changed_files_contextbuilder"
+CHANGED_FILE_AB_EVICTION_PROBE_ID = "explain_changed_files_repository_index"
+
+#: The budget the eviction case is stated at.  The stage default,
+#: ``APP_REPOSITORY_CONTEXT_MAX_TOKENS`` and the EXPLAIN intent budget this probe is
+#: planned into all agree on 4096, and the budget decides whether a whole file fits
+#: beside the dirty one, so the loss below is pinned at it rather than discovered
+#: through a developer's ``.env``.
+CHANGED_FILE_AB_BUDGET_TOKENS = 4096
+
+
+@pytest.fixture(scope="module")
+def checked_out_index() -> RepositoryIndex:
+    """This repository's real index, built once for the changed-file regressions.
+
+    The exclusions are the fallbacks ``--changed-file-probe`` uses when it is pointed
+    at a path, not a developer's ``.env``, so the case measures the same tree on any
+    machine.  The dirty module is injected by the probe either way, never read from
+    Git, so a clean checkout and a dirty one measure the same thing.
+    """
+    from packages.repository.index.builder import RepositoryIndexBuilder
+
+    root, exclude_tests, exclude_globs = repository_index_settings(str(REPO_ROOT))
+    builder = RepositoryIndexBuilder(exclude_tests=exclude_tests, exclude_globs=exclude_globs)
+    return builder.build(root)
+
+
+def _real_arms(
+    index: RepositoryIndex,
+    probe: ChangedFileProbe,
+    *,
+    weight: int | None = None,
+    budget: int = CHANGED_FILE_AB_BUDGET_TOKENS,
+) -> ChangedFileOutcome:
+    """Run one real case with the signal off, then with its dirty module injected.
+
+    ``weight=None`` means the shipped ``WEIGHT_CHANGED_FILE``, so a test that says
+    nothing about weight measures what a gateway with the feature enabled would.
+    """
+    stage_kwargs: dict[str, object] = {
+        "context_delta_injection": False,
+        "max_context_tokens": budget,
+    }
+    return run_changed_file_probe(probe, index, weight=weight, stage_kwargs=stage_kwargs)
+
+
+def _ab_probe(probe_id: str = CHANGED_FILE_AB_PROBE_ID) -> QualityProbe:
+    """The scored probe registered for one offline changed-file case."""
+    return next(probe for probe in PROBES if probe.id == probe_id)
+
+
+def test_changed_file_ab_pairs_are_registered_on_both_sides() -> None:
+    """Every offline case that a scored probe speaks for is in the pair table.
+
+    The pairing is the whole claim that the offline table and the live run measure one
+    retrieval, so it is checked in both directions: a pair naming a case or a probe
+    that does not exist is a mistake, and a case carrying facts that no probe scores
+    live is a measurement nobody can run.
+    """
+    offline_ids = [probe.id for probe in CHANGED_FILE_PROBES]
+    scored_ids = [probe.id for probe in PROBES]
+
+    assert len(set(CHANGED_FILE_AB_PAIRS)) == len(CHANGED_FILE_AB_PAIRS)
+    for offline_id, probe_id in CHANGED_FILE_AB_PAIRS:
+        assert offline_id in offline_ids, offline_id
+        assert probe_id in scored_ids, probe_id
+
+    # `facts` is what makes a case answerable rather than merely reorderable, and an
+    # unpaired case must not pretend otherwise.
+    paired_offline = {offline_id for offline_id, _ in CHANGED_FILE_AB_PAIRS}
+    for probe in CHANGED_FILE_PROBES:
+        if probe.facts:
+            assert probe.id in paired_offline, probe.id
+        if probe.id in paired_offline:
+            assert len(probe.facts) >= 2, probe.id
+
+
+def test_changed_file_ab_probe_selects_like_a_normal_probe() -> None:
+    """Being in the fixed set is what makes `--probe`/`--repeat` reach it."""
+    for offline_id, probe_id in CHANGED_FILE_AB_PAIRS:
+        assert _resolve_probes([probe_id])[0] is _ab_probe(probe_id), offline_id
+        assert _ab_probe(probe_id) is next(
+            probe for probe in PROBES if probe.id == probe_id
+        ), offline_id
+
+        args = parse_args(["--probe", probe_id, "--repeat", "3"])
+        assert args.probe == [probe_id]
+        assert args.repeat == 3, probe_id
+
+
+def test_changed_file_ab_probe_shares_the_offline_query() -> None:
+    """The scored probe asks its case's question word for word, with nothing added.
+
+    Both halves of a changed-file A/B run on the same machine, but over different
+    retrieval states.  If they also asked different questions, an answer difference
+    could never be attributed to the ranking bonus.  Each pair's prompt is one
+    constant read by both halves, and the assertion is equality rather than
+    containment: a probe may not pad the shared question with wording the offline
+    arm never ranks.
+    """
+    for offline_id, probe_id in CHANGED_FILE_AB_PAIRS:
+        offline = resolve_changed_file_case(offline_id, CHANGED_FILE_PROBES)
+        assert offline.query == _ab_probe(probe_id).prompt, offline_id
+
+    # The constants are the prompts, so neither half of a pair can be reworded
+    # without editing the registry, which is where the fact-check tests look too.
+    assert resolve_changed_file_case("named_in_query", CHANGED_FILE_PROBES).query == (
+        CONTEXT_BUILDER_BUDGET_QUERY
+    )
+    assert PROBE_QUERY == CONTEXT_BUILDER_BUDGET_QUERY
+    assert resolve_changed_file_case(
+        "evicts_the_asked_about_file", CHANGED_FILE_PROBES
+    ).query == REPOSITORY_INDEX_BUILD_QUERY
+    # The eviction case asks about one file and dirties another, and the prompt is
+    # prose: it quotes no symbol name, so the swap cannot be blamed on a name
+    # collision between the query text and the injected file.
+    assert REPOSITORY_INDEX_BUILD_DIRTY_MODULE not in REPOSITORY_INDEX_BUILD_QUERY
+    assert all(
+        name not in REPOSITORY_INDEX_BUILD_QUERY
+        for name in (
+            "RepositoryIndexBuilder",
+            "RepositoryIndex",
+            "PythonAstExtractor",
+            "RelationshipRegistry",
+            "CallExtractor",
+        )
+    )
+
+
+def test_changed_file_ab_probe_facts_are_the_offline_case_facts() -> None:
+    """The scored probes check the statements their offline case reports on.
+
+    ``ChangedFileProbe.facts`` exists so the offline table's "facts available" line
+    and the live probe's score are about the same claims.  If the two drift apart,
+    the retrieval measurement stops describing the answer measurement.
+    """
+    paired = dict(CHANGED_FILE_AB_PAIRS)
+
+    for case in CHANGED_FILE_PROBES:
+        probe_id = paired.get(case.id)
+        if probe_id is None:
+            continue
+        scored = _ab_probe(probe_id)
+        assert scored.intent == "EXPLAIN", probe_id
+        assert scored.expect == case.facts, probe_id
+
+    # The names the offline case reports on are the names a scored arm can miss.
+    assert resolve_changed_file_case(
+        "evicts_the_asked_about_file", CHANGED_FILE_PROBES
+    ).facts == REPOSITORY_INDEX_BUILD_FACTS
+    assert resolve_changed_file_case("named_in_query", CHANGED_FILE_PROBES).facts == (
+        CONTEXT_BUILDER_BUDGET_FACTS
+    )
+
+
+def test_changed_file_ab_probe_facts_are_repository_truth() -> None:
+    """The expected facts can be checked in the tree they are scored against."""
+    context_builder_source = (REPO_ROOT / "packages/context/builder.py").read_text(
+        encoding="utf-8"
+    )
+    index_builder_source = (REPO_ROOT / "packages/repository/index/builder.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert {expected.label for expected in _ab_probe().expect} == {
+        "ContextBuilder",
+        "_enforce_budget",
+        "packages/context/builder.py",
+    }
+    assert "class ContextBuilder" in context_builder_source
+    assert "def _enforce_budget" in context_builder_source
+
+    assert {
+        expected.label
+        for expected in _ab_probe(CHANGED_FILE_AB_EVICTION_PROBE_ID).expect
+    } == {
+        "PythonAstExtractor",
+        "RelationshipRegistry",
+        "CallExtractor",
+    }
+    for implementation_fact in ("PythonAstExtractor", "RelationshipRegistry", "CallExtractor"):
+        assert implementation_fact in index_builder_source
+
+    # The discriminating probe's question quotes none of its own answers, so every
+    # fact has to come out of the context: that is what makes a context loss show up
+    # as an answer loss.  Its negative control may name its subject - the case is
+    # that the bonus loses a file the prompt never named.
+    eviction = _ab_probe(CHANGED_FILE_AB_EVICTION_PROBE_ID)
+    assert all(
+        variant not in eviction.prompt
+        for expected in eviction.expect
+        for variant in expected.variants
+    )
+
+
+def test_changed_file_ab_discriminating_case_loses_the_file_that_carries_the_facts(
+    checked_out_index: RepositoryIndex,
+) -> None:
+    """The eviction pair, measured on this repository's index with the real stage.
+
+    This is the regression behind ``explain_changed_files_repository_index``.  With
+    the signal off the context carries ``packages/repository/index/builder.py``; with
+    ``packages/repository/index/models.py`` injected dirty at the shipped ``+25`` it
+    carries none of it, and every fact the probe scores lives in the file that left.
+    That is why this pair can separate two answers and the one it replaced could not:
+    the arms were asserted apart, here they are measured apart.
+
+    The premise is checked on the way.  The arm with the bonus off must lead with the
+    asked-about file's class, or the changed arm losing it says nothing about a bonus
+    that was never in the running.
+    """
+    case = resolve_changed_file_case("evicts_the_asked_about_file", CHANGED_FILE_PROBES)
+    outcome = _real_arms(checked_out_index, case)
+
+    # Premise: the feature-off arm leads with the fact-bearing file's class.
+    assert outcome.baseline_status == "built"
+    assert outcome.baseline_primary == case.expected_primary
+    assert outcome.max_context_tokens == CHANGED_FILE_AB_BUDGET_TOKENS
+    assert outcome.baseline_facts == tuple(
+        expected.label for expected in REPOSITORY_INDEX_BUILD_FACTS
+    )
+
+    # The changed arm: the dirty module's symbols take the front of the order and the
+    # budget runs out before the builder file is reached.
+    assert changed_file_verdict(outcome) == "SWAP"
+    assert outcome.changed_primary.startswith(f"{REPOSITORY_INDEX_BUILD_DIRTY_MODULE}.")
+    assert outcome.changed_facts == ()
+    assert outcome.facts_lost == outcome.baseline_facts
+
+    # The loss is eviction rather than the dirty file contributing anything new: a
+    # flat bonus reorders, and here reordering is what pushes a whole file out.
+    assert outcome.context_differs is True
+    assert outcome.primary_promoted is True
+    assert outcome.symbols_promoted == 0
+    assert outcome.changed_symbols < outcome.baseline_symbols
+
+
+
+def _module_of(qualified_name: str) -> str:
+    """The index module key a qualified name lives in, as the index writes it."""
+    last = qualified_name.rsplit("/", 1)[-1]
+    prefix = qualified_name[: len(qualified_name) - len(last)]
+    return f"{prefix}{last.split('.', 1)[0]}"
+
+
+def test_changed_file_ab_discriminating_case_loses_symbols_not_just_position(
+    checked_out_index: RepositoryIndex,
+) -> None:
+    """The changed arm is not reordered - the fact-bearing symbols are gone.
+
+    A symbol that stays in the context stays available, whatever position it holds, so
+    the loss is checked symbol by symbol instead of read off the primary: every symbol
+    of the asked-about file the off arm sent has to be absent from the on arm, and the
+    on arm may not be the off arm plus the dirty file.  Primary movement alone proves
+    nothing, which is the mistake the first version of this comparison made.
+    """
+    case = resolve_changed_file_case("evicts_the_asked_about_file", CHANGED_FILE_PROBES)
+    stage_kwargs: dict[str, object] = {
+        "context_delta_injection": False,
+        "max_context_tokens": CHANGED_FILE_AB_BUDGET_TOKENS,
+    }
+    with unittest.mock.patch.object(RankingConfig, "WEIGHT_CHANGED_FILE", 25):
+        off, _ = _stage_arm(checked_out_index, case.query, frozenset(), stage_kwargs=stage_kwargs)
+        on, _ = _stage_arm(
+            checked_out_index,
+            case.query,
+            frozenset({case.dirty_module}),
+            stage_kwargs=stage_kwargs,
+        )
+
+    off_target = [
+        name for name in off if _module_of(name) == REPOSITORY_INDEX_BUILD_TARGET_MODULE
+    ]
+    on_target = [
+        name for name in on if _module_of(name) == REPOSITORY_INDEX_BUILD_TARGET_MODULE
+    ]
+
+    assert off_target, "the off arm must send the asked-about file's symbols"
+    assert _module_of(off[0]) == REPOSITORY_INDEX_BUILD_TARGET_MODULE
+    assert on_target == []
+    assert set(on) < set(off)
+
+
+def test_changed_file_ab_negative_control_moves_the_primary_and_loses_nothing(
+    checked_out_index: RepositoryIndex,
+) -> None:
+    """The contextbuilder pair cannot separate two answers, and must not claim to.
+
+    The same measurement run on the pair this comparison started with.  ``+25`` does
+    hand the primary to ``packages/context/budget.py``, so a reader who stopped at
+    ``changed_primary_promoted`` would call that an effect, and the first version of
+    this harness did.  It is not one: the bonus puts two symbols in front of the three
+    the query named instead of replacing them, so all three facts are still in the
+    text the changed arm would have sent and both arms should score 3/3.  It stays
+    registered as the negative control precisely because the pair above does not tie.
+    """
+    case = resolve_changed_file_case("named_in_query", CHANGED_FILE_PROBES)
+    held = _real_arms(checked_out_index, case, weight=5)
+    swapped = _real_arms(checked_out_index, case)
+    labels = tuple(expected.label for expected in CONTEXT_BUILDER_BUDGET_FACTS)
+
+    assert case.names_primary and case.named_in_query()
+    assert held.context_differs is False
+    assert held.baseline_primary == held.changed_primary == case.expected_primary
+
+    assert swapped.baseline_primary == case.expected_primary
+    assert swapped.changed_primary != case.expected_primary
+    assert changed_file_verdict(swapped) == "SWAP"
+    assert swapped.symbols_promoted == 2
+    assert swapped.changed_symbols > swapped.baseline_symbols
+    assert swapped.facts_lost == ()
+    assert swapped.baseline_facts == swapped.changed_facts == labels
+
+
+def test_changed_file_ab_loss_is_not_removed_by_more_supporting_budget(
+    checked_out_index: RepositoryIndex,
+) -> None:
+    """More budget restores symbols, not source detail omitted from support context.
+
+    The case ships stated at ``+25`` because that is the configured weight and at 4096
+    tokens because the stage default, ``APP_REPOSITORY_CONTEXT_MAX_TOKENS`` and the
+    EXPLAIN intent budget all say 4096.  A bonus of ``+1`` costs exactly what ``+25``
+    costs, so the number is not the lever.  At 6144 tokens all builder symbols fit
+    again, but they are supporting context: the class summary mentions its default
+    ``PythonAstExtractor``, while the constructor-body details
+    ``RelationshipRegistry`` and ``CallExtractor`` remain unavailable.  This pins
+    the distinction between a visible supporting symbol and implementation detail
+    that its representation genuinely does not carry.
+    """
+    case = resolve_changed_file_case("evicts_the_asked_about_file", CHANGED_FILE_PROBES)
+    labels = tuple(expected.label for expected in REPOSITORY_INDEX_BUILD_FACTS)
+    at_one = _real_arms(checked_out_index, case, weight=1)
+    roomier = _real_arms(
+        checked_out_index, case, budget=CHANGED_FILE_AB_BUDGET_TOKENS + 2048
+    )
+
+    assert at_one.facts_lost == labels
+    assert roomier.baseline_facts == labels
+    assert roomier.changed_facts == ("PythonAstExtractor",)
+    assert roomier.facts_lost == ("RelationshipRegistry", "CallExtractor")
+    assert roomier.baseline_symbols == roomier.changed_symbols
+
+
+def test_changed_file_probe_registry_is_well_formed() -> None:
+    """Every registered case states a query, a file, and a symbol that must win."""
+    ids = [probe.id for probe in CHANGED_FILE_PROBES]
+
+    assert len(ids) == len(set(ids)), "probe ids must be unique"
+    for probe in CHANGED_FILE_PROBES:
+        assert probe.query.strip()
+        # A module key, which is the form the changed-file signal is matched in.
+        assert "/" in probe.dirty_module and "." not in probe.dirty_module
+        module_of_primary = _module_of(probe.expected_primary)
+        assert "/" in module_of_primary, "expected primary must be a qualified name"
+        # A probe about name priority must not dirty the file it expects to win:
+        # that case is a relevance tie, which the bonus is meant to decide.
+        assert probe.dirty_module != module_of_primary
+        # The claim a case makes about its own query text has to hold: "named in
+        # the query" is the strict one, so a case cannot quietly claim it.
+        assert probe.names_primary == probe.named_in_query(), (
+            f"{probe.id}: names_primary disagrees with the query text"
+        )
+
+
+def test_changed_file_probe_registry_covers_both_name_conditions() -> None:
+    """At least one case the query literally names, and one it only name matches."""
+    assert any(probe.names_primary for probe in CHANGED_FILE_PROBES)
+    assert any(not probe.names_primary for probe in CHANGED_FILE_PROBES)
+
+
+def test_print_changed_file_table_reports_the_measured_flip(capsys) -> None:
+    """The failing line says which file was dirty and what it displaced."""
+    outcome = changed_file_probe_outcome(
+        _probe(probe_id="registry_case"),
+        baseline=[PROBE_NAMED_SYMBOL],
+        changed=[PROBE_DIRTY_SYMBOL],
+        promotion={
+            "changed_context_differs": True,
+            "changed_primary_promoted": True,
+            "changed_symbols_promoted": 1,
+            "changed_baseline_status": "built",
+        },
+        weight=25,
+    )
+
+    print_changed_file_table([outcome])
+
+    printed = capsys.readouterr().out
+    assert "CHANGED-FILE RANKING" in printed
+    assert "registry_case" in printed
+    assert "SWAP" in printed
+    assert PROBE_DIRTY_MODULE in printed
+    assert "weight=25" in printed
+    assert PROBE_NAMED_SYMBOL in printed
+    assert "symbols_promoted=1" in printed
+    assert "baseline_status=built" in printed
+
+
+def test_print_changed_file_table_states_the_query_language(capsys) -> None:
+    """A line says whether the query named the symbol or merely matched it."""
+    print_changed_file_table(
+        [
+            changed_file_probe_outcome(
+                _probe(
+                    probe_id="untyped",
+                    expected_primary=PROBE_DIRTY_SYMBOL,
+                    names_primary=False,
+                ),
+                baseline=[PROBE_NAMED_SYMBOL],
+                changed=[PROBE_NAMED_SYMBOL],
+                promotion={},
+                weight=5,
+            )
+        ]
+    )
+
+    printed = capsys.readouterr().out
+    assert "name match only" in printed
+    assert "named in query" not in printed
+
+
+def test_changed_file_flip_weight_matches_the_engine_order() -> None:
+    """The sweep's arithmetic is the engine's order, not a guess at it."""
+    from packages.context.models import ContextCandidate
+    from packages.context.ranking import RankingEngine
+
+    def candidate(qualified_name: str, module: str, score: int) -> ContextCandidate:
+        item = ContextCandidate(
+            symbol_id=qualified_name,
+            qualified_name=qualified_name,
+            module=module,
+            symbol_type=SymbolType.CLASS.value,
+        )
+        item.score = score
+        item.reasons = []
+        return item
+
+    def rank_with(leader: ContextCandidate, rival: ContextCandidate, weight: int) -> str:
+        original = RankingConfig.WEIGHT_CHANGED_FILE
+        RankingConfig.WEIGHT_CHANGED_FILE = weight
+        try:
+            ranked = RankingEngine(changed_modules=frozenset({rival.module})).rank(
+                "context a", [candidate(leader.qualified_name, leader.module, 0), rival]
+            )
+        finally:
+            RankingConfig.WEIGHT_CHANGED_FILE = original
+        return ranked[0].qualified_name
+
+    leader = candidate("packages/context/m.ContextA", "packages/context/m", 100)
+
+    # A tie in another module is decided by the smallest step there is.
+    tied = candidate("packages/context/z.ContextZ", "packages/context/z", 100)
+    assert changed_file_flip_weight(leader, tied) == 1
+    assert rank_with(leader, tied, 1) == tied.qualified_name
+
+    # Behind, but sorting first on the tie-break: reaching the score is enough.
+    before = candidate("packages/context/a.ContextA", "packages/context/a", 90)
+    assert changed_file_flip_weight(leader, before) == 10
+    assert rank_with(leader, before, 10) == before.qualified_name
+
+    # Behind and sorting later: the step past the score is what moves it up.
+    after = candidate("packages/context/zz.ContextZ", "packages/context/zz", 90)
+    assert changed_file_flip_weight(leader, after) == 11
+    assert rank_with(leader, after, 11) == after.qualified_name
+
+
+def test_changed_file_sweep_reports_one_row_per_reachable_query() -> None:
+    """The sweep ranks each query once and reads the flip weight off the scores."""
+    rows = changed_file_sweep(_probe_index(), [PROBE_QUERY])
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.query == PROBE_QUERY
+    assert row.leader == PROBE_NAMED_SYMBOL
+    assert row.leader_module == PROBE_NAMED_MODULE
+    assert row.relevant > 0
+    assert row.flip_weight == _fixture_flip_weight()
+
+
+def test_changed_file_sweep_skips_a_query_that_reaches_nothing() -> None:
+    """A query with no candidate above the floor has no flip weight to report."""
+    assert changed_file_sweep(_probe_index(), ["zzz qqq nothing"]) == []
+
+
+def test_print_changed_file_sweep_names_the_flip(capsys) -> None:
+    """The sweep line says which file would have to be dirty, and how briefly."""
+    rows = changed_file_sweep(_probe_index(), [PROBE_QUERY])
+
+    print_changed_file_sweep(rows)
+
+    printed = capsys.readouterr().out
+    assert "CHANGED-FILE FLIP WEIGHT" in printed
+    assert PROBE_QUERY in printed
+    assert f"flip_at={rows[0].flip_weight}" in printed
+    assert PROBE_DIRTY_SYMBOL in printed
+
+
+def test_changed_file_probe_flag_conflicts_with_gateway_modes() -> None:
+    """The offline modes take no gateway, so mixing the two is refused."""
+    assert main(["--changed-file-probe", "--delta-context"]) == 2
+    assert main(["--changed-file-sweep", "--no-context"]) == 2
+
+
+def test_changed_file_weight_override_needs_the_probe_mode() -> None:
+    """The weight override is a probe diagnostic, not a global knob."""
+    assert main(["--changed-file-weight", "5"]) == 2
+
+
+def test_changed_file_probe_mode_runs_offline_and_reports_by_exit_code(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """``--changed-file-probe`` dispatches to the probe over the configured root."""
+    monkeypatch.setattr(
+        "scripts.quality_harness.repository_index_settings",
+        lambda repo_root=None: (tmp_path, False, ""),
+    )
+
+    code = main(["--changed-file-probe"])
+
+    # An empty tree sends nothing, so no primary can be kept.
+    assert code == 1
+    assert "CHANGED-FILE RANKING" in capsys.readouterr().out
+
+
+def test_changed_file_sweep_mode_is_informational(tmp_path, monkeypatch, capsys) -> None:
+    """``--changed-file-sweep`` prints the arithmetic and does not fail on it."""
+    monkeypatch.setattr(
+        "scripts.quality_harness.repository_index_settings",
+        lambda repo_root=None: (tmp_path, False, ""),
+    )
+
+    code = main(["--changed-file-sweep"])
+
+    assert code == 0
+    assert "CHANGED-FILE FLIP WEIGHT" in capsys.readouterr().out

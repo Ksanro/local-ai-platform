@@ -21,7 +21,7 @@ FastAPI /v1/chat/completions
   -> RepositoryContextStage
   -> history capping in PipelineEngine
   -> ProviderStage
-  -> OpenAI-compatible backend (SGLang)
+  -> OpenAI-compatible backend (vLLM)
 ```
 
 Large parts of `packages/` are future scaffolding and are not reachable
