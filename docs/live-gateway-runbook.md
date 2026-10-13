@@ -240,8 +240,10 @@ reports the primary from both arms, the stage's own `changed_context_differs`,
 `changed_baseline_status`, and, for the cases that carry facts, which of those
 facts the text of each arm could support. A case holds only when **both** arms sent
 its expected primary: the claim is that a symbol survives the bonus, and an arm that
-never sent it proves nothing. So the three verdicts are `HOLD` (both arms kept it),
-`SWAP` (the dirty arm lost it), and `BAD_BASELINE` (the off arm did not send the
+never sent it proves nothing. A fourth verdict exists for the case that wants the
+primary to move: `HOLD` (both arms kept it), `SWAP` (the dirty arm lost it), `MOVE`
+(the dirty arm moved it into the changed file, which is the point of that case), and
+`BAD_BASELINE` (the off arm did not send the
 symbol the case names, which means the case is stated wrong, not that the bonus did
 anything). Exit code is 0 when every case held - which at the shipped `+25` it does
 not: two cases report `SWAP` and the command exits 1, and that is the measurement,
@@ -256,8 +258,8 @@ leader, and the others at 10, 15, 21, 30, 30 and 70.
 
 A `SWAP` verdict on the primary is not by itself an effect worth running a live A/B
 for, because a flat bonus reorders: a case can change its first symbol and still
-send the same files. The `facts` line is what separates the two, and the two scored
-cases sit on opposite sides of it.
+send the same files. The `facts` line is what separates the two, and the three scored
+cases sit on both sides of it.
 
 - `named_in_query` (query `CONTEXT_BUILDER_BUDGET_QUERY`, dirty
   `packages/context/budget`): the primary moves to `ContextBudget` from `+15` up and
@@ -275,11 +277,22 @@ cases sit on opposite sides of it.
   `RelationshipRegistry` and `CallExtractor` remain unavailable. Run the live A/B
   at the configured `APP_REPOSITORY_CONTEXT_MAX_TOKENS=4096`, where all three facts
   are lost, or it measures a different degree of loss.
+- `gains_the_changed_file` (query `HISTORY_CAP_QUERY`, dirty
+  `packages/pipeline/history`): the other side of that ledger. The prompt is prose, it
+  names no symbol, and the file it is about is the file the dirty marker puts in the
+  working tree - so this is the case the opt-in is offered for. 20 symbols become 7 and
+  the four newly sent are the cap's own definitions (`cap_history`,
+  `_build_cap_groups`, `_cap_current_tool_result`, `_estimate_tokens`), which is where
+  three of the four facts live: the per-message budget, the envelope detector, and the
+  truncation marker. `facts_lost` is empty, `changed_primary_promoted` is true because
+  the primary moves *into* the changed file, and the verdict is the `MOVE` case above -
+  the pair whose two arms differ by a gain and not by a loss.
 
 These modes are retrieval diagnostics, not the answer-quality claim. Each case above
 has its scored half in the normal probe set -
-`explain_changed_files_contextbuilder` and
-`explain_changed_files_repository_index` - and `CHANGED_FILE_AB_PAIRS` names the
+`explain_changed_files_contextbuilder`,
+`explain_changed_files_repository_index` and
+`explain_changed_files_history_cap` - and `CHANGED_FILE_AB_PAIRS` names the
 pairs, so the offline table and the live run cannot drift into describing different
 queries: both halves of a pair read the same prompt constant and the same facts
 tuple, and `tests/observability/test_quality_harness.py` asserts equality rather
@@ -411,13 +424,17 @@ bounded by its own timeout.
 The A/B is the scored probe, not the offline table. Both halves of each offline case
 are registered in the normal fixed set, so the standard selection and replication
 flags run them: `explain_changed_files_repository_index` (the case measured above as
-a context loss, dirty `packages/repository/index/models.py`) and
+a context loss, dirty `packages/repository/index/models.py`),
 `explain_changed_files_contextbuilder` (its negative control, dirty
-`packages/context/budget.py`). Give each pair to two gateways that differ in nothing
-but `APP_REPOSITORY_CONTEXT_CHANGED_FILES_ENABLED`, each with its own isolated slice
-of the session log,
-over a working tree in which that pair's module is dirty. Both arms are sent the
-identical prompt, because each pair reads one shared prompt constant.
+`packages/context/budget.py`), and `explain_changed_files_history_cap` (the case where
+the changed file is the one the prompt asks about and the changed arm gains context,
+dirty `packages/pipeline/history.py`). Give each pair to two gateways that differ in
+nothing but `APP_REPOSITORY_CONTEXT_CHANGED_FILES_ENABLED`, each with its own isolated
+slice of the session log,
+over a working tree in which that pair's module is dirty - and in which nothing else
+the index can see is dirty, or the enabled arm's bonus is not the pair's module's
+bonus; the run that needed that used a detached worktree, described below. Both arms
+are sent the identical prompt, because each pair reads one shared prompt constant.
 
 ```powershell
 # arm 1: gateway started with APP_REPOSITORY_CONTEXT_CHANGED_FILES_ENABLED=false
@@ -429,6 +446,9 @@ identical prompt, because each pair reads one shared prompt constant.
 .\uv.exe run python scripts\analyze_sessions.py logs\changed_files_on.jsonl
 # the control pair, same two gateways, a different file dirty in the tree
 .\uv.exe run python scripts\quality_harness.py --probe explain_changed_files_contextbuilder --repeat 3 --json --model qwen38-27b --max-tokens 8192 --timeout 300 --reasoning-model qwen38-27b > logs\quality_changed_files_control.json
+# the benefit pair, same two gateways, dirty packages/pipeline/history.py: run both arms
+# inside a temporary clean worktree so that file is the only dirty indexed module
+.\uv.exe run python scripts\quality_harness.py --probe explain_changed_files_history_cap --repeat 3 --json --model qwen38-27b --max-tokens 8192 --timeout 300 --reasoning-model qwen38-27b > logs\quality_changed_files_gain.json
 ```
 
 `--repeat 3` writes the repeat envelope (`{"repeat": 3, "runs": [...], "aggregate":
@@ -492,11 +512,13 @@ Which live probes can show an effect at all is decided offline rather than guess
 the cases in `CHANGED_FILE_PROBES` say what the bonus does to retrieval on this
 repository's index, and to the facts each arm's context can support, and the scored
 pairs above are the cases they license running live - one that must be able to
-differ, one that must not. The replicated A/B was run on 2026-10-12; the result is
-below. A temporary dirty marker used to make an arm differ must be one narrow file -
-that pair's own module - removed afterwards, and never committed. Neither the
-harness nor the offline probes writes to the working tree or reads Git: the probes
-inject the dirty module, so the tree only matters for the live arms.
+differ, one that must not, and one that must differ by an addition. The replicated
+A/B of the first two ran on 2026-10-12; the benefit pair ran on 2026-10-13, in a
+detached worktree so that one file was the only dirty module either gateway could
+see; both results are below. A temporary dirty marker used to make an arm differ must
+be one narrow file - that pair's own module - removed afterwards, and never committed.
+Neither the harness nor the offline probes writes to the working tree or reads Git: the
+probes inject the dirty module, so the tree only matters for the live arms.
 
 ### Replicated changed-file A/B, 2026-10-12
 
@@ -542,9 +564,177 @@ turning the signal on for this query; it does not price the benefit side, so
 `RankingConfig.WEIGHT_CHANGED_FILE` stays `+25` and the feature stays off by
 default.
 
+### Isolated-worktree benefit A/B, 2026-10-13
+
+The other half of that decision needed a tree with exactly one dirty file, because the
+flag is global: the run above turned the bonus on across 18 locally modified indexed
+modules and cannot say what one module is worth. It was run on 2026-10-13 on the pair
+`gains_the_changed_file` / `explain_changed_files_history_cap`: prompt
+`HISTORY_CAP_QUERY` ("How does the gateway cap conversation history before sending it
+to the model?"), dirty file `packages/pipeline/history.py` (indexed module key
+`packages/pipeline/history`), both arms at `APP_REPOSITORY_CONTEXT_MAX_TOKENS=4096`
+with the `EXPLAIN:4096` intent budget, and the four facts `cap_history`,
+`max_current_tool_result_tokens`, `_looks_like_cline_tool_result_message` and
+`truncated by gateway history cap`.
+
+The isolation is a detached worktree of the commit the main workspace is on, at
+`..\lap-ab-histcap-4330e8f` (`4330e8f3521d7a4b9525bb62008b3f3b716a6e7f`), holding a
+two-line comment marker in that one file for as long as both arms run. A worktree is
+also how the arms stop inheriting `.env`: `apps/gateway/main.py` loads `.env` from its
+own tree with `override=True`, and the worktree has none (it is gitignored), so every
+value each gateway used is one its launcher set:
+
+```powershell
+git worktree add --detach ..\lap-ab-histcap-4330e8f 4330e8f
+git -C ..\lap-ab-histcap-4330e8f status --short   # must be empty before the marker
+# ... add the marker, then check what Git reports, which is what the stage reads:
+#   git status --short      -> ` M packages/pipeline/history.py`, one line
+#   scripts\git_change_snapshot.py --json .
+#                            -> "clean": false, counts.unstaged 1, untracked 0
+# start the arm's gateway with cwd inside the worktree, then from the main workspace:
+.\uv.exe run python scripts\quality_harness.py --probe explain_changed_files_history_cap `
+    --repeat 3 --json --model qwen38-27b --max-tokens 8192 --timeout 300 --reasoning-model qwen38-27b
+# afterwards: git -C ..\lap-ab-histcap-4330e8f checkout -- packages/pipeline/history.py
+#             git worktree remove ..\lap-ab-histcap-4330e8f
+```
+
+Both launchers set `APP_DEFAULT_MODEL=qwen38-27b`, `APP_DEFAULT_PROVIDER=openai`, the
+single-entry `APP_MODELS_CONFIG` that routes `qwen38-27b` to backend model
+`qwen3.8-flash-next` at `http://100.106.236.88:18300/v1` (`context_window=262144`,
+`max_output_tokens=8192`, `chars_per_token=3.5`), `REQUEST_TIMEOUT=300`,
+`APP_REPOSITORY_PATH` at the worktree, `APP_REPOSITORY_CONTEXT_MAX_TOKENS=4096`,
+`APP_REPOSITORY_CONTEXT_INTENT_BUDGETS` with `EXPLAIN:4096`,
+`APP_REPOSITORY_EXCLUDE_TESTS=false`, `APP_REPOSITORY_EXCLUDE_GLOBS=scripts/**`,
+`APP_SESSION_LOG_ENABLED=true` and its own absolute `APP_SESSION_LOG_PATH`, and
+`APP_HISTORY_CAP_ENABLED=true` with `APP_HISTORY_CAP_TOKENS=3000`. They differ in
+exactly two lines: `APP_SESSION_LOG_PATH`, and
+`APP_REPOSITORY_CONTEXT_CHANGED_FILES_ENABLED` (`false` for arm 1, `true` for arm 2).
+Observed before the first request: backend `/v1/models` served one model,
+`qwen3.8-flash-next` (`owned_by: vllm`, `max_model_len: 400000`); the gateway's
+`/v1/models` listed the alias `qwen38-27b`; `/debug/runtime-context` reported
+`routing_mode=models_config`, `default_model=qwen38-27b`,
+`repository_context_max_tokens=4096` and the arm's own session log; and each gateway
+indexed the same tree with the same numbers (`files=504 modules=504 symbols=8521
+relationships=18096`). The enabled gateway's startup line is the one-file proof from
+inside the process: `changed_files_signal enabled=true paths=1 captures=1 failures=0
+outside_root=0 last_error=none`.
+
+What the ranking should do on that tree was measured before the requests, and
+re-measured against the worktree itself - `--changed-file-probe --repo-root
+..\lap-ab-histcap-4330e8f` reproduces the same row as the main workspace's index, so
+the live arms were not sent a prediction from a different tree. In stage order the
+disabled arm sends `apps/gateway/api/models.list_models` first, then
+`packages/pipeline/history._build_cap_groups.find` and `.union` - the changed file is
+present at two symbols, neither of which is `cap_history`, and the other 17 of its 20
+symbols are gateway plumbing. The enabled arm sends 7: `_build_cap_groups.find`,
+`_build_cap_groups.union`, `apps/gateway/api/models.list_models`, `_build_cap_groups`,
+`_cap_current_tool_result`, `cap_history`, `_estimate_tokens`. Those last four are
+`changed_symbols_promoted=4`; `changed_context_differs=true`,
+`changed_primary_promoted=true` and `changed_baseline_status=built`, and the facts the
+two texts can support go `1/4` to `4/4` with `facts_lost` empty. The 17 gateway symbols
+that leave are what pays for it - this is a different context, not the same one with
+more in it.
+
+Per repeat, on the clean pass (three requests per arm, one identical prompt, no
+errors):
+
+| arm | repeat 1 | repeat 2 | repeat 3 | total |
+|---|---|---|---|---|
+| feature off | 1/4 | 1/4 | 1/4 | 3/12 |
+| feature on | 3/4 | 3/4 | 2/4 | 8/12 |
+
+Fact by fact, on that pass: `cap_history` was named by all six answers - it is the
+public function, and the disabled arm's call sites show the model where to look;
+`max_current_tool_result_tokens` by 3/3 enabled against 0/3 disabled;
+`_looks_like_cline_tool_result_message` by 2/3 enabled against 0/3 disabled. Pooling the
+nine scored enabled answers from all four enabled passes against the six scored disabled
+ones keeps that ordering - 7/9 and 6/9 against 0/6, with `cap_history` 9/9 against 6/6.
+The fourth fact, `truncated by gateway history cap`, was quoted by none of those fifteen
+answers, because scoring wants the marker verbatim and the model paraphrases it. So the
+live gain is two of the three facts the offline case says arrive, and the third is a
+scoring artifact rather than a retrieval failure: the string is in the enabled arm's
+context, which is what `4/4` offline means.
+
+Inside each arm the context was identical across repeats - disabled: 20 symbols,
+`estimated_tokens` 2807, `prompt_tokens` 3060, primary
+`apps/gateway/api/models.list_models`; enabled: 7 symbols, `estimated_tokens` 4087,
+`prompt_tokens` 3955, primary `packages/pipeline/history._build_cap_groups.find`,
+inside `packages/pipeline/history` as the offline case predicts. Every request sent to
+either gateway - twenty in all, six of them in the pass above - carried one prompt text
+(77 characters, the same SHA-256 prefix throughout), and the
+enabled arm's session records read, on all three repeats: `changed_files_signal=ok`,
+`changed_files_count=1`, `changed_symbols_selected=6`, `changed_context_differs=true`,
+`changed_primary_promoted=true`, `changed_symbols_promoted=4`,
+`changed_baseline_status=built`; the disabled arm's read `off`, `0`, `false`, `false`,
+`0` and `none`. `scripts/analyze_sessions.py` over each arm's isolated slice agrees:
+3/3 records "proves a change" with the primary and the membership both changed in the
+enabled arm, 12 promoted and 18 selected symbols summed across three requests, and 0 in
+every column of the disabled arm.
+
+Two costs sit next to that. `changed_baseline_ms` was 402-507 ms per enabled request in
+the enabled gateway's own log lines - the counterfactual re-rank, which is where the
+counters come from - and the enabled prompt carried ~900 more tokens (3955 against 3060).
+
+The timeout history belongs to the measurement, not to the feature. The first three
+enabled passes lost one of their three repeats each to an HTTP 503 with a
+`provider_stage ... status=error error=Request timed out` at 61.0-61.3 s: the
+gateway/provider layer aborts a backend call at `REQUEST_TIMEOUT`, whose default is
+60 s, well under the harness `--timeout 300`, and the isolated launcher had not set it
+because there was no `.env` to set it (the main workspace's `.env` does, at 300). Three
+of nine enabled requests and nought of five disabled ones were lost that way, which is
+why the table reports the pass taken after `REQUEST_TIMEOUT=300` was set in both
+launchers, with 0 errors on either side. No answer came near the 8192-token completion
+ceiling in that pass (843-1218 tokens disabled, 904-1162 enabled) and nothing was
+flagged `truncation_risk`, so neither the totals nor the per-fact pattern is a reading
+of truncated text. The pre-fix passes are retained locally under the Git-ignored
+`build/ab_history_cap` beside the arm slices; they are diagnostic evidence, not files
+that will accompany this documentation in a commit. The two disabled-arm passes agree
+with each other repeat for repeat.
+
+How the pair was found, and what the search rejected. The candidate set was bounded by
+scripts retained locally under the Git-ignored `build/cf_search`, not by a guess; those
+scratch artifacts are not committed with this runbook. Stage 1 (`search1.py`, one
+`q_*.json` per query) profiled 15 prose queries through the real stage and asked, for
+each, which modules could earn the bonus at all; stage 2 (`search2.py`, `s2_rows.json`)
+ran all 75 (query, module) pairs and recorded the shape of each - symbols added, symbols
+removed, identifiers only the enabled arm's text carries - and 20 rows looked
+benefit-shaped on that first, symbol-level test. Stage 5 (`search5.py`, `s5_rows.json`)
+widened the query set to 22 (those 15, the two prompts already registered as pairs, and
+five written for this search) and scored 93 rows by text rather than by symbol counts: 51
+gained at least four new tokens from the dirty module's own source, and 61 lost no symbol
+at all. `filter5.py` asked for both at once - nothing removed, at least 12 new tokens -
+and 19 rows survived. Two of the 93 rows were the history-shaped candidates that mattered
+here, both with `packages/pipeline/history` dirty: "How does the conversation memory store
+persist and recall history?" (4 added, 2 removed) and "How does the pipeline engine trim
+conversation history before a request?" (2 added, 7 removed). Neither passed
+`filter5.py`: each takes symbols away from the disabled arm, so each measures a trade and
+not a gain. `HISTORY_CAP_QUERY` was written after them, asking about the cap itself in
+prose that names no symbol.
+
+The pair that is registered would not survive that `removed == 0` filter either: 17
+gateway symbols leave the enabled context. What it satisfies is the weaker condition an
+answer actually depends on - the symbols that leave carry none of the four scored facts,
+so `facts_lost` is empty while three facts arrive. That is why the search's filter became
+the rule `run_changed_file_probe` applies, and why `search7.py` re-measures the registered
+case through the shipped code path instead of through scratch arithmetic. `search8.py` and
+`search9.py` hold the ordered per-arm symbol lists quoted above. Nothing was written down
+in prose about rows that were counted and never revisited; the numbers above are what the
+retained JSON says.
+
+Verdict: the benefit side is measured, and it is real but narrow. On one query the
+bonus buys two implementation facts the answer could not otherwise reach, at the price
+of context that query did not ask for and half a second of baseline comparison; on
+another it loses the answer outright (the run above). `RankingConfig.WEIGHT_CHANGED_FILE`
+stays `+25`, unchanged by either run, and the feature stays off by default: the flag is
+global, so the two effects arrive together for anyone who turns it on, and no per-query
+rule decides between them yet. What has changed is the shape of the decision - it is no
+longer "costs something, buys nothing measured", and the `gains_the_changed_file` row of
+`--changed-file-probe` is the offline statement of what the live pair now measures.
+
+
 ## Full Quality Baseline
 
-Run the fixed 10-probe set (26 expected facts) against the current local backend:
+Run the fixed 11-probe set (30 expected facts) against the current local backend:
 
 ```powershell
 .\uv.exe run python scripts\quality_harness.py --json --model qwen38-27b --max-tokens 8192 --reasoning-model qwen38-27b > logs\quality_baseline_qwen3_8_flash_next_20261010.json

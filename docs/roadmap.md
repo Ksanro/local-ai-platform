@@ -87,9 +87,10 @@ The fixed probe set proves repository context adds answer-quality signal
 `--compare-context` run, including the 2 multi-turn probes). The current
 qwen38-27b/SGLang full baseline of 2026-10-10 (the backend that alias pointed at
 before it moved to vLLM) is clean at `20/20` with style `8/8`. That was the
-8-probe set; `PROBES` now has 10 entries and 26 expected facts, the two added ones
-being `explain_changed_files_contextbuilder` and
-`explain_changed_files_repository_index` - the scored halves of the change-aware
+8-probe set; `PROBES` now has 11 entries and 30 expected facts, the three added ones
+being `explain_changed_files_contextbuilder`,
+`explain_changed_files_repository_index` and
+`explain_changed_files_history_cap` - the scored halves of the change-aware
 ranking decision under Git Integration below.
 
 Done in this area:
@@ -313,8 +314,11 @@ The feature stays off by default. What that experiment needed - a probe whose
 context actually differs between a feature-off and a feature-on arm, plus replication
 that can tell the effect apart from sampling noise - is now registered, as
 `explain_changed_files_repository_index` run with `--repeat 3` beside its negative
-control `explain_changed_files_contextbuilder`; the paragraphs below record what the
-offline cases say and what the live half found when it ran on 2026-10-12.
+control `explain_changed_files_contextbuilder`, and since 2026-10-12 as
+`explain_changed_files_history_cap`, the pair whose changed arm gains context instead of
+paying for it; the paragraphs below record what the
+offline cases say and what the live half found when it ran on 2026-10-12 and again on
+2026-10-13.
 Measuring which files an agent actually touched also remains open.
 
 Measured offline on 2026-10-11, and still open as a decision. The question - can
@@ -366,6 +370,14 @@ configured 4096-token budget:
   tokens both files' symbols fit and `PythonAstExtractor` returns, but the builder is
   supporting context and its constructor-body details `RelationshipRegistry` and
   `CallExtractor` remain unavailable. At 4096 all three details are lost.
+- one query gains a mechanism instead, and it is the case the opt-in is offered for.
+  "How does the gateway cap conversation history before sending it to the model?" with
+  `packages/pipeline/history` dirty sends 7 symbols instead of 20: the four added are the
+  cap's own definitions (`cap_history`, `_build_cap_groups`, `_cap_current_tool_result`,
+  `_estimate_tokens`), the facts the two texts can support go `1/4` to `4/4`, and
+  `facts_lost` is empty. The prompt is prose and names no symbol, so the bonus reaches it
+  through the gate alone, and the verdict is `MOVE`: the primary moves *into* the changed
+  file, which is what the case is for.
 
 So the evidence says a smaller bonus is defensible and a large one is not needed,
 but it does not say `+5` is right either: `WEIGHT_CHANGED_FILE` stays at the `+25`
@@ -376,14 +388,15 @@ read - a tie flips at `+1`, a competitor flips at the gap or the gap plus one
 depending on the tie-break, and the gate holds at any weight - and asserts nothing
 about the shipped value.
 
-Half answered on 2026-10-12, half still open: whether the promotion helps answer
-quality at all. What the live A/B settled is that it costs this query its answer;
+Answered on both sides now: 2026-10-12 measured what the promotion costs, and
+2026-10-13 what it buys. What the first live A/B settled is that it costs this query its
+answer;
 what it did not settle is whether it buys any query anything, because no run yet
 shows a promotion improving an answer. The instrument for that question is now
 registered rather than to be
-invented, and it is two probes rather than one, because the first version of the
+invented, and it is three probes rather than one, because the first version of the
 comparison measured a retrieval change that turned out to cost no context. The
-offline cases say which pairs can differ, and both are in the normal scored probe
+offline cases say which pairs can differ, and all three are in the normal scored probe
 set: `explain_changed_files_repository_index` asks
 `REPOSITORY_INDEX_BUILD_QUERY`, whose dirty `packages/repository/index/models.py`
 pushes `packages/repository/index/builder.py` out of the context entirely, so a
@@ -391,7 +404,12 @@ changed-arm answer cannot reach its three facts from the prompt;
 `explain_changed_files_contextbuilder` asks `CONTEXT_BUILDER_BUDGET_QUERY`, whose
 dirty `packages/context/budget.py` reorders the context and loses nothing, so it is
 expected to tie and tells a real effect apart from a probe that merely has a dirty
-file near it. Either is selectable with `--probe <id> --repeat 3`, so the replicated
+file near it; and `explain_changed_files_history_cap` asks `HISTORY_CAP_QUERY`, whose
+dirty `packages/pipeline/history.py` is the file the question is about - prose that
+names no symbol, so the bonus reaches it only through the relevance gate, and what
+`+25` spends on it is the cap's own implementation: four symbols the disabled arm does
+not get, and nothing scored given up (`1/4` to `4/4` facts available, `facts_lost`
+empty). Either is selectable with `--probe <id> --repeat 3`, so the replicated
 A/B (feature off on one gateway, feature on in another, the pair's own module dirty in
 the tree, isolated session logs read back through `scripts/analyze_sessions.py`, both
 arms at the configured `APP_REPOSITORY_CONTEXT_MAX_TOKENS=4096`) needed only a
@@ -407,11 +425,40 @@ disabled arm reports the signal `off`. Per-repeat numbers and the two limits tha
 belong to this measurement - the flag is global, so the enabled arm took the bonus
 across the 18 locally modified indexed modules rather than the experiment's single
 marker, and two of its three answers ran to the 8192-token completion ceiling - are
-in `docs/live-gateway-runbook.md`. The offline probes stay supporting diagnostics:
-the live run priced what this retrieval change costs on one query and did not show
-what it buys on any, so the weight remains an open decision.
+in `docs/live-gateway-runbook.md`. The offline probes stay supporting diagnostics: that
+run priced what this retrieval change costs on one query, and did not show
+what it buys on any.
+
+It shows what it buys now. On 2026-10-13 the gain pair ran against the same vLLM
+backend, with both gateways started inside a detached worktree of `4330e8f` whose single
+locally modified file was a two-line marker in `packages/pipeline/history.py` - the
+isolation the October-12 run could not have, and the reason its enabled arm reported
+`changed_files_count=18` where this one reports `1`. Feature off `3/12` (1/4 on all three
+repeats: `cap_history` is the public name, and the disabled arm's call sites still show
+the model where to look), feature on `8/12` (3/4, 3/4, 2/4), with
+`max_current_tool_result_tokens` named by all three enabled answers and
+`_looks_like_cline_tool_result_message` by two, neither named once by a disabled answer,
+and no scored fact the disabled arm had going missing. Inside each arm the context was
+identical across repeats: 20 symbols and `estimated_tokens` 2807 disabled, 7 symbols and
+4087 enabled, the enabled primary inside `packages/pipeline/history`, and
+`changed_symbols_promoted=4`, `changed_primary_promoted=true`,
+`changed_context_differs=true` and `changed_baseline_status=built` in all three enabled
+records against `off`, `false` and zeros in the disabled ones. Two things came with it
+that are not gains: 402-507 ms per enabled request for the counterfactual baseline, and
+the fourth fact (`truncated by gateway history cap`) reaching the enabled text without
+reaching any answer in either arm - a property of scoring a string verbatim rather than
+of what the context contained. Three enabled requests
+were also lost to a confound worth naming: with no `.env` in the worktree, the gateway's
+own provider timeout stayed at its 60-second default while the harness was told to wait
+300, and those repeats came back as HTTP 503 at 61 s until `REQUEST_TIMEOUT=300` was set
+on both arms; the numbers above are the pass taken after that.
+
+So the weight decision is informed on both sides and unchanged: `WEIGHT_CHANGED_FILE`
+stays at the `+25` that shipped, and the feature stays off by default, because the flag
+is global - turning it on takes this gain and the eviction cost together - and no rule
+yet decides per query which of the two a repository is getting.
 `tests/observability/test_quality_harness.py` runs the real
-stage over this checkout's index on both arms of both pairs and asserts the context
+stage over this checkout's index on both arms of every pair and asserts the context
 difference, so what the A/B sees is a regression test, not a guess. Measuring
 which files an agent actually touched also remains open.
 

@@ -18,19 +18,31 @@ Usage
     .\uv.exe run python scripts\quality_harness.py --changed-file-sweep
     .\uv.exe run python scripts\quality_harness.py --probe explain_changed_files_contextbuilder
     .\uv.exe run python scripts\quality_harness.py --probe explain_changed_files_repository_index
+    .\uv.exe run python scripts\quality_harness.py --probe explain_changed_files_history_cap
 
-Run either of the last two with `--repeat 3` against two gateways configured
+Run any of the last three with `--repeat 3` against two gateways configured
 differently - `APP_REPOSITORY_CONTEXT_CHANGED_FILES_ENABLED` off on one, on on the
-other, with the same dirty working tree.  The `--changed-file-*` modes above are the
+other, over the same working tree, and over a tree in which the pair's own module is the
+only dirty indexed module either gateway can see.  A benefit claim needs that isolation,
+because the flag is global: over a workspace with eighteen dirty indexed modules the
+enabled arm takes the bonus across eighteen, not across the one under test, and a
+detached worktree of the commit - add it, mark the pair's file, remove it afterwards - is
+how it was obtained.  A worktree has no `.env`, so every setting has to be given to the
+process, `REQUEST_TIMEOUT=300` among them: the provider layer aborts a backend call at
+its own default 60 s and the arm would otherwise record an HTTP 503 where it meant to
+measure an answer.  The `--changed-file-*` modes above are the
 offline retrieval diagnostics for the same decisions.  Each pair - offline case and
 scored probe - asks one identical prompt and checks one identical set of facts, held
-in the shared constants (`CONTEXT_BUILDER_BUDGET_QUERY`,
-`REPOSITORY_INDEX_BUILD_QUERY`) and enumerated in `CHANGED_FILE_AB_PAIRS`, because two
+in the shared constants (`CONTEXT_BUILDER_BUDGET_QUERY`, `REPOSITORY_INDEX_BUILD_QUERY`,
+`HISTORY_CAP_QUERY`) and enumerated in `CHANGED_FILE_AB_PAIRS`, because two
 arms that ask different questions measure different retrievals and no answer
 difference can be attributed to the bonus; an answer-quality claim needs the live
-scored run.  `explain_changed_files_repository_index` is the pair whose offline case
-measures a context the changed arm cannot support, so it is the one that can separate
-two answers; `explain_changed_files_contextbuilder` is its negative control, where
+scored run.  `explain_changed_files_history_cap` is the pair the opt-in is offered for:
+its offline case measures facts the changed arm can support and the other arm cannot,
+with nothing given up, so the two arms differ by the gain alone.
+`explain_changed_files_repository_index` is the pair whose offline case measures a
+context the changed arm cannot support - the cost side, which is why the opt-in is off
+by default; `explain_changed_files_contextbuilder` is the negative control, where
 retrieval moves and nothing is lost.
 """
 
@@ -227,6 +239,48 @@ REPOSITORY_INDEX_BUILD_FACTS: tuple[ExpectedFact, ...] = (
     fact("CallExtractor"),
 )
 
+#: The benefit-side pair, and the mirror of the eviction case.  The eviction case
+#: dirties a file the prompt never mentions and watches the asked-about file leave the
+#: prompt; this one dirties the file the prompt *is* about, and asks the ranking to do
+#: what the opt-in is offered for.  The prompt is prose and names no symbol, so nothing
+#: in it hands the dirty module the primary: `history` and `gateway` reach the relevance
+#: gate as segments of `packages/pipeline/history`, the same path token the
+#: `path_token_gate` case records as the gate's behaviour.  Measured offline on this
+#: repository's index at the configured 4096-token budget: with the bonus off the token
+#: `model` name-matches `apps/gateway/api/models.list_models`, takes the primary, and 20
+#: symbols from ten modules are sent - two of them from `packages/pipeline/history`, and
+#: neither is `cap_history`, so the only place the four facts below reach the prompt is
+#: the call sites in the pipeline stages: that arm can say history is capped without
+#: saying how.  With the file dirty at the shipped `+25` the budget buys it instead: 7
+#: symbols, 6 of them from the changed file, `changed_symbols_promoted` 4 and
+#: `changed_primary_promoted` True.  The four newly sent symbols are the cap's own
+#: definitions - `cap_history`, `_build_cap_groups`, `_cap_current_tool_result`,
+#: `_estimate_tokens` - and with them the other three facts, the per-message budget, the
+#: envelope detector and the truncation marker, are in the text.  Nothing the off arm had
+#: is lost, so `facts_lost` is empty.  This is the case where the bonus adds an answer
+#: rather than moving one, and the pair whose two arms can separate.  The verdict names it
+#: MOVE because the primary does move, into the changed file; the symbol counts say 20
+#: became 7, and the facts line says what the difference is worth.
+HISTORY_CAP_QUERY = (
+    "How does the gateway cap conversation history before sending it to the model?"
+)
+#: The index module key the stage matches a dirty symbol against, so this is the form
+#: both arms take: offline the case injects it directly, and a live working tree dirties
+#: `packages/pipeline/history.py`, whose symbols the index files under this key.
+HISTORY_CAP_DIRTY_MODULE = "packages/pipeline/history"
+HISTORY_CAP_PRIMARY = "apps/gateway/api/models.list_models"
+#: The primary the changed arm reaches: `find` inside `_build_cap_groups`, the first
+#: symbol of the changed file in the stage's own order.  The module test is the claim;
+#: pinning the whole name keeps this honest if the bonus ever stops reaching the file.
+HISTORY_CAP_CHANGED_PRIMARY = "packages/pipeline/history._build_cap_groups.find"
+HISTORY_CAP_FACTS: tuple[ExpectedFact, ...] = (
+    fact("cap_history"),
+    fact("max_current_tool_result_tokens"),
+    fact("_looks_like_cline_tool_result_message"),
+    fact("[... truncated by gateway history cap ...]", "truncated by gateway history cap"),
+)
+
+
 #: The offline case and the scored probe of each changed-file A/B, paired by id.
 #: Both halves of a pair must ask one question and check one set of facts, and a
 #: test walks this table rather than the two registries separately, so a case can
@@ -234,6 +288,7 @@ REPOSITORY_INDEX_BUILD_FACTS: tuple[ExpectedFact, ...] = (
 CHANGED_FILE_AB_PAIRS: tuple[tuple[str, str], ...] = (
     ("named_in_query", "explain_changed_files_contextbuilder"),
     ("evicts_the_asked_about_file", "explain_changed_files_repository_index"),
+    ("gains_the_changed_file", "explain_changed_files_history_cap"),
 )
 
 PROBES: tuple[QualityProbe, ...] = (
@@ -420,6 +475,27 @@ PROBES: tuple[QualityProbe, ...] = (
         intent="EXPLAIN",
         prompt=REPOSITORY_INDEX_BUILD_QUERY,
         expect=REPOSITORY_INDEX_BUILD_FACTS,
+    ),
+    QualityProbe(
+        # The scored half of the benefit case `gains_the_changed_file`, and the pair
+        # the changed-file opt-in is meant to win.  Run it with `--repeat 3` against a
+        # gateway started with `APP_REPOSITORY_CONTEXT_CHANGED_FILES_ENABLED=false` and
+        # one started with it `true`, over a working tree whose only modified file is
+        # `packages/pipeline/history.py`.  Both arms are sent this identical prompt, so
+        # a score difference belongs to the bonus alone.  With the bonus off the
+        # question's token `model` hands the primary to a models-listing endpoint and
+        # the prompt carries `cap_history` only where it is called; with the bonus on,
+        # the file under edit is what the budget buys, and the mechanism -
+        # `max_current_tool_result_tokens`, `_looks_like_cline_tool_result_message` and
+        # the truncation marker - is in front of the model.  Measured offline on the
+        # checked-out index, the arm with the flag off can be answered from 1 fact of the
+        # 4 and the arm with it on from all 4, so the two prompts are not equal in what
+        # they let a model say.  This is the case that answers the question the negative
+        # control cannot: whether the signal ever helps an answer.
+        id="explain_changed_files_history_cap",
+        intent="EXPLAIN",
+        prompt=HISTORY_CAP_QUERY,
+        expect=HISTORY_CAP_FACTS,
     ),
 )
 
@@ -1006,8 +1082,10 @@ class ChangedFileProbe:
     """A retrieval case in which one module is injected as locally modified.
 
     ``expected_primary`` is the symbol that must stay first in the arm where
-    ``dirty_module`` is dirty.  ``names_primary`` is what the author of the case
-    claims about it - the stricter **named in the query** rather than the weaker
+    ``dirty_module`` is dirty; ``expected_changed_primary``, when it is set, is the
+    symbol that must be first in that arm instead, on a case whose claim is that the
+    bonus moves the primary into the changed file.  ``names_primary`` is what the author
+    of the case claims about it - the stricter **named in the query** rather than the weaker
     **name match** - and ``named_in_query()`` below is the check on that claim, so
     a probe cannot quietly assert a preference its own query text does not
     support.  A ``False`` case documents an effect; it does not claim the ranking
@@ -1022,7 +1100,13 @@ class ChangedFileProbe:
     query: str
     dirty_module: str
     expected_primary: str
+    # Set on a case whose claim is that the bonus *moves* the primary - the gain
+    # cases - and empty on the survival cases, where both arms must keep the same
+    # first symbol.  A case that documents a move cannot be judged by the survival
+    # rule: it would fail for showing exactly the effect it was written to show.
+    expected_changed_primary: str = ""
     names_primary: bool = False
+
     facts: tuple[ExpectedFact, ...] = ()
     note: str = ""
 
@@ -1055,11 +1139,22 @@ class ChangedFileOutcome:
     can leave every symbol of a case's expected primary intact and still cost a
     whole file's context, and that is the difference a changed-file A/B is meant to
     detect, so it is reported next to the counters rather than inferred from them.
+
+    ``ok`` is the case's own claim, and a claim comes in two shapes: on a survival
+    case both arms must lead with ``expected_primary``, and on a gain case the arm with
+    the dirty module must lead with ``expected_changed_primary`` instead.  Judging a
+    move by the rule that fits a hold would fail a case for showing the effect it was
+    written to show.
     """
 
     id: str
     ok: bool = False
     expected_primary: str = ""
+    # What the arm with the dirty module was expected to lead with.  Equal to
+    # `expected_primary` on a survival case, different on a gain case, and never left
+    # blank here: the table and the session record both print the two primaries, and a
+    # reader has to be able to tell "moved as claimed" from "moved somewhere".
+    expected_changed_primary: str = ""
     dirty_module: str = ""
     weight: int = 0
     names_primary: bool = False
@@ -1127,6 +1222,7 @@ CHANGED_FILE_PROBES: tuple[ChangedFileProbe, ...] = (
         names_primary=False,
         facts=REPOSITORY_INDEX_BUILD_FACTS,
         note=(
+
             "The case the size of the bonus is not about, and the one the live A/B "
             "runs on. The prompt asks how the index builder constructs the index and "
             "names the models file second, so both files clear the relevance gate on "
@@ -1153,6 +1249,47 @@ CHANGED_FILE_PROBES: tuple[ChangedFileProbe, ...] = (
             "budget this probe asks under, all of which agree. Scored live by probe "
             "explain_changed_files_repository_index, which asks this same prompt and "
             "checks these same facts."
+        ),
+    ),
+    ChangedFileProbe(
+        id="gains_the_changed_file",
+        query=HISTORY_CAP_QUERY,
+        dirty_module=HISTORY_CAP_DIRTY_MODULE,
+        expected_primary=HISTORY_CAP_PRIMARY,
+        expected_changed_primary=HISTORY_CAP_CHANGED_PRIMARY,
+        names_primary=False,
+        facts=HISTORY_CAP_FACTS,
+        note=(
+            "The benefit side, and the mirror of `evicts_the_asked_about_file`: there "
+            "the dirty file is one the prompt never mentions and the asked-about file is "
+            "what the budget loses; here the dirty file is the file the prompt is about, "
+            "and the budget spends itself on it. The prompt is prose and names no symbol, "
+            "so the `+25` arrives only through the gate - `history` and `gateway` as path "
+            "segments - and not from a name written in the question. Measured at the "
+            "configured 4096 tokens: off, 20 symbols from ten modules are sent, led by "
+            "`apps/gateway/api/models.list_models` because the token `model` name-matches "
+            "it, and two of the twenty come from the changed file without being "
+            "`cap_history`, so of the four facts only that one reaches the prompt, and "
+            "only at its call sites. On, 7 symbols are sent and 6 of them come from the "
+            "changed file: `changed_symbols_promoted` 4, `changed_primary_promoted` True, "
+            "and the four newly sent symbols are the cap's own definitions - "
+            "`cap_history`, `_build_cap_groups`, `_cap_current_tool_result`, "
+            "`_estimate_tokens` - which is where the other three facts live: the "
+            "per-message budget, the envelope detector, the `truncated by gateway history "
+            "cap` marker. `facts_lost` is empty: the on arm gives up nothing the off arm "
+            "had, which is what makes this a gain rather than the swap the other case "
+            "measures. The verdict says MOVE, because the primary moves into the changed "
+            "file, and a rule that graded that as a failure would grade this case's whole "
+            "claim as one; the symbol counts say 20 out, 7 in. The facts line is the "
+            "measurement. It is the only pair of the five registered here whose changed "
+            "arm can support a fact the baseline arm cannot, so it is the live A/B's "
+            "subject: probe `explain_changed_files_history_cap`, which asks this prompt "
+            "and checks these facts. Unlike the eviction case this one is "
+            "weight-dependent, because the primary is a contest with a name match rather "
+            "than a pure gate effect: at +25 the changed file wins it, and the table "
+            "prints that weight with the row so a reader can see which bonus the sentence "
+            "describes. All of it is measured on the checked-out index by the run, not "
+            "asserted from a transcript."
         ),
     ),
     ChangedFileProbe(
@@ -1348,25 +1485,28 @@ def changed_file_probe_outcome(
         changed_facts: The same for the arm that ran with the dirty module.
 
     Returns:
-        The outcome.  ``ok`` is ``True`` only when **both** arms sent the expected
-        symbol first, because the claim a case makes is that the symbol survives
-        the bonus - and an arm that was already wrong before the bonus was switched
-        on cannot demonstrate that.  Judging the changed arm alone would let a case
-        whose premise does not hold report a pass, so a mismatching
-        ``baseline_primary`` fails the case as surely as a mismatching
-        ``changed_primary``.  How much else moved is read from the stage's counters
-        rather than from a set difference: ``len(set(new) - set(old))`` cannot see a
-        reorder, and a flat bonus is mostly a reorder.
+        The outcome.  ``ok`` is ``True`` only when **both** arms sent the symbol that
+        case expects of them - ``expected_primary`` for the arm with the signal off,
+        and ``expected_changed_primary`` (which is the same symbol on a survival case)
+        for the arm that ran dirty.  The rule holds on both arms because an arm that
+        was already wrong before the bonus was switched on cannot demonstrate that the
+        bonus fixed anything, so a mismatching ``baseline_primary`` fails the case as
+        surely as a mismatching ``changed_primary``.  How much else moved is read from
+        the stage's counters rather than from a set difference:
+        ``len(set(new) - set(old))`` cannot see a reorder, and a flat bonus is mostly a
+        reorder.
     """
+    changed_expected = probe.expected_changed_primary or probe.expected_primary
     return ChangedFileOutcome(
         id=probe.id,
         ok=(
             bool(baseline)
             and bool(changed)
             and baseline[0] == probe.expected_primary
-            and changed[0] == probe.expected_primary
+            and changed[0] == changed_expected
         ),
         expected_primary=probe.expected_primary,
+        expected_changed_primary=changed_expected,
         dirty_module=probe.dirty_module,
         weight=weight,
         names_primary=probe.named_in_query(),
@@ -1424,6 +1564,7 @@ def run_changed_file_probe(
         return ChangedFileOutcome(
             id=probe.id,
             expected_primary=probe.expected_primary,
+            expected_changed_primary=probe.expected_changed_primary,
             dirty_module=probe.dirty_module,
             weight=effective,
             names_primary=probe.named_in_query(),
@@ -1436,6 +1577,7 @@ def run_changed_file_probe(
         return ChangedFileOutcome(
             id=probe.id,
             expected_primary=probe.expected_primary,
+            expected_changed_primary=probe.expected_changed_primary,
             dirty_module=probe.dirty_module,
             weight=effective,
             names_primary=probe.named_in_query(),
@@ -1490,17 +1632,22 @@ def run_changed_file_probes(
 def changed_file_verdict(outcome: ChangedFileOutcome) -> str:
     """One word for what an outcome measured.
 
-    ``HOLD`` and ``SWAP`` are both verdicts about the bonus.  ``BAD_BASELINE`` is
+    ``HOLD``, ``SWAP`` and ``MOVE`` are all verdicts about the bonus.  ``MOVE`` is the
+    gain case's pass: the primary left the arm with the signal off for the symbol the
+    case says it must land on, which is the effect that case was written to show, and
+    printing it as a HOLD would describe a move as a survival.  ``BAD_BASELINE`` is
     neither: the arm with the signal off did not send the symbol the case says it
     must, so the case does not measure what it claims, and the changed arm agreeing
     proves nothing about the bonus.  It must not be printed as a pass, and printing
     it as a swap would blame the wrong arm.
     """
+    if outcome.baseline_primary != outcome.expected_primary:
+        return "BAD_BASELINE"
     if outcome.ok:
+        if outcome.expected_changed_primary not in ("", outcome.expected_primary):
+            return "MOVE"
         return "HOLD"
-    if outcome.changed_primary != outcome.expected_primary:
-        return "SWAP"
-    return "BAD_BASELINE"
+    return "SWAP"
 
 
 def print_changed_file_table(outcomes: list[ChangedFileOutcome]) -> None:

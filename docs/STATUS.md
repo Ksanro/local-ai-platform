@@ -3,25 +3,32 @@
 This file is the current runtime snapshot. It intentionally describes only
 what matters for the live gateway path and calls out dormant code explicitly.
 
-Last reviewed: 2026-10-12 (`qwen38-27b` aliases the `qwen3.8-flash-next`
+Last reviewed: 2026-10-13 (`qwen38-27b` aliases the `qwen3.8-flash-next`
 checkpoint on the vLLM backend at `http://100.106.236.88:18300/v1`, which is
 reachable; SGLang is no longer in use - the measurements below that name it were
 made on it before the endpoint moved. Its 2026-10-10 20/20 quality baseline,
 context-on/context-off
 comparison, and `chars_per_token=3.5` revalidation are recorded below. The
 opt-in change-aware repository-context ranking added on 2026-10-09 remains off by
-default, and its live A/B was run on 2026-10-12: one prompt, one
+default. Its live A/B was run on 2026-10-12: one prompt, one
 `APP_REPOSITORY_CONTEXT_MAX_TOKENS=4096` budget, three repeats, the two gateways
 differing only in `APP_REPOSITORY_CONTEXT_CHANGED_FILES_ENABLED` - feature off
 `9/9`, feature on `0/9`, because the dirty module evicted
-`packages/repository/index/builder.py` from the enabled arm's context. Its
-promotion is observable
+`packages/repository/index/builder.py` from the enabled arm's context. Its other half
+was measured on 2026-10-13 on the pair `gains_the_changed_file` /
+`explain_changed_files_history_cap`, with both gateways started inside one detached
+worktree of the current commit so that `packages/pipeline/history.py` was the only
+dirty indexed module either could see: feature off `3/12`, feature on `8/12` at the
+same 4096-token budget, because the cap's own symbols arrived and nothing the other
+arm had was lost. Its promotion is observable
 counterfactually - the stage re-ranks the same request without the working-tree
 bonus and reports, in count-only fields, whether that changed the context it sent;
 `scripts/analyze_sessions.py` summarizes those fields from session JSONL without
 reading prompts, answers, paths or symbols. On 2026-10-11 the size of that bonus
-was measured offline and left at `+25`, and the 2026-10-12 live run priced only
-the cost side of turning it on, so the number stays an open decision - see below.)
+was measured offline and left at `+25`; the 2026-10-12 run priced the cost side of
+turning it on and the 2026-10-13 run the benefit side, so the weight stays an open
+decision - now with a number on both sides of the same ledger, and the feature still
+opt-in because the flag is global and takes both effects together - see below.)
 
 Previous review: 2026-09-19 (Git Change Snapshot v1 added as a script-reachable,
 read-only repository utility, and the dormant `packages.capabilities` inventory was
@@ -145,6 +152,15 @@ configured 4096-token budget and reads its own counters back:
   context, whose summary omits the constructor-body details `RelationshipRegistry`
   and `CallExtractor`. The case is stated at the configured 4096-token budget, where
   all three details are lost.
+- one query gains instead, and it is the case the opt-in is offered for. "How does the
+  gateway cap conversation history before sending it to the model?" with
+  `packages/pipeline/history` dirty sends 7 symbols instead of 20, four of them new
+  (`cap_history`, `_build_cap_groups`, `_cap_current_tool_result`, `_estimate_tokens`),
+  and the facts its text can support go `1/4` to `4/4` with `facts_lost` empty: the
+  disabled arm sees the cap's call sites and can say history is capped, and cannot say
+  how. Registered as `gains_the_changed_file`, it reports `MOVE` - the primary moves
+  into the changed file, which is what the case is for - and its scored half,
+  `explain_changed_files_history_cap`, is the pair the 2026-10-13 live run used.
 
 `+5` came out of this pass as a candidate, not as shipped behavior. The value in
 `RankingConfig.WEIGHT_CHANGED_FILE` is unchanged at `+25`; the live replicated
@@ -157,33 +173,57 @@ altogether (`prompt_tokens` 3589 against 3342). Two limits on that number are pa
 of it: the flag is global, so the enabled arm applied the bonus across the 18
 locally modified indexed modules of this tree rather than the experiment's single
 marker, and two of its three answers ran to the 8192-token completion ceiling
-instead of ending short. What the run does not supply is the other half of the
-decision - no query has yet been measured that the bonus *helps*.
+instead of ending short. The other half of the decision was measured on 2026-10-13 on
+`explain_changed_files_history_cap`, with both gateways started inside one detached
+worktree of this commit so that the marker in `packages/pipeline/history.py` was the
+only dirty indexed module either arm could see: feature off `3/12` (1/4 on every
+repeat), feature on `8/12` (3/4, 3/4, 2/4), with `max_current_tool_result_tokens` named
+in 3/3 of the enabled answers and `_looks_like_cline_tool_result_message` in 2/3, and
+neither named in any disabled answer. Within each arm the context was identical across
+repeats - 20 symbols and `estimated_tokens` 2807 disabled against 7 symbols and 4087
+enabled - and every request sent to either gateway, in every pass, carried the same
+77-character prompt text with the same SHA-256 prefix and no answer near the completion
+ceiling. The enabled records read `changed_files_count=1`, `changed_context_differs=true`,
+`changed_primary_promoted=true`, `changed_symbols_promoted=4`,
+`changed_baseline_status=built` while the disabled records read `off`, `false` and
+zeros. Two details belong to that measurement: three of the nine enabled requests sent
+before that pass were lost to the gateway's own 60-second provider timeout, which
+the isolated launcher had not raised to the harness `--timeout 300`, and the enabled arm
+pays 402-507 ms per request for the counterfactual baseline that produces those
+counters. The fourth fact, the `truncated by gateway history cap` marker, was quoted by
+neither arm, which is the answer side saying it wants a string verbatim - `4/4` offline
+is about the text sent, not about what a model repeats.
 That comparison now has its instrument, and the two halves of it ask one question
 each. The eviction case is registered in the ordinary scored probe set as
 `explain_changed_files_repository_index`, and its three facts -
 `PythonAstExtractor`, `RelationshipRegistry`, and `CallExtractor` - are the three
 implementation collaborators the offline arm reports losing: none appears in the
 prompt to be copied from it, and none survives in the
-context the dirty file replaces the builder with. `CONTEXT_BUILDER_BUDGET_QUERY`
-and `REPOSITORY_INDEX_BUILD_QUERY` are the prompts both halves of a pair send, and
+context the dirty file replaces the builder with. `CONTEXT_BUILDER_BUDGET_QUERY`,
+`REPOSITORY_INDEX_BUILD_QUERY` and `HISTORY_CAP_QUERY` are the prompts both halves of a
+pair send, and
 `CHANGED_FILE_AB_PAIRS` names the pairs, so an offline case and its live probe
 cannot drift into measuring two retrievals - the flaw in the first version of this
 comparison, which appended its own wording to the scored probe and then attributed
 a retrieval difference to the bonus.
 `explain_changed_files_contextbuilder` stays registered as the negative control of
 the same design: identical prompt on both sides, an arm-to-arm reorder that costs
-no context, and 3/3 expected on both sides.
+no context, and 3/3 expected on both sides. `explain_changed_files_history_cap` is that
+design on the gain side: `HISTORY_CAP_QUERY`, whose dirty `packages/pipeline/history`
+adds the cap's implementation to the context and takes nothing scored out of it, so the
+pair measures an addition rather than a trade.
 `tests/observability/test_quality_harness.py` runs the real
-`RepositoryContextStage` over this checkout's index for both arms of both pairs and
+`RepositoryContextStage` over this checkout's index for both arms of every pair and
 asserts the difference in what the two contexts can support, so the claim is a
 regression test and not a handcrafted pair of answers. The `--changed-file-probe`
 cases stay supporting diagnostics for retrieval, and their verdict rule keeps them
-honest: a case holds only when both arms sent its expected primary, so an arm that
+honest: a case holds only when both arms sent its expected primary, which the gain case
+forced the rule to grow around - it reports `MOVE` when the primary arrives inside the
+changed file, and that counts as the case working. An arm that
 was already wrong before the bonus was switched on reports `BAD_BASELINE` rather
-than passing. Registered here, the probes join the fixed set, which is now 10 probes
-and 26 expected facts - the `20/20` baselines in these docs are the earlier
-denominator. The live run happened on 2026-10-12 and is recorded in
+than passing. Registered here, the probes join the fixed set, which is now 11 probes
+and 30 expected facts - the `20/20` baselines in these docs are the earlier
+denominator. The live runs happened on 2026-10-12 and 2026-10-13 and are recorded in
 `docs/live-gateway-runbook.md`; the weight remains comparable without editing code
 through
 `--changed-file-probe --changed-file-weight 5`.

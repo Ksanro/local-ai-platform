@@ -21,6 +21,11 @@ from scripts.quality_harness import (
     DEFAULT_MAX_TOKENS,
     DEFAULT_TIMEOUT,
     DELTA_CONTEXT_PROBE,
+    HISTORY_CAP_CHANGED_PRIMARY,
+    HISTORY_CAP_DIRTY_MODULE,
+    HISTORY_CAP_FACTS,
+    HISTORY_CAP_PRIMARY,
+    HISTORY_CAP_QUERY,
     PROBES,
     QUALITY_SYSTEM_PROMPT,
     REASONING_PREAMBLE_PREFIXES,
@@ -262,12 +267,15 @@ def test_probe_set_fixed_maximum_is_documented() -> None:
     ``explain_changed_files_contextbuilder`` joined it as the scored half of the
     change-aware ranking decision; 26 since ``explain_changed_files_repository_index``
     joined it as the scored half of the case where the bonus costs context rather
-    than merely reordering it.  The ``20/20`` figures in ``docs/`` are historical
+    than merely reordering it; 30 since ``explain_changed_files_history_cap`` joined it
+    as the scored half of the case on the other side of that ledger, where the changed
+    file is the file the prompt asks about and the bonus buys the mechanism the answer
+    needs.  The ``20/20`` figures in ``docs/`` are historical
     runs against the earlier set, not a ceiling.
     """
     total_maximum = sum(len(probe.expect) for probe in PROBES)
 
-    assert total_maximum == 26
+    assert total_maximum == 30
 
 
 def test_debug_streaming_preview_probe_keeps_choice_content_fact() -> None:
@@ -786,15 +794,17 @@ class TestExistingBehaviorUnchanged:
         """Total expected-fact count must stay pinned.
 
         Pinned so a new probe is always a deliberate edit: registering
-        ``explain_changed_files_contextbuilder`` took this from 20 to 23, and
-        ``explain_changed_files_repository_index`` took it to 26.
+        ``explain_changed_files_contextbuilder`` took this from 20 to 23,
+        ``explain_changed_files_repository_index`` took it to 26, and
+        ``explain_changed_files_history_cap`` - the first pair registered on the side
+        where the bonus *adds* context - takes it to 30.
         """
         total_maximum = sum(len(probe.expect) for probe in PROBES)
-        assert total_maximum == 26
+        assert total_maximum == 30
 
     def test_probe_tuple_length_unchanged(self) -> None:
-        """PROBES must stay pinned; the changed-file A/B cases made it 10."""
-        assert len(PROBES) == 10
+        """PROBES must stay pinned; the changed-file A/B pairs made it 11."""
+        assert len(PROBES) == 11
 
 
 class TestParseArgsProbe:
@@ -1208,6 +1218,7 @@ def _probe(
     query: str = PROBE_QUERY,
     dirty_module: str = PROBE_DIRTY_MODULE,
     expected_primary: str = PROBE_NAMED_SYMBOL,
+    expected_changed_primary: str = PROBE_NAMED_SYMBOL,
     names_primary: bool = True,
     facts: tuple[ExpectedFact, ...] = (),
     note: str = "",
@@ -1218,6 +1229,7 @@ def _probe(
         query=query,
         dirty_module=dirty_module,
         expected_primary=expected_primary,
+        expected_changed_primary=expected_changed_primary,
         names_primary=names_primary,
         facts=facts,
         note=note,
@@ -1561,13 +1573,17 @@ def test_changed_file_probe_outcome_fails_when_the_baseline_was_already_wrong() 
     assert changed_file_verdict(outcome) == "BAD_BASELINE"
 
 
-def test_changed_file_verdict_distinguishes_the_three_ways_a_case_can_fail() -> None:
-    """``HOLD``, ``SWAP`` and ``BAD_BASELINE`` name three different arms.
+def test_changed_file_verdict_distinguishes_the_four_ways_a_case_can_read() -> None:
+    """``HOLD``, ``MOVE``, ``SWAP`` and ``BAD_BASELINE`` name four different arms.
 
     One word per outcome, and the word has to blame the right side: a reorder that
-    kept the primary is a hold, a dirty arm that lost it is the bonus's doing, and a
-    baseline that never sent it is a case stated wrong - which is also the outcome
-    that would make a "measurable loss" claim about an arm that had nothing to lose.
+    kept the primary is a hold, a dirty arm that lost it where the case expected it to
+    be held is the bonus's doing, and a baseline that never sent it is a case stated
+    wrong - which is also the outcome that would make a "measurable loss" claim about an
+    arm that had nothing to lose.  ``MOVE`` is the fourth, and it is not a failure: it is
+    a gain case, where the primary was expected to arrive with the changed file.  The
+    last two outcomes here are the same measurement read against two different
+    documents, which is the whole difference between costing an answer and buying one.
     """
     held = changed_file_probe_outcome(
         _probe(),
@@ -1583,6 +1599,13 @@ def test_changed_file_verdict_distinguishes_the_three_ways_a_case_can_fail() -> 
         promotion={"changed_context_differs": True, "changed_primary_promoted": True},
         weight=25,
     )
+    moved = changed_file_probe_outcome(
+        _probe(expected_changed_primary=PROBE_DIRTY_SYMBOL),
+        baseline=[PROBE_NAMED_SYMBOL],
+        changed=[PROBE_DIRTY_SYMBOL],
+        promotion={"changed_context_differs": True, "changed_primary_promoted": True},
+        weight=25,
+    )
     bad_baseline = changed_file_probe_outcome(
         _probe(),
         baseline=[PROBE_DIRTY_SYMBOL],
@@ -1590,10 +1613,23 @@ def test_changed_file_verdict_distinguishes_the_three_ways_a_case_can_fail() -> 
         promotion={},
         weight=25,
     )
+    bad_gain_baseline = changed_file_probe_outcome(
+        _probe(expected_changed_primary=PROBE_DIRTY_SYMBOL),
+        baseline=[PROBE_TIED_SYMBOL],
+        changed=[PROBE_DIRTY_SYMBOL],
+        promotion={"changed_context_differs": True, "changed_primary_promoted": True},
+        weight=25,
+    )
 
     assert changed_file_verdict(held) == "HOLD"
     assert changed_file_verdict(swapped) == "SWAP"
+    assert changed_file_verdict(moved) == "MOVE"
     assert changed_file_verdict(bad_baseline) == "BAD_BASELINE"
+    assert changed_file_verdict(bad_gain_baseline) == "BAD_BASELINE"
+    # A move is not a swap: the same arm is one or the other depending on what the case
+    # documents, so `ok` cannot be read as "the primary held" and never was.
+    assert moved.ok is True
+    assert swapped.ok is False
 
 
 def test_print_changed_file_table_blames_the_right_arm_for_a_bad_premise(
@@ -1635,6 +1671,11 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 CHANGED_FILE_AB_PROBE_ID = "explain_changed_files_contextbuilder"
 CHANGED_FILE_AB_EVICTION_PROBE_ID = "explain_changed_files_repository_index"
+
+#: The scored probe of the benefit pair, named the same way: the id is the claim that
+#: the changed file helps, so the tests that discriminate cost from gain take it as a
+#: parameter instead of hard-coding a second pair of registries.
+CHANGED_FILE_AB_BENEFIT_PROBE_ID = "explain_changed_files_history_cap"
 
 #: The budget the eviction case is stated at.  The stage default,
 #: ``APP_REPOSITORY_CONTEXT_MAX_TOKENS`` and the EXPLAIN intent budget this probe is
@@ -1746,6 +1787,24 @@ def test_changed_file_ab_probe_shares_the_offline_query() -> None:
     assert resolve_changed_file_case(
         "evicts_the_asked_about_file", CHANGED_FILE_PROBES
     ).query == REPOSITORY_INDEX_BUILD_QUERY
+    assert resolve_changed_file_case(
+        "gains_the_changed_file", CHANGED_FILE_PROBES
+    ).query == HISTORY_CAP_QUERY
+    # The benefit case is the eviction case turned around: it dirties the file the
+    # question is *about*, and it still names no symbol.  Were that untrue, the extra
+    # context the changed arm carries would be a name collision rather than a ranking,
+    # and the gain could not be attributed to the bonus.
+    assert HISTORY_CAP_DIRTY_MODULE not in HISTORY_CAP_QUERY
+    assert "cap_history" not in HISTORY_CAP_QUERY
+    assert all(
+        name not in HISTORY_CAP_QUERY
+        for name in (
+            "CapHistorySettings",
+            "cap_turns",
+            "CapResult",
+            "_cap_current_tool_result",
+        )
+    )
     # The eviction case asks about one file and dirties another, and the prompt is
     # prose: it quotes no symbol name, so the swap cannot be blamed on a name
     # collision between the query text and the injected file.
@@ -1786,6 +1845,11 @@ def test_changed_file_ab_probe_facts_are_the_offline_case_facts() -> None:
     assert resolve_changed_file_case("named_in_query", CHANGED_FILE_PROBES).facts == (
         CONTEXT_BUILDER_BUDGET_FACTS
     )
+    # The gain case reports on the cap's own internals, which is what makes its two
+    # arms differ in text and not only in order.
+    assert resolve_changed_file_case("gains_the_changed_file", CHANGED_FILE_PROBES).facts == (
+        HISTORY_CAP_FACTS
+    )
 
 
 def test_changed_file_ab_probe_facts_are_repository_truth() -> None:
@@ -1815,6 +1879,29 @@ def test_changed_file_ab_probe_facts_are_repository_truth() -> None:
     }
     for implementation_fact in ("PythonAstExtractor", "RelationshipRegistry", "CallExtractor"):
         assert implementation_fact in index_builder_source
+
+    # The benefit pair's facts are the same kind of claim: statements about one file,
+    # checkable in that file.  `cap_history` is the entry point, and the three that
+    # follow it are the mechanism - the per-message budget, the shape it recognizes, and
+    # the marker the truncation leaves in the transcript - none of which a model can name
+    # from the call sites the other arm sees.
+    history_source = (REPO_ROOT / "packages/pipeline/history.py").read_text(encoding="utf-8")
+    assert {
+        expected.label
+        for expected in _ab_probe(CHANGED_FILE_AB_BENEFIT_PROBE_ID).expect
+    } == {
+        "cap_history",
+        "max_current_tool_result_tokens",
+        "_looks_like_cline_tool_result_message",
+        "[... truncated by gateway history cap ...]",
+    }
+    for cap_fact in (
+        "def cap_history",
+        "max_current_tool_result_tokens",
+        "def _looks_like_cline_tool_result_message",
+        "truncated by gateway history cap",
+    ):
+        assert cap_fact in history_source
 
     # The discriminating probe's question quotes none of its own answers, so every
     # fact has to come out of the context: that is what makes a context loss show up
@@ -1869,6 +1956,92 @@ def test_changed_file_ab_discriminating_case_loses_the_file_that_carries_the_fac
     assert outcome.symbols_promoted == 0
     assert outcome.changed_symbols < outcome.baseline_symbols
 
+
+
+def test_changed_file_ab_benefit_case_gains_the_file_the_question_asks_about(
+    checked_out_index: RepositoryIndex,
+) -> None:
+    """The gain pair, measured on this repository's index with the real stage.
+
+    This is the regression behind ``explain_changed_files_history_cap``, and the case the
+    opt-in exists for.  The prompt is prose and names no symbol, and the file it dirties
+    is the file the prompt is *about*, so the bonus is not trading one answer for another
+    the way the eviction pair does.  Measured at 4096 tokens: with the signal off, the
+    token ``model`` name-matches a models-listing endpoint, that takes the primary, and
+    the context meets ``cap_history`` only where it is called - the function's own
+    definition is not sent at all.  With ``packages/pipeline/history`` injected dirty at
+    the shipped ``+25``, the budget buys the file and the mechanism the question asks for
+    arrives in the prompt.
+
+    A gain has to be measured on both sides, because a gain that also costs something is
+    the eviction case under another name: every fact the off arm could support must still
+    be supported, and the facts it lacked must arrive.
+    """
+    case = resolve_changed_file_case("gains_the_changed_file", CHANGED_FILE_PROBES)
+    outcome = _real_arms(checked_out_index, case)
+
+    # Premise: the off arm can say that history is capped, and cannot say how.
+    assert outcome.error == ""
+    assert outcome.baseline_status == "built"
+    assert outcome.baseline_primary == case.expected_primary == HISTORY_CAP_PRIMARY
+    assert outcome.max_context_tokens == CHANGED_FILE_AB_BUDGET_TOKENS
+    assert outcome.baseline_facts == (HISTORY_CAP_FACTS[0].label,)
+
+    # The changed arm leads with the changed file.  `ok` here means the primary moved
+    # where the case documents it moves, which is not what `ok` means for a survival case
+    # - the reason the expectation is carried per arm rather than in one field.
+    assert changed_file_verdict(outcome) == "MOVE"
+    assert outcome.ok is True
+    assert outcome.changed_primary == HISTORY_CAP_CHANGED_PRIMARY
+    assert outcome.changed_primary == case.expected_changed_primary
+    assert outcome.changed_primary.startswith(f"{HISTORY_CAP_DIRTY_MODULE}.")
+
+    # The gain itself, in both directions: nothing the off arm had is lost, and the three
+    # facts that live inside the cap arrive.
+    assert outcome.changed_facts == tuple(
+        expected.label for expected in HISTORY_CAP_FACTS
+    )
+    assert outcome.facts_lost == ()
+    assert set(outcome.baseline_facts) < set(outcome.changed_facts)
+    assert outcome.context_differs is True
+    assert outcome.primary_promoted is True
+    assert outcome.symbols_promoted == 4
+    assert outcome.changed_symbols < outcome.baseline_symbols
+
+    # Symbol by symbol, since a fact can survive a reorder.  The changed file contributes
+    # two symbols even with the signal off, because `history` and `conversation` reach the
+    # gate as path tokens; neither of them is the function asked about.  The signal trades
+    # thirteen symbols of nine other modules for the four definitions that are the cap.
+    stage_kwargs: dict[str, object] = {
+        "context_delta_injection": False,
+        "max_context_tokens": CHANGED_FILE_AB_BUDGET_TOKENS,
+    }
+    with unittest.mock.patch.object(RankingConfig, "WEIGHT_CHANGED_FILE", 25):
+        off, _ = _stage_arm(checked_out_index, case.query, frozenset(), stage_kwargs=stage_kwargs)
+        on, _ = _stage_arm(
+            checked_out_index,
+            case.query,
+            frozenset({case.dirty_module}),
+            stage_kwargs=stage_kwargs,
+        )
+
+    cap = f"{HISTORY_CAP_DIRTY_MODULE}.cap_history"
+    assert cap not in off
+    assert cap in on
+    assert set(on) - set(off) == {
+        f"{HISTORY_CAP_DIRTY_MODULE}.{name}"
+        for name in (
+            "cap_history",
+            "_build_cap_groups",
+            "_cap_current_tool_result",
+            "_estimate_tokens",
+        )
+    }
+    off_target = [name for name in off if _module_of(name) == HISTORY_CAP_DIRTY_MODULE]
+    on_target = [name for name in on if _module_of(name) == HISTORY_CAP_DIRTY_MODULE]
+    assert len(off_target) == 2
+    assert len(on_target) == 6
+    assert case.named_in_query() is False
 
 
 def _module_of(qualified_name: str) -> str:
