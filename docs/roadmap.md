@@ -69,12 +69,24 @@ them.
    keeps credentials out of files and output, and renders paste-ready gateway
    and harness blocks. `tests/scripts/test_ab_launcher.py` pins the contract;
    the runbook and `TESTING.md` document the operator workflow.
-2. **A1 - current full baseline.** From a controlled worktree and configuration,
-   run `scripts/quality_harness.py --compare-context --json` against the current
-   vLLM backend over the 11-probe / 30-fact set, evaluate and persist the result,
-   and record its commit, backend/checkpoint, configuration, flags, worktree
-   state, and timestamp. Keep the older 8-probe `20/20` results as historical
-   measurements rather than rewriting them as current results.
+2. **A1 - current full baseline - DONE (2026-10-24).** One controlled
+   `scripts/quality_harness.py --compare-context --json` run over the complete
+   11-probe / 30-fact set, from a detached worktree of `0371d64`
+   (`C:\Users\ovidi\lap-ab-a1-0371d64`, holding no `.env`) with the configuration
+   `scripts/ab_launcher.py` wrote and validated, one feature-off gateway on
+   `127.0.0.1:8011` (`APP_REPOSITORY_CONTEXT_CHANGED_FILES_ENABLED=false`,
+   `REQUEST_TIMEOUT=300`, harness `--timeout 345`, the rest of the shared block as the
+   launcher renders it), against `qwen3.8-flash-next` on the vLLM backend at
+   `http://100.106.236.88:18300/v1` through the alias `qwen38-27b`: `25/30` expected
+   facts with repository context against `4/30` without it, style `11/11` ok in both
+   arms, 33109 prompt tokens in 129.6 seconds versus 2221 in 532.1 seconds, no errored
+   and no timed-out request, and one no-context answer truncated at the 8192-token
+   completion ceiling. Commit, backend/checkpoint, configuration, flags and worktree
+   state are recorded with the result; artifact
+   `logs\quality_compare_qwen38_vllm_20261024.json`, persisted as session
+   `quality_harness_compare-20261024T173757728411-2a4297e1`, commands and per-probe
+   numbers in `docs/live-gateway-runbook.md`. The older 8-probe `20/20` results stand as
+   historical measurements of their own set and were not rewritten.
 3. **A3 - calibrated history-cap estimation.** After the ranking decision below,
    make history capping use the resolved model's `chars_per_token`, preserving
    the default behavior for models that do not override it. Re-measure
@@ -181,12 +193,16 @@ in sections 2 and 3.
 
 ### 2. Quality Harness Expansion
 
-The fixed probe set proves repository context adds answer-quality signal
-(`20/20` with context versus `2/20` without context in the qwen36
-`--compare-context` run, including the 2 multi-turn probes). The current
-qwen38-27b/SGLang full baseline of 2026-10-10 (the backend that alias pointed at
-before it moved to vLLM) is clean at `20/20` with style `8/8`. That was the
-8-probe set; `PROBES` now has 11 entries and 30 expected facts, the three added ones
+The fixed probe set proves repository context adds answer-quality signal. On the
+current set, measured 2026-10-24 from a controlled worktree of `0371d64` against
+`qwen3.8-flash-next` on vLLM with changed-file ranking off, a `--compare-context` run
+scored `25/30` expected facts with repository context against `4/30` without it - `+21`
+facts for `+30888` prompt tokens, style clean in both arms. On the earlier 8-probe,
+20-fact set the same comparison put the qwen36 run at `20/20` with context versus `2/20`
+without, including the 2 multi-turn probes, and the qwen38-27b/SGLang full baseline of
+2026-10-10 (the backend that alias pointed at before it moved to vLLM) came in clean at
+`20/20` with style `8/8`; those two stay measurements of the set they were taken on.
+`PROBES` now has 11 entries and 30 expected facts, the three added ones
 being `explain_changed_files_contextbuilder`,
 `explain_changed_files_repository_index` and
 `explain_changed_files_history_cap` - the scored halves of the change-aware

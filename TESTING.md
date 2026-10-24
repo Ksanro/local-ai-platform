@@ -154,20 +154,29 @@ Run deterministic answer-quality probes:
 
 Read the `TOTAL` line. `--compare-context` changes exactly one variable per
 probe: repository context on versus off through the same gateway/provider path.
-The current fixed probe set has 8 probes - the original 6 single-turn probes
-plus 2 multi-turn probes (`multiturn_history_cap_budget`,
-`multiturn_config_systems`) that send prior user/assistant turns before the
-scored final prompt - with 20 total expected facts (`total_maximum` is `20`).
-The current baseline is the qwen38-27b/SGLang full quality run completed
-2026-08-22 with `scripts\quality_harness.py --json --model qwen38-27b
---max-tokens 8192 --reasoning-model qwen38-27b`: clean TOTAL 20/20 expected
-facts, style 8/8 ok, 28013 prompt tokens, 144.6 seconds; the JSON is saved at
-`logs\quality_baseline_qwen38_27b_after_fixes.json` and persisted as
-engineering-memory session `quality_harness-20260821T214629502370-6d519523`
-(full command and persist steps: `docs/live-gateway-runbook.md`, "Full Quality
-Baseline"). The earlier `14-15/15` with context and `2/15` without context are
-historical numbers from the original 6 single-turn probes (`total_maximum`
-`15`).
+The current fixed probe set has 11 probes and 30 total expected facts
+(`total_maximum` is `30`) - the original 6 single-turn probes, 2 multi-turn probes
+(`multiturn_history_cap_budget`, `multiturn_config_systems`) that send prior
+user/assistant turns before the scored final prompt, and the 3
+`explain_changed_files_*` probes that carry the change-aware ranking decision.
+The current baseline is the controlled `--compare-context` run completed
+2026-10-24 at gateway commit `0371d64`, taken from a detached worktree with
+changed-file ranking off against `qwen3.8-flash-next` on the vLLM backend:
+`25/30` with repository context against `4/30` without it, style `11/11` ok in both
+arms, 33109 prompt tokens in 129.6 seconds against 2221 in 532.1 seconds, no errored
+and no timed-out request. Its JSON is
+`logs\quality_compare_qwen38_vllm_20261024.json`, persisted as engineering-memory
+session `quality_harness_compare-20261024T173757728411-2a4297e1` (exact commands:
+`docs/live-gateway-runbook.md`, "Current controlled baseline, 2026-10-24 (roadmap
+A1)"). The `20/20` figures - the qwen38-27b/SGLang full runs of 2026-08-22 (28013
+prompt tokens, 144.6 seconds; `logs\quality_baseline_qwen38_27b_after_fixes.json`,
+session `quality_harness-20260821T214629502370-6d519523`) and 2026-10-10 (25093
+prompt tokens, 99.2 seconds;
+`logs\quality_baseline_qwen3_8_flash_next_20261010.json`, session
+`quality_harness-20261009T214258101237-9d6f90f9`) - were measured on the earlier
+8-probe, 20-fact set and are historical; so are the
+`14-15/15` with context and `2/15` without context from the original 6 single-turn
+probes (`total_maximum` `15`).
 The quality table also reports a separate style signal: `ok` means no known
 reasoning preamble or tool/thinking marker was detected, while `bad` means the
 answer still contained that chatter even if the required facts were present.

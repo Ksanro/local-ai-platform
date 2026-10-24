@@ -838,9 +838,137 @@ below their estimates (`0.82x-0.96x`, zero budget overages).
 
 Those figures were measured against the earlier 8-probe, 20-fact set. `PROBES` has
 since gained `explain_changed_files_contextbuilder` and
-`explain_changed_files_repository_index` (3 facts each), the scored halves of the
-change-aware ranking decision, so a clean pass reads 26/26 with style 10/10.
-Comparing a new run with a persisted 20/20 compares denominators, not quality.
+`explain_changed_files_repository_index` (3 facts each) and
+`explain_changed_files_history_cap` (4 facts), the scored halves of the change-aware
+ranking decision, so the current set is 11 probes and 30 expected facts and a clean
+pass reads 30/30 with style 11/11. Comparing a new run with a persisted 20/20 compares
+denominators, not quality.
+
+### Current controlled baseline, 2026-10-24 (roadmap A1)
+
+Roadmap item A1 established that current denominator: one `--compare-context` run over
+all 11 probes and 30 facts, against `qwen3.8-flash-next` on the vLLM backend through the
+gateway alias `qwen38-27b`, started from a detached worktree of `0371d64` with the
+configuration written by `scripts/ab_launcher.py` (item A2) and with changed-file
+ranking off. `--compare-context` flips `repository_context_enabled` per request through
+one gateway, so it needs exactly one arm and cannot be combined with `--repeat`; the
+no-context half of the pair is not a second gateway.
+
+Commands, in run order, from the main checkout:
+
+```powershell
+# 1. a detached worktree outside the checkout, holding no .env
+git worktree add --detach ..\lap-ab-a1-0371d64 0371d64
+# 2. the experiment, and what the launcher says about that tree
+.\uv.exe run python scripts\ab_launcher.py template --name a1_vllm_baseline `
+    --worktree ..\lap-ab-a1-0371d64 --out build\ab_a1\experiment.json
+.\uv.exe run python scripts\ab_launcher.py validate --config build\ab_a1\experiment.json
+.\uv.exe run python scripts\ab_launcher.py show --config build\ab_a1\experiment.json --arm off
+# 3. Terminal 1 - arm 'off' only, exactly as that block renders it: port 8011,
+#    APP_REPOSITORY_CONTEXT_CHANGED_FILES_ENABLED=false, REQUEST_TIMEOUT=300,
+#    APP_REPOSITORY_PATH=C:\Users\ovidi\lap-ab-a1-0371d64, harness timeout 345 s
+# 4. Terminal 2 - the measurement, from inside the same worktree
+Set-Location ..\lap-ab-a1-0371d64
+.\uv.exe run python scripts\quality_harness.py --base-url http://127.0.0.1:8011/v1 `
+    --model qwen38-27b --max-tokens 8192 --timeout 345 `
+    --reasoning-model qwen38-27b --compare-context --json `
+    > C:\Users\ovidi\local-ai-platform\logs\quality_compare_qwen38_vllm_20261024.json
+.\uv.exe run python scripts\evaluate_quality_harness.py `
+    C:\Users\ovidi\local-ai-platform\logs\quality_compare_qwen38_vllm_20261024.json `
+    --model qwen38-27b --gateway-commit 0371d64 --persist `
+    --storage-path C:\Users\ovidi\local-ai-platform\data\engineering_memory\memory_v1.json `
+    --notes "Current vLLM qwen3.8-flash-next 11-probe/30-fact compare-context baseline; changed-file ranking disabled; 2026-10-24"
+```
+
+Only step 3 is taken from the launcher as rendered. `show --arm off` prints a Terminal 2
+line carrying `--repeat 3`, the launcher's default because an isolated-worktree A/B
+measures three repeats per arm; `--compare-context` refuses that combination outright, so
+step 4 replaces that line - one arm, every registered probe, once, with the context flag
+flipped per request instead of across processes. The arm's environment block, port,
+`REQUEST_TIMEOUT=300` and the 345-second client timeout all come from the validated file
+unchanged.
+
+One thing in that sequence is not what the launcher renders, and it is worth knowing
+before repeating the run: `uv.lock` is gitignored, so a bare `uv run` inside a fresh
+worktree resolves whatever is current on the index rather than the set every earlier
+measurement used, and that set contains no `httpx` (`pyproject.toml` declares `httpx2`
+while `packages/providers/openai.py` imports `httpx`) - the arm stops at import with
+`ModuleNotFoundError: No module named 'httpx'`. The arm was therefore started with
+`UV_PROJECT_ENVIRONMENT=C:\Users\ovidi\local-ai-platform\.venv` and `uv run --no-sync`:
+the worktree's code, the main checkout's interpreter (CPython 3.13.14) and its installed
+packages, and nothing installed or removed by the run. The worktree is still what the
+gateway indexed, which is the isolation the run was after.
+
+What was checked before the measured requests, on `http://127.0.0.1:8011`:
+
+- `/health` - `{"status":"ok","repository_context_enabled":true}`
+- gateway `/v1/models` - the alias `qwen38-27b`; backend
+  `http://100.106.236.88:18300/v1/models` - one model, `qwen3.8-flash-next`
+  (`owned_by: vllm`, `max_model_len: 400000`)
+- `/debug/runtime-context` - `routing_mode=models_config`, `default_model=qwen38-27b`,
+  `default_provider=openai`, `models[0].backend_model=qwen3.8-flash-next`,
+  `models[0].base_url=http://100.106.236.88:18300/v1`, `context_window=262144`,
+  `max_output_tokens=8192`, `chars_per_token=3.5`, `repository_context_max_tokens=4096`,
+  `repository_context_intent_budget_map` `SEARCH/TEST/DEBUG=2048` and
+  `REFACTOR/IMPLEMENT/EXPLAIN=4096`, `context_delta_injection=true`,
+  `history_cap_enabled=true`, `history_cap_tokens=3000`, and the arm's own session log
+- the arm's startup line - `repository_index path=C:\Users\ovidi\lap-ab-a1-0371d64
+  files=505 modules=505 symbols=8590 relationships=18309 excluded_tests=0
+  excluded_globs=13 duration_ms=5871.5`, and no `changed_files_signal enabled=true`
+  line, which is what an arm with the opt-in off prints
+- one smoke request, whose session record read `changed_files_signal=off`,
+  `changed_files_count=0`, `context.status=assembled`, `estimated_tokens=3918` - the
+  proof from inside the stage that this arm measured repository context and not the
+  changed-file feature. Its record was removed from the arm's log before the measured
+  run, so that log holds only this run's 22 requests.
+
+The result, from `evaluate_quality_harness.py` against
+`logs\quality_compare_qwen38_vllm_20261024.json`:
+
+| arm | facts | style | prompt tokens | seconds |
+|---|---|---|---|---|
+| repository context on | `25/30` | `11/11` ok | 33109 | 129.6 |
+| repository context off | `4/30` | `11/11` ok | 2221 | 532.1 |
+| delta | `+21` | - | +30888 | -402.5 |
+
+Twenty-two requests in 11 minutes 2 seconds of wall clock (harness started 20:24:51,
+its JSON complete 20:35:53 local; 661.7 s of summed per-probe latency). No request
+errored and none reached either timeout; the longest was 193.8 s against a 345 s client
+limit and a 300 s provider limit. Style was clean in both arms, so nothing in this run
+is preamble or tool chatter.
+
+The context arm's five misses are `select_last_task_text`
+(`refactor_repository_context`, 1/2), `packages/context/builder.py`
+(`explain_changed_files_contextbuilder`, 2/3), and three of the four history-cap facts -
+`max_current_tool_result_tokens`, `_looks_like_cline_tool_result_message` and
+`[... truncated by gateway history cap ...]` - the last probe scoring 1/4 with only
+`cap_history` arriving. Split that way the arm scores 19 of the 20 facts that belong to
+no changed-file pair and 6 of the 10 that do, and the two probes that already have a
+documented feature-off number land on it: `3/3` on
+`explain_changed_files_repository_index`, where the 2026-10-12 off arm scored `9/9` over
+three repeats, and `1/4` on `explain_changed_files_history_cap`, where the 2026-10-13
+isolated-worktree off arm scored `3/12` over three repeats. That is what an arm without
+the changed-file bonus is expected to score on them.
+
+One truncation signal, and it is a measurement rather than a failed request: the
+no-context `explain_changed_files_history_cap` call spent all 8192 completion tokens on
+hidden reasoning and returned an empty answer in 193.8 seconds, and is scored `0/4` for
+that reason. It is the same shape the 2026-10-10 exploratory run recorded on
+`explain_live_path`, where an arm exhausted all 8192 completion tokens and lost that
+probe, and it is why `--max-tokens 8192` is the documented setting.
+
+Persisted as engineering-memory session
+`quality_harness_compare-20261024T173757728411-2a4297e1` (workflow
+`quality_harness_compare`, `metadata.model=qwen38-27b`,
+`metadata.gateway_commit=0371d64`) in `data\engineering_memory\memory_v1.json`, which is
+Git-ignored local state; `config_snapshot` is empty because the evaluator has no flag to
+fill it, so the configuration this run was taken under is the block above rather than a
+field of the record. The `20/20` figures earlier in this file and in `docs/STATUS.md`
+stay what they are - measurements of the earlier 8-probe set, one of them on the SGLang
+deployment this alias no longer points at - and this run supplements rather than replaces
+them.
+
+
 
 ## Interpreting long runs, timeouts, and failed execution
 
@@ -854,10 +982,14 @@ which layer fired before re-running anything:
 | Gateway/provider | `REQUEST_TIMEOUT` in `.env` | gateway aborts the provider call; the harness records an HTTP error instead |
 
 - Expected wall time for a full `--compare-context` on `qwen38-27b` is
-  roughly 5-15 minutes (16 probes; the no-context reasoning probes are the
-  slow ones and are the ones that can hit the per-probe timeout). The range was
+  roughly 5-15 minutes: the current set is 11 probes, so 22 requests, and the
+  no-context reasoning probes are the slow ones and are the ones that can hit the
+  per-probe timeout. Measured on 2026-10-24 against the vLLM backend, the whole
+  pair took 11 minutes 2 seconds - 129.6 s across the eleven context requests and
+  532.1 s across the eleven without it, one of which spent the full 8192-token
+  completion ceiling and answered nothing in 193.8 s. The 5-15 minute range was
   measured on the earlier SGLang deployment of that alias and carried forward as
-  the planning estimate.
+  the planning estimate; this run confirms it on the current one.
 - Prefer foreground harness runs with the JSON redirected to an artifact
   (`> logs\quality_compare_<tag>.json`). Do not run the harness detached.
 - If the agent reports "failed execution" for a long harness command, check

@@ -3,7 +3,15 @@
 This file is the current runtime snapshot. It intentionally describes only
 what matters for the live gateway path and calls out dormant code explicitly.
 
-Last reviewed: 2026-10-13 (`qwen38-27b` aliases the `qwen3.8-flash-next`
+Last reviewed: 2026-10-24 (roadmap item A1 measured the current controlled quality
+baseline: the 2026-10-24 `--compare-context` run at commit `0371d64`, `25/30` expected
+facts with repository context against `4/30` without it, style `11/11` ok in both arms,
+no errored and no timed-out request, taken from a detached worktree with changed-file
+ranking off and recorded below and in `docs/live-gateway-runbook.md`. The `20/20` figures
+below belong to the earlier 8-probe, 20-fact set and stay measurements of it; `PROBES`
+has 11 entries and 30 expected facts now.)
+
+Previous review: 2026-10-13 (`qwen38-27b` aliases the `qwen3.8-flash-next`
 checkpoint on the vLLM backend at `http://100.106.236.88:18300/v1`, which is
 reachable; SGLang is no longer in use - the measurements below that name it were
 made on it before the endpoint moved. Its 2026-10-10 20/20 quality baseline,
@@ -466,17 +474,42 @@ follow-up context selected `packages/pipeline/history._build_cap_groups` with
 1844 estimated context tokens and `symbols_suppressed=1`. Both answers scored
 all expected facts with no style violations.
 
-The gateway alias `qwen38-27b` now routes to `qwen3.8-flash-next` via vLLM,
-serving the same checkpoint. Its full quality baseline was completed on
-2026-10-10, when this alias still resolved to the SGLang deployment
-(`scripts/quality_harness.py --json --model qwen38-27b --max-tokens 8192
---reasoning-model qwen38-27b`): clean TOTAL 20/20 expected facts, style 8/8
-ok, 25093 prompt tokens, 99.2 seconds, saved at
+The current controlled quality baseline is the 2026-10-24 `--compare-context` run
+(roadmap item A1): commit `0371d64`, code and repository index from the detached
+worktree `C:\Users\ovidi\lap-ab-a1-0371d64`, one gateway on `127.0.0.1:8011` started
+from the environment `scripts/ab_launcher.py` wrote
+(`APP_REPOSITORY_CONTEXT_CHANGED_FILES_ENABLED=false`, `REQUEST_TIMEOUT=300`, harness
+`--timeout 345`, `APP_REPOSITORY_CONTEXT_MAX_TOKENS=4096` with
+`SEARCH/TEST/DEBUG=2048,REFACTOR/IMPLEMENT/EXPLAIN=4096`, `APP_HISTORY_CAP_ENABLED=true`
+and `APP_HISTORY_CAP_TOKENS=3000`, `chars_per_token=3.5`), against the vLLM backend
+`http://100.106.236.88:18300/v1`, whose `/v1/models` serves one checkpoint,
+`qwen3.8-flash-next` (`owned_by: vllm`, `max_model_len: 400000`), through the alias
+`qwen38-27b`. Over the complete 11-probe / 30-fact set it scored `25/30` with repository
+context versus `4/30` without it, style `11/11` ok in both arms, 33109 prompt tokens in
+129.6 seconds against 2221 in 532.1 seconds - `+21` facts for `+30888` prompt tokens on
+one per-request flag. Nothing errored and nothing timed out. The context arm is missing
+five facts (`select_last_task_text`, `packages/context/builder.py`, and
+`max_current_tool_result_tokens`, `_looks_like_cline_tool_result_message` and
+`[... truncated by gateway history cap ...]` on `explain_changed_files_history_cap`),
+and one no-context request spent all 8192 completion tokens on hidden reasoning and
+returned an empty answer in 193.8 seconds, which is a measured model behaviour at the
+documented ceiling rather than a failed request. Artifact:
+`logs\quality_compare_qwen38_vllm_20261024.json`; persisted as engineering-memory session
+`quality_harness_compare-20261024T173757728411-2a4297e1`. The exact commands, the checks
+run before it, and the per-probe table are in `docs/live-gateway-runbook.md`, "Current
+controlled baseline, 2026-10-24 (roadmap A1)".
+
+The previous single-run baseline was completed on 2026-10-10, when this alias still
+resolved to the SGLang deployment (`scripts/quality_harness.py --json --model
+qwen38-27b --max-tokens 8192 --reasoning-model qwen38-27b`): clean TOTAL 20/20 expected
+facts, style 8/8 ok, 25093 prompt tokens, 99.2 seconds, saved at
 `logs\quality_baseline_qwen3_8_flash_next_20261010.json` and persisted as
 engineering-memory session `quality_harness-20261009T214258101237-9d6f90f9`.
-The same-backend context comparison scored 20/20 with context versus 3/20
-without it; context-on completed in 93.1 seconds versus 454.1 seconds without
-context because the no-context arm spent far more completion tokens guessing.
+That was the 8-probe, 20-fact set, and so was the same-backend context comparison
+that scored 20/20 with context versus 3/20 without it; context-on completed in 93.1
+seconds versus 454.1 seconds without context because the no-context arm spent far more
+completion tokens guessing. The gateway alias `qwen38-27b` has routed to
+`qwen3.8-flash-next` via vLLM, serving the same checkpoint, since that move.
 
 The previous `qwen3.8-27b` baseline remains historical: on 2026-08-22 it
 scored 20/20 with style 8/8, 28013 prompt tokens, and 144.6 seconds, persisted
@@ -739,11 +772,15 @@ a bare `bash` resolves to the WSL stub, which has no distribution installed.
 
 - Repository context can dominate prompt size; history capping alone is not the
   full latency lever. Configurable repository-context budget enforcement and
-  targeted retrieval promotions now exist; the 2026-10-10 qwen38-27b/SGLang full
-  baseline (the backend that alias pointed at before the move to vLLM) is clean
-  at `20/20` with style `8/8`, while the qwen36
-  `--compare-context` run showed `20/20` with context versus `2/20` without
-  context on the fixed probe set.
+  targeted retrieval promotions now exist. The current measured baseline is the
+  2026-10-24 controlled `--compare-context` run on the vLLM `qwen3.8-flash-next`
+  backend at commit `0371d64`: `25/30` expected facts with context versus `4/30`
+  without it, style `11/11` in both arms, 33109 prompt tokens against 2221, on the
+  full 11-probe set. Historical measurements on the earlier 8-probe set - the
+  2026-10-10 qwen38-27b/SGLang full baseline (the backend that alias pointed at
+  before the move to vLLM) clean at `20/20` with style `8/8`, and the qwen36
+  `--compare-context` run at `20/20` with context versus `2/20` without - remain
+  valid for what they measured and are not comparable to it as written.
   `SEARCH`/`TEST`/`DEBUG`/`EXPLAIN` have measured budget overrides; `REFACTOR`
   was measured and reverted to the shared default after a replicated
   regression - see `docs/roadmap.md` section 3 and the "RepositoryContextStage"
