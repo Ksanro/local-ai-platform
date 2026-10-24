@@ -598,6 +598,64 @@ git -C ..\lap-ab-histcap-4330e8f status --short   # must be empty before the mar
 #             git worktree remove ..\lap-ab-histcap-4330e8f
 ```
 
+`scripts/ab_launcher.py` is what builds those two launcher environments now, and it is
+configuration and validation only: `template` writes or prints an experiment and says
+what the tree it names still lacks, `validate` reports every reason the arms must not
+start yet, and `show` prints the PowerShell lines to paste into the two terminals, but
+only after every check below has passed. It never starts a process, opens a
+connection, or contacts the backend, so a rejected experiment costs nothing:
+
+```powershell
+.\uv.exe run python scripts\ab_launcher.py template --out configs\ab_experiments\histcap.json `
+    --worktree ..\lap-ab-histcap-4330e8f
+.\uv.exe run python scripts\ab_launcher.py validate --config configs\ab_experiments\histcap.json
+.\uv.exe run python scripts\ab_launcher.py show --config configs\ab_experiments\histcap.json
+.\uv.exe run python scripts\ab_launcher.py show --config configs\ab_experiments\histcap.json --arm on
+.\uv.exe run python scripts\ab_launcher.py show --config configs\ab_experiments\histcap.json --diff
+```
+
+What it refuses is the part that was easy to get wrong by hand. The arms must not share
+a port or a session log; `harness_timeout_seconds` must exceed
+`provider_request_timeout_seconds` by at least 30 seconds - the relationship whose
+absence produced the 503-timeout passes described below. `REQUEST_TIMEOUT` is carried in
+the rendered gateway environment rather than left to the provider's 60-second fallback,
+and the harness command carries `--timeout` for `harness_timeout_seconds`, a larger
+number than `REQUEST_TIMEOUT` by that margin rather than the same number, so a printed
+pair cannot disagree with the file it came from and the arm always gives up first. The
+launcher writes no credential: a key named like one (`*_API_KEY`, `*_ACCESS_TOKEN`,
+`*_TOKEN`, `*_SECRET`) is rejected in the experiment file, reported only as
+set-or-not-set, and never printed.
+
+The worktree gets the strictest check, because it is the one thing an arm inherits from
+the terminal rather than from the file: it must exist, hold no `.env` (which
+`apps/gateway/main.py` loads with `override=True`, silently replacing the settings under
+test), and prove by its own markers that it is a detached `git worktree` checkout - a
+`.git` file whose `gitdir:` line reaches an administration directory under `worktrees`,
+a `HEAD` in that directory holding a commit id rather than `ref: refs/heads/...`, and the
+tracked files both rendered commands start from. The tree both commands move into and
+the shared `APP_REPOSITORY_PATH` the gateway indexes must also resolve to one directory;
+they are two entries in one file, and comparing them textually would refuse a junction,
+a `subst` drive or an 8.3 short name of the tree it already named, which is why both
+sides are resolved first - the way `packages/repository/changed_files.py` compares a
+Git working tree with a configured root. An ordinary directory, a clone sitting
+on a moving branch, a worktree pruned from the main repository's `worktrees` directory, a
+marker pointing anywhere else, and a tree missing a file the gateway or harness needs are
+each refused by name. The launcher never runs Git to find this out; every check is a
+directory entry or a small text file, which is also why it can print a verdict without
+starting anything.
+
+`template` is the one command that expects its worktree check to fail, because a starting
+point names a tree that has usually not been made yet: it refuses to write a file whose
+fields are already wrong, writes the one that is not, then prints what `validate` would
+say about that tree right now - `can run either arm as it stands`, or the reasons it
+cannot. That verdict goes to standard error, so the printed JSON of a template without
+`--out` stays parseable, and it costs nothing to run.
+
+Nothing the launcher renders touches the quality store: the harness only reads the log
+its `--session-log-path` names, which is the file that arm's own gateway writes, and
+scoring a run into the store is a separate step - `scripts/evaluate_quality_harness.py
+--persist`, writing to the `--storage-path` it is given.
+
 Both launchers set `APP_DEFAULT_MODEL=qwen38-27b`, `APP_DEFAULT_PROVIDER=openai`, the
 single-entry `APP_MODELS_CONFIG` that routes `qwen38-27b` to backend model
 `qwen3.8-flash-next` at `http://100.106.236.88:18300/v1` (`context_window=262144`,
@@ -606,8 +664,23 @@ single-entry `APP_MODELS_CONFIG` that routes `qwen38-27b` to backend model
 `APP_REPOSITORY_CONTEXT_INTENT_BUDGETS` with `EXPLAIN:4096`,
 `APP_REPOSITORY_EXCLUDE_TESTS=false`, `APP_REPOSITORY_EXCLUDE_GLOBS=scripts/**`,
 `APP_SESSION_LOG_ENABLED=true` and its own absolute `APP_SESSION_LOG_PATH`, and
-`APP_HISTORY_CAP_ENABLED=true` with `APP_HISTORY_CAP_TOKENS=3000`. They differ in
-exactly two lines: `APP_SESSION_LOG_PATH`, and
+`APP_HISTORY_CAP_ENABLED=true` with `APP_HISTORY_CAP_TOKENS=3000`. `template` writes those
+and five more into `shared_env` because each one changes what a context contains or how
+long it holds it, and none of them has a worktree to be read from:
+`APP_REPOSITORY_CONTEXT_CHANGED_FILES_TTL_SECONDS=0`, so the changed-file set is the one
+snapshot taken at startup rather than whatever a background refresh last made of it;
+`APP_CONTEXT_INTENT_RULES={}`, so no leftover phrase sends one arm's request to another
+intent; `APP_CONTEXT_DELTA_CACHE_SIZE=256`, so neither arm evicts a conversation and
+re-sends symbols it had already sent; and `RELATIONSHIP_RANKING_ENABLED=true` with
+`RELATIONSHIP_EXPANSION_ENABLED=true`, which are read outside the `APP_` settings at all -
+`packages/context/builder.py:205,209` and `packages/context/ranking.py:193,197` each
+compare the raw text to `"false"`, so only that exact lowercase word turns one off, and
+`True`, `1` and `no` all leave a switch on that the experiment never declared. The
+launcher spells out every setting both arms share, refuses a shared name that is missing,
+empty, differently typed or spelled differently between them, and rejects any per-arm
+override of a name that is not `APP_SESSION_LOG_PATH` or
+`APP_REPOSITORY_CONTEXT_CHANGED_FILES_ENABLED`. They differ in exactly those two lines:
+`APP_SESSION_LOG_PATH`, and
 `APP_REPOSITORY_CONTEXT_CHANGED_FILES_ENABLED` (`false` for arm 1, `true` for arm 2).
 Observed before the first request: backend `/v1/models` served one model,
 `qwen3.8-flash-next` (`owned_by: vllm`, `max_model_len: 400000`); the gateway's

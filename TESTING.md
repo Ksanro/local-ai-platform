@@ -54,9 +54,19 @@ Use these to confirm code is correct before any live run. Fast, repeatable, no n
 .\uv.exe run python scripts\check_fixes.py
 .\uv.exe run python scripts\bench_context.py
 .\uv.exe run python scripts\git_change_snapshot.py --json .
+.\uv.exe run python scripts\ab_launcher.py template
 .\uv.exe run python scripts\quality_harness.py
 .\uv.exe run python -m pytest tests\evaluation tests\scripts tests\engineering_memory tests\observability\test_quality_harness.py tests\observability\test_quality_history.py -q
 ```
+
+`scripts\ab_launcher.py` builds and checks the configuration the two isolated-worktree
+A/B arms start with; `template` with no `--out` prints the experiment it would write, and
+the script never starts a gateway or harness and never contacts the backend, so it is a
+deterministic check rather than a live probe.
+`tests\scripts\test_ab_launcher.py` keeps that property: its
+`test_the_launcher_never_starts_a_process_or_opens_a_connection` replaces every
+`subprocess` and `os.exec`/`os.spawn` entry point with one that fails the test, then runs
+each command.
 
 `scripts\git_change_snapshot.py` is a read-only Git utility: it runs
 `git rev-parse --show-toplevel` and

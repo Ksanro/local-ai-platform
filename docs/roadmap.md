@@ -2,10 +2,9 @@
 
 This roadmap is based on the current live gateway, not on dormant scaffolding.
 
-Last reviewed: 2026-10-09 (the read-only Git change snapshot is now wired into
-the live gateway as an opt-in, off-by-default change-aware ranking signal; the
-dormant `packages.capabilities` inventory note and the live-gateway priorities
-from the 2026-09-09 pass are unchanged).
+Last reviewed: 2026-10-24 (the next measured development sequence is recorded
+below. Dormant code stays intact and isolated; no deletion, archival move, or
+incidental activation is part of the current plan).
 
 Previous review: 2026-09-19 (records the completed dormant Capability Framework v1
 prototype and the first read-only, script-reachable Git Integration slice; the
@@ -50,6 +49,106 @@ live-gateway priorities were unchanged since the 2026-09-09 pass).
   context-cost overages, no quality/style regression)
 
 ## Immediate Goals
+
+### Agreed Development Sequence (2026-10-24)
+
+The next work continues the existing pattern: activate or change one small,
+reachable slice at a time, measure behavior, run the focused live-path gates,
+and update the relevant documentation in the same session. Historical
+measurements remain labeled with their original model, backend, commit, probe
+set, and configuration; a new baseline supplements them rather than replacing
+them.
+
+#### Phase A: Repair And Refresh The Measurement Base
+
+1. **A2 - deterministic A/B launcher configuration - DONE (2026-10-24).**
+   `scripts/ab_launcher.py` now builds, validates, and renders the two
+   isolated-worktree arms without starting a process or contacting the backend.
+   It requires an explicit symmetric measurement configuration, validates the
+   provider/harness timeout margin, refuses a non-detached or incomplete tree,
+   keeps credentials out of files and output, and renders paste-ready gateway
+   and harness blocks. `tests/scripts/test_ab_launcher.py` pins the contract;
+   the runbook and `TESTING.md` document the operator workflow.
+2. **A1 - current full baseline.** From a controlled worktree and configuration,
+   run `scripts/quality_harness.py --compare-context --json` against the current
+   vLLM backend over the 11-probe / 30-fact set, evaluate and persist the result,
+   and record its commit, backend/checkpoint, configuration, flags, worktree
+   state, and timestamp. Keep the older 8-probe `20/20` results as historical
+   measurements rather than rewriting them as current results.
+3. **A3 - calibrated history-cap estimation.** After the ranking decision below,
+   make history capping use the resolved model's `chars_per_token`, preserving
+   the default behavior for models that do not override it. Re-measure
+   `multiturn_history_cap_budget` and one controlled Cline A/B because this
+   changes what is forwarded to the provider.
+
+#### Phase B: Settle Change-Aware Ranking
+
+1. **B1 - choose one safety rule offline.** Compare narrowly defined rules with
+   `--changed-file-probe` and `--changed-file-sweep`. Candidates include a
+   reserved budget for the unboosted primary module, a cap on changed-module
+   budget share, or a module-diversity constraint. Merely retaining one symbol
+   from a query-matching module is not sufficient if serialization still omits
+   the facts that module contributed. The offline target is to retain all `3/3`
+   eviction-case facts while retaining all `4/4` gain-case facts.
+2. **B2 - pin the selected invariant.** Add focused regression coverage in
+   `tests/context/test_changed_file_ranking.py` and
+   `tests/observability/test_quality_harness.py`, which already exercise both
+   arms of the registered pairs.
+3. **B3 - validate live.** Re-run the eviction, gain, and negative-control pairs
+   with three repeats per arm in a controlled isolated worktree. Directional
+   gates are eviction at least `8/9`, gain at least `8/12`, an intact negative
+   control, deterministic context inside each arm, and no unexplained latency,
+   token, quality, or style regression. These pair results validate the rule;
+   they are not by themselves enough to switch the global default on.
+4. **B4 - remove mandatory counterfactual cost.** Keep cheap direct counters on
+   every request, but make the second context build used for counterfactual
+   observability explicitly enabled or sampled. Records not compared must have
+   a distinct status such as `not_sampled`; they must not be classified as an
+   inert promotion. Complete this before any default-on decision.
+5. **Default and weight decision.** Only after B4, run the full fixed probe set
+   with the candidate behavior across more than one controlled dirty-file
+   layout. Decide the shipped weight and default from quality, style, context,
+   token, and latency evidence rather than from the two engineered pairs alone.
+
+#### Phase C: Measure Conversation-Scoped File Activity
+
+1. **C1 - touched-file signal and correlation.** Derive recognized file reads
+   and modifications from Cline tool-result envelopes already identified at the
+   planning boundary. Treat envelope content as untrusted, normalize paths,
+   reject paths outside the repository, isolate state by conversation, and fall
+   back safely for clients without these envelopes. Keep session output
+   count-only and distinguish at least files read, files modified, supplied
+   context files later touched, touched files absent from supplied context, and
+   changed-signal files later touched. This is a conversation-scoped ranking
+   signal and observability slice, not an activation of `packages.capabilities`.
+
+#### Phase D: Documentation And Dormant-Code Policy
+
+1. Update `CLAUDE.md`, `docs/STATUS.md`, this roadmap, the live runbook, and
+   `docs/dormant-code-backlog.md` as their facts change. Compact the long
+   changed-file narrative out of `docs/STATUS.md` into the runbook, leaving a
+   current summary and link.
+2. **Keep all dormant code for now.** Do not delete packages or tests, move them
+   to another branch, broadly refactor them, or activate them incidentally.
+   Capabilities, tasks, workflows, controller, execution, verification,
+   modification, patches, session, bootstrap, and autonomous packages remain
+   outside the live path until a concrete product workflow is chosen.
+3. Continue tracking the documented full-suite failure baseline as dormant
+   debt. Reducing that count is not a current objective, and tests must not be
+   skipped, weakened, or removed to improve it.
+
+#### Explicitly Deferred
+
+- true tokenizer integration
+- semantic/vector search
+- GitHub API integration
+- Git snapshot/diff persistence
+- a general autonomous engineering loop
+- wholesale activation of the dormant platform stack
+
+With A2 complete, the remaining execution order is **A1 -> B1 -> B2 -> B3 ->
+B4 -> C1 -> full-suite default/weight decision -> A3**, with documentation
+updated continuously.
 
 ### 1. Dormant-Code Inventory And Activation — first candidates DONE
 
