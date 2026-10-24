@@ -55,7 +55,8 @@ coverage.xml
 Thumbs.db
 
 # uv
-uv.lock
+# uv.lock is committed on purpose: it is the reproducibility contract for
+# clean checkouts, detached worktrees and CI. Never ignore it.
 all_files_list.txt
 
 # Diagrams

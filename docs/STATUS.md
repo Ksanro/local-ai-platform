@@ -768,6 +768,25 @@ On this machine the gate is invoked through Git's bundled bash
 (`& 'C:\Program Files\Git\bin\bash.exe' scripts/precommit_test_gate.sh`), because
 a bare `bash` resolves to the WSL stub, which has no distribution installed.
 
+### Dependency Reproducibility
+
+The live-path gates install from the committed `uv.lock`. CI pins uv 0.11.28 - the uv that
+generated that lock - and runs `uv sync --locked`, so a `pyproject.toml` that has drifted
+from the lock fails the job instead of silently re-resolving. Until 2026-10-24 three things
+kept a clean worktree from reproducing this checkout's environment: `pyproject.toml`
+declared `httpx2`, a different distribution that provides no `httpx` module, while
+`packages/providers/openai.py` and `packages/providers/vllm.py` import `httpx`; `uv.lock`
+was gitignored, so a fresh worktree had nothing pinned to install and `uv run` re-resolved
+against the live index; and the dev group omitted `pytest-asyncio`, which the async
+provider tests need, so it passed only because this checkout's `.venv` happened to carry an
+installed copy. All three are fixed.
+`tests/gateway/test_dependency_reproducibility.py` guards them without touching the network:
+`httpx` declared and `httpx2` not, the lock resolving `httpx` with no `httpx2`/`httpcore2`,
+`uv.lock` absent from the ignore rules, and `packages.providers.openai`,
+`packages.providers.vllm` and `apps.gateway.main` importing from the working tree. The
+interpreter itself is still unpinned - there is no `.python-version` file, so a fresh
+environment uses whatever Python uv discovers, against `requires-python = ">=3.12"`.
+
 ## Current Open Issues
 
 - Repository context can dominate prompt size; history capping alone is not the

@@ -889,15 +889,26 @@ flipped per request instead of across processes. The arm's environment block, po
 unchanged.
 
 One thing in that sequence is not what the launcher renders, and it is worth knowing
-before repeating the run: `uv.lock` is gitignored, so a bare `uv run` inside a fresh
-worktree resolves whatever is current on the index rather than the set every earlier
-measurement used, and that set contains no `httpx` (`pyproject.toml` declares `httpx2`
-while `packages/providers/openai.py` imports `httpx`) - the arm stops at import with
-`ModuleNotFoundError: No module named 'httpx'`. The arm was therefore started with
-`UV_PROJECT_ENVIRONMENT=C:\Users\ovidi\local-ai-platform\.venv` and `uv run --no-sync`:
+before repeating the run: as recorded on 2026-10-24, `uv.lock` was gitignored, so a bare
+`uv run` inside a fresh worktree resolved whatever was current on the index rather than the
+set every earlier measurement used, and that set contained no `httpx` (`pyproject.toml`
+declared `httpx2` while `packages/providers/openai.py` imports `httpx`) - the arm stopped at
+import with `ModuleNotFoundError: No module named 'httpx'`. The arm was therefore started
+with `UV_PROJECT_ENVIRONMENT=C:\Users\ovidi\local-ai-platform\.venv` and `uv run --no-sync`:
 the worktree's code, the main checkout's interpreter (CPython 3.13.14) and its installed
 packages, and nothing installed or removed by the run. The worktree is still what the
 gateway indexed, which is the isolation the run was after.
+
+That workaround is history, not the procedure to copy. Both causes behind it were removed
+the same day: `uv.lock` is tracked instead of ignored, `pyproject.toml` declares `httpx`
+(the `httpx2` entry installed a package no module imports), and the dev group now declares
+`pytest-asyncio`, which the async provider tests need and which until then only existed in
+this checkout's `.venv`. The current procedure for an isolated arm is to add the worktree,
+run `.\uv.exe sync --locked` inside it, and start the gateway from that environment - no
+`UV_PROJECT_ENVIRONMENT` pointing at the main checkout, no `--no-sync`, and no borrowed
+interpreter. The A1 numbers above were measured with the borrowed environment, so that set
+of package versions is part of that measurement's condition; reproducing them does not
+require reproducing the workaround.
 
 What was checked before the measured requests, on `http://127.0.0.1:8011`:
 

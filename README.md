@@ -45,8 +45,13 @@ what runs and what is dormant.
 ## Setup
 
 ```powershell
-.\uv.exe sync
+.\uv.exe sync --locked
 ```
+
+`uv.lock` is committed, so `--locked` installs exactly the resolved set CI uses and stops
+with an error if `pyproject.toml` and the lock have drifted. Leave the flag off only when
+you intend to re-resolve; after a dependency change run `.\uv.exe lock` and commit the
+updated lock with the change.
 
 Create or edit `.env`. A minimal local configuration looks like:
 

@@ -21,10 +21,11 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v5
         with:
-          version: "0.5.0"
-      - name: Install dependencies
+          # Matches the uv that generated the committed uv.lock (uv 0.11.28).
+          version: "0.11.28"
+      - name: Install dependencies from the committed lock
         run: |
-          uv sync
+          uv sync --locked
       - name: Run ruff linter on live path
         run: |
           uv run python -m ruff check apps/gateway packages/pipeline packages/providers packages/planning packages/context packages/repository scripts
@@ -43,10 +44,11 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v5
         with:
-          version: "0.5.0"
-      - name: Install dependencies
+          # Matches the uv that generated the committed uv.lock (uv 0.11.28).
+          version: "0.11.28"
+      - name: Install dependencies from the committed lock
         run: |
-          uv sync
+          uv sync --locked
       - name: Run mypy on live path
         run: |
           uv run python -m mypy apps/gateway packages/providers/base.py packages/providers/exceptions.py packages/providers/factory.py packages/providers/models.py packages/providers/registry.py packages/providers/registry_models.py packages/providers/router.py packages/providers/vllm.py packages/pipeline/base.py packages/pipeline/context.py packages/pipeline/engine.py packages/pipeline/exceptions.py packages/pipeline/history.py packages/pipeline/normalized.py packages/pipeline/request.py packages/pipeline/response.py packages/pipeline/result.py packages/pipeline/user_messages.py packages/pipeline/stages/model_resolution.py packages/pipeline/stages/planning_stage.py packages/pipeline/stages/repository_context.py packages/pipeline/stages/stages.py
@@ -65,10 +67,11 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v5
         with:
-          version: "0.5.0"
-      - name: Install dependencies
+          # Matches the uv that generated the committed uv.lock (uv 0.11.28).
+          version: "0.11.28"
+      - name: Install dependencies from the committed lock
         run: |
-          uv sync
+          uv sync --locked
       - name: Run live-path tests
         run: |
           uv run python -m pytest tests/pipeline tests/gateway tests/providers tests/planning tests/context tests/repository -q
