@@ -3,7 +3,21 @@
 This file is the current runtime snapshot. It intentionally describes only
 what matters for the live gateway path and calls out dormant code explicitly.
 
-Last reviewed: 2026-10-25 (roadmap item B1 chose and implemented one offline safety
+Last reviewed: 2026-10-25 (roadmap item B3 validated change-aware ranking live: three
+A/B pairs of two gateways, run from one detached worktree of `57bd045` holding no `.env`
+with one comment-only marker dirty per pair, three repeats per arm, against
+`qwen3.8-flash-next` on the vLLM backend through the alias `qwen38-27b` - eviction/guard
+`9/9` on both arms, which is the promotion guard surviving final serialization; gain
+`3/12` off against `8/12` on, still the discriminating pair; negative control `9/9` in both
+arms with a real context difference and no score difference; the observable context
+fingerprint identical inside every arm across its three repeats while the answers varied (a
+session record carries no ordered supporting-symbol list, so ordered determinism stays an
+offline-probe and unit-test claim); no error, timeout, budget overrun or style regression in
+eighteen requests, and no unexplained or material latency regression at that sample size - 9.7 s
+more across the nine enabled requests, ~450 ms of each one being the counterfactual baseline
+build, which is B4's to remove. `RankingConfig.WEIGHT_CHANGED_FILE`
+stays `+25`, the feature stays off by default, and a passing B3 does not authorize switching
+it on. Earlier the same day, roadmap item B1 chose and implemented one offline safety
 rule for change-aware repository-context ranking: a promoted changed-file symbol may no
 longer push the best un-promoted symbol of a module the query matched out of the ranked
 positions that reach the prompt with source text, and the symbol it restores is found
@@ -231,6 +245,43 @@ pays 402-507 ms per request for the counterfactual baseline that produces those
 counters. The fourth fact, the `truncated by gateway history cap` marker, was quoted by
 neither arm, which is the answer side saying it wants a string verbatim - `4/4` offline
 is about the text sent, not about what a model repeats.
+
+All three pairs were measured again live on 2026-10-25, with the guard in the build
+(roadmap B3), from one detached worktree of `57bd045` that held no `.env` and whose only
+difference from a clean checkout was the pair's own comment-only marker - so
+`changed_files_count` read 1 on every enabled record, rather than the 18 locally modified
+indexed modules that confounded the 2026-10-12 pass. Every gate passed: eviction `9/9` off
+against `9/9` on, gain `3/12` off against `8/12` on, negative control `9/9` in both arms, the
+observable context fingerprint identical across the three repeats inside all six arms while the
+answers were not, and no error, timeout, budget overrun or style problem in any of the eighteen
+requests. The fingerprint is what a session record can witness - `primary_symbol`,
+`symbols_selected`, `estimated_tokens`, `prompt_tokens` and the seven `changed_*` fields - and
+not the ordered supporting-symbol list, so the exact live order is not claimed here; ordered
+determinism belongs to the offline probe and to the ranking tests
+(`tests/context/test_ranking_v2.py::TestDeterministicOrdering::test_repeated_runs_produce_same_order`).
+Latency came out 9.7 s higher across the nine enabled requests than across the nine disabled
+ones, about 4.2 s of it the counterfactual build and the rest provider spread that ran the
+other way in the control pair, which is no unexplained or material regression in a sample this
+size rather than no difference. The eviction pair is the one that decides B3: the enabled arm's
+context still differs from its
+own no-bonus baseline on every record (`changed_context_differs=true`,
+`changed_primary_promoted=true`, `changed_symbols_promoted=1`, the primary moved into the
+dirty file, 9 symbols where the disabled arm sent 11) and it now loses none of the three
+`packages/repository/index/builder.py` facts, so the guard survives `ContextBuilder`'s own
+promotions, the serializer and a live request. Its price is measured too: 409-542 ms of
+every enabled request goes into the counterfactual build that produces those counters, which
+is B4's target rather than a B3 change, and a passing B3 does not authorize the default -
+the `+25` weight and the off-by-default flag are untouched. One caveat the run exposed
+without touching: the offline probe's symbol tallies run higher than the live arms' because
+`_stage_arm` builds a bare `PipelineContext` with no resolved model and so budgets at the
+platform's 4.0 chars per token instead of the alias's calibrated 3.5 - the same in both arms,
+so it moves no verdict. It is an offline-probe calibration gap of its own, and not the gap
+item A3 is about: A3 concerns history capping using the resolved model's `chars_per_token`,
+and this run neither advances it nor closes it. Per-repeat tables, launcher
+configuration, promotion counters and the recorded confounds are in
+`docs/live-gateway-runbook.md`,
+"Isolated-worktree promotion-guard A/B, 2026-10-25 (roadmap B3)".
+
 That comparison now has its instrument, and the two halves of it ask one question
 each. The eviction case is registered in the ordinary scored probe set as
 `explain_changed_files_repository_index`, and its three facts -

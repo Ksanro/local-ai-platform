@@ -152,15 +152,49 @@ them.
    `test_the_guard_decides_which_symbols_the_budget_admits` runs a whole stage
    request twice at a budget that holds two symbols, where the guard is what
    decides what the working tree brought in - one symbol promoted with it, two
-   without. B3 remains the live validation; the registered
-   `evicts_the_asked_about_file` pair has not been re-run against a model.
-3. **B3 - validate live.** Re-run the eviction, gain, and negative-control pairs
-   with three repeats per arm in a controlled isolated worktree, with the B1 rule
-   in the build being measured. Directional
-   gates are eviction at least `8/9`, gain at least `8/12`, an intact negative
-   control, deterministic context inside each arm, and no unexplained latency,
-   token, quality, or style regression. These pair results validate the rule;
-   they are not by themselves enough to switch the global default on.
+   without. B3 ran that live validation on 2026-10-25, and the registered
+   `evicts_the_asked_about_file` pair held against a model - `9/9` on both arms, the
+   enabled arm's context differing from its own no-bonus baseline on every record.
+3. **B3 - validate live - DONE (2026-10-25).** The three pairs ran with three repeats
+   per arm against `qwen3.8-flash-next` on the vLLM backend at
+   `http://100.106.236.88:18300/v1` through the alias `qwen38-27b`, from one detached
+   worktree of `57bd045` (`C:\Users\ovidi\lap-ab-b3-57bd045`, holding no `.env`, its own
+   `uv sync --locked` environment at CPython 3.13.14), with the two gateways of each pair
+   differing only in `APP_REPOSITORY_CONTEXT_CHANGED_FILES_ENABLED` and
+   `APP_SESSION_LOG_PATH` as `scripts/ab_launcher.py` proved from its own validation and
+   `show --diff`. Every gate passed. Eviction/guard: `9/9` on both arms, the disabled arm
+   holding its documented direction and the enabled arm carrying all three
+   `packages/repository/index/builder.py` facts on records that read
+   `changed_files_signal=ok`, `changed_files_count=1`,
+   `changed_symbols_promoted=1`, `changed_primary_promoted=true` and
+   `changed_context_differs=true` - so the guard survives the builder's promotions, the
+   serializer and a live request, which is what this item existed to find out. Gain:
+   `3/12` off against `8/12` on, still the discriminating pair, with the one fact neither
+   arm's answers quoted being the truncation marker the model paraphrases although the
+   enabled context carries it. Control: `3/3` on every repeat of both arms, with the
+   enabled arm's retrieval genuinely different and its score genuinely not. The observable
+   context fingerprint was identical across the three repeats inside all six arms (primary
+   symbol, selected-symbol count, estimated tokens, prompt tokens and the seven `changed_*`
+   counters, to the unit) while answer text varied, which is the split the item asked for; a
+   session record carries no ordered supporting-symbol list, so ordered determinism stays an
+   offline-probe and unit-test claim rather than a live one. No errored or timed-out request,
+   no budget overrun (highest estimated context 4091 of 4096), style clean in all eighteen
+   answers, +228 prompt tokens per enabled request on average, and no unexplained or material
+   latency regression at this sample size - +1.1 s per enabled request, 9.7 s over the nine, of
+   which ~450 ms a request is the counterfactual baseline build that B4 owns and this run left
+   untouched. `RankingConfig.WEIGHT_CHANGED_FILE` stays `+25`, the feature stays off by default,
+   and this passing run does not authorize switching it on: it prices and validates the
+   rule. Full configuration, per-repeat tables, determinism, promotion counters, token and
+   latency comparison and the recorded confounds are in `docs/live-gateway-runbook.md`,
+   "Isolated-worktree promotion-guard A/B, 2026-10-25 (roadmap B3)"; artifacts under the
+   Git-ignored `logs\b3\20261025\` and `build\b3\20261025\`. One thing the run recorded
+   that is not a B3 item, and not A3 either: the offline probe's symbol tallies run higher
+   than the live arms' because `_stage_arm` builds a bare `PipelineContext` with no resolved
+   model, so the stage falls back to `CHARS_PER_TOKEN=4.0` where the live path uses the
+   alias's calibrated `3.5`. That is an offline-probe calibration gap in its own right, the
+   same in both arms so it moves no verdict. Item A3 stays as written and stays open - it is
+   about history capping using the resolved model's `chars_per_token`, which this
+   run neither advances nor measures.
 4. **B4 - remove mandatory counterfactual cost.** Keep cheap direct counters on
    every request, but make the second context build used for counterfactual
    observability explicitly enabled or sampled. Records not compared must have

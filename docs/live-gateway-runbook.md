@@ -359,7 +359,11 @@ It is also not visible to `--changed-file-sweep`, which ranks with no bonus at a
 Whether it holds on a live pair of gateways is B3, not B1: the eviction pair is now
 expected to *tie* on the three facts in both arms, so that run reads as a check
 that the guard survives serialization rather than as the discriminating A/B, and
-`explain_changed_files_history_cap` carries that role alone.
+`explain_changed_files_history_cap` carries that role alone. B3 ran it on 2026-10-25 and
+the rule held end to end: `9/9` on both arms of the eviction pair with
+`changed_context_differs=true` and the primary moved into the dirty file on every enabled
+record, `8/12` against `3/12` on the gain pair, and `9/9` both arms of the control - see
+"Isolated-worktree promotion-guard A/B, 2026-10-25 (roadmap B3)".
 
 These modes are retrieval diagnostics, not the answer-quality claim. Each case above
 has its scored half in the normal probe set -
@@ -879,6 +883,336 @@ rule decides between them yet. What has changed is the shape of the decision - i
 longer "costs something, buys nothing measured", and the `gains_the_changed_file` row of
 `--changed-file-probe` is the offline statement of what the live pair now measures.
 
+### Isolated-worktree promotion-guard A/B, 2026-10-25 (roadmap B3)
+
+What this run is for. B1 chose the promotion guard and B2 pinned it at the ranking,
+builder and stage levels, which is all arithmetic on one in-process index. B3 answers
+the question arithmetic cannot: whether the rule still holds once the context has been
+through `ContextBuilder`'s own promotion passes, the serializer and a real provider
+request, and what the guard costs on the pair that is meant to gain and the pair that
+must not change. It measured the build at `57bd04504273c4c5ee227b4181d53b5754d64808`
+and changed no production behaviour: `RankingConfig.WEIGHT_CHANGED_FILE` stayed `+25`,
+and the feature stayed off by default, which is why the disabled arm of every pair is
+the same code path with the flag read as `false`.
+
+Identity of what was contacted, checked before any claim was made: backend
+`http://100.106.236.88:18300/v1/models` served one model, `qwen3.8-flash-next`
+(`owned_by: vllm`, `max_model_len: 400000`, root
+`/hf/hub/models--nvidia--Qwen3.8-Flash-Next-NVFP4/snapshots/fc694b54fb0174e0913e6adf86691ef85a4ead47-fp8hybrid`);
+the gateway listed the alias `qwen38-27b`, and `/debug/runtime-context` reported
+`routing_mode=models_config`, `default_model=qwen38-27b`, `default_provider=openai`,
+`models[0].backend_model=qwen3.8-flash-next`, `context_window=262144`,
+`max_output_tokens=8192`, `chars_per_token=3.5`, `repository_context_max_tokens=4096`,
+`repository_context_intent_budget_map` `EXPLAIN=4096` (`SEARCH/TEST/DEBUG=2048`,
+`REFACTOR/IMPLEMENT=4096`), `context_delta_injection=true`, `history_cap_enabled=true`
+with `history_cap_tokens=3000`, and each arm's own session log. Those are the values
+`scripts/ab_launcher.py` rendered; the worktree holds no `.env`, so nothing else was in
+reach. The main checkout's `.env` declares the same alias and the same `4096`, which is
+what made the launcher block and the documented configuration agree.
+
+The tree, and why it is the isolation this run needed:
+
+```powershell
+# 1. one detached worktree at the commit being measured, in a sibling path
+git worktree add --detach ..\lap-ab-b3-57bd045 57bd045
+git worktree list          # .../lap-ab-b3-57bd045  57bd045 (detached HEAD)
+git -C ..\lap-ab-b3-57bd045 rev-parse --abbrev-ref HEAD   # HEAD, not a branch
+git -C ..\lap-ab-b3-57bd045 status --short                # empty, before any marker
+Test-Path ..\lap-ab-b3-57bd045\.env                       # False
+# 2. its own environment from the lock, at the interpreter the baseline used
+Set-Location ..\lap-ab-b3-57bd045
+.\uv.exe sync --locked --python 3.13 --exact   # CPython 3.13.14, 32 packages, nothing extra
+Set-Location ..\local-ai-platform
+```
+
+`--python 3.13` is the one place this run departed from the bare command, and it is a
+measurement condition rather than a convenience: with no pin, `uv sync` created the
+worktree environment from CPython 3.14.6, the newest interpreter on this machine, while
+every documented baseline here - including the 2026-10-24 A1 run - was taken on
+3.13.14. Re-running the sync with the pin produced 3.13.14 and `--exact` proved nothing
+extraneous was left in the environment. `uv.lock` is tracked at this commit, so
+`.\uv.exe lock --check` resolved 33 packages in the main checkout and the sync needed no
+`UV_PROJECT_ENVIRONMENT` and borrowed no interpreter (the A1 workaround is not needed).
+
+Both arms of every pair came from one validated experiment file per pair:
+
+```powershell
+# 3. configuration, validation, and the proof the arms are a pair
+.\uv.exe run --frozen python scripts\ab_launcher.py template --name b3_evict --worktree ..\lap-ab-b3-57bd045 --out build\b3\20261025\evict.json
+.\uv.exe run --frozen python scripts\ab_launcher.py validate --config build\b3\20261025\evict.json
+.\uv.exe run --frozen python scripts\ab_launcher.py show --config build\b3\20261025\evict.json --diff
+```
+
+`template` wrote the shared block, `REQUEST_TIMEOUT=300`, harness `--timeout 345`,
+`harness_repeat=3` and `harness_max_tokens=8192` as its runbook defaults; the only hand
+edit was `harness_probes`, which names the pair being measured (`gain.json` and
+`control.json` differ from the file above in `name` and that one list). `validate`
+exited 0 for all three and said what mattered about the tree: it is a detached worktree
+administered under `.git\worktrees`, it holds no `.env`, and the provider timeout sits
+forty-five seconds under the harness timeout - `REQUEST_TIMEOUT=300` against
+`--timeout 345`, which clears the `ab_launcher` floor of a thirty-second margin.
+`show --diff` for each pair printed
+exactly two lines, and nothing else, at every port:
+
+```text
+# arm differences in 'b3_evict' (off / on)
+  APP_REPOSITORY_CONTEXT_CHANGED_FILES_ENABLED: false | true
+  APP_SESSION_LOG_PATH: C:\Users\ovidi\lap-ab-b3-57bd045\logs\sessions_b3_evict_off.jsonl | C:\Users\ovidi\lap-ab-b3-57bd045\logs\sessions_b3_evict_on.jsonl
+```
+
+The rendered blocks were started as written - `Set-Location` into the worktree, the two
+`New-Item` lines, the twenty-three `$env:` lines, the uvicorn command on port 8011 (off)
+and 8012 (on), and the harness command against each - from a throwaway runner under the
+ignored `build\b3\20261025\` that parses `show --arm` and launches what it finds, so no
+flag entered a live arm by hand. Gateway stdout, gateway stderr, the repeat envelopes and
+the copied-out session logs of every arm are under the ignored
+`logs\b3\20261025\<pair>\`; `git status --short` was empty throughout, because none of it
+is tracked. Every process started was stopped by the same runner's counterpart, which
+matches on a command line containing both `uvicorn` and `apps.gateway.main:create_app`
+across all three layers of the `uv -> python -> python3.13` chain, and each stop ended
+with `no gateway or worktree-harness process left` and both ports free.
+
+The three pairs, and what each one dirtied. Each pair began from the same clean detached
+worktree, added one comment-only line (no code, no string, nothing a scored fact could
+match) to exactly one tracked file, checked what Git reported before any request was
+made, and reverted that one file with `git checkout -- <path>` after both arms were
+stopped. `scripts\git_change_snapshot.py --json ..\lap-ab-b3-57bd045` reported
+`"clean": false`, `counts.unstaged 1`, `counts.untracked 0` and the intended path each
+time, and each enabled gateway printed
+`changed_files_signal enabled=true paths=1 captures=1 failures=0 outside_root=0 last_error=none`
+- one changed indexed path, no capture failure, nothing outside the repository root -
+while its disabled twin printed no `changed_files_signal` line at all. Both gateways of
+every pair indexed the same tree to the same numbers:
+`files=506 modules=506 symbols=8631 relationships=18457 excluded_tests=0 excluded_globs=13`.
+
+| pair | probe | the one dirty file | indexed module key | offline verdict and facts |
+|---|---|---|---|---|
+| eviction / guard | `explain_changed_files_repository_index` | `packages/repository/index/models.py` | `packages/repository/index/models` | SWAP, `3/3 -> 3/3`, `facts_lost` empty |
+| gain | `explain_changed_files_history_cap` | `packages/pipeline/history.py` | `packages/pipeline/history` | MOVE, `1/4 -> 4/4`, `facts_lost` empty |
+| negative control | `explain_changed_files_contextbuilder` | `packages/context/budget.py` | `packages/context/budget` | SWAP, `3/3 -> 3/3`, `facts_lost` empty |
+
+Before each pair ran, `--changed-file-probe --repo-root ..\lap-ab-b3-57bd045` reproduced
+the main checkout's table row for row - 23 compared lines, zero differences - so no arm
+was sent a prediction from a different tree. The primaries the offline table named are
+the primaries each arm actually sent, below, on all three repeats.
+
+#### Eviction / guard pair, `explain_changed_files_repository_index`
+
+Prompt `REPOSITORY_INDEX_BUILD_QUERY` (identical text in both arms), dirty
+`packages/repository/index/models.py`, three repeats per arm, 3/3 of the
+`PythonAstExtractor` / `RelationshipRegistry` / `CallExtractor` facts available in both
+arms offline.
+
+| arm | repeat 1 | repeat 2 | repeat 3 | total |
+|---|---|---|---|---|
+| feature off | 3/3 | 3/3 | 3/3 | **9/9** |
+| feature on | 3/3 | 3/3 | 3/3 | **9/9** |
+
+Per fact, all six answers: each of the three collaborators was hit in all three repeats
+of both arms, with no misses anywhere. That is the gate: the enabled arm needed at least
+8/9 and it took all nine, and the disabled arm kept its established 9/9 direction from
+the 2026-10-12 run. The 2026-10-12 enabled arm scored 0/9 over a tree with eighteen dirty
+indexed modules; this is the same pair over a tree with one, with the guard in the build,
+and the difference the guard is meant to make is gone from the answer because it is gone
+from the retrieval.
+
+What each arm sent, on all three repeats (nothing in this row moved within an arm):
+
+| arm | primary symbol | symbols | est. context / budget | prompt tokens | completion tokens | latency (s) | `changed_*` |
+|---|---|---|---|---|---|---|---|
+| off | `packages/repository/index/builder.RepositoryIndexBuilder` | 11 | 4091 / 4096 | 3551 | 905, 709, 702 | 31.2, 22.2, 18.2 | `off`, 0, 0, false, 0, false, `none`@0.0 ms |
+| on | `packages/repository/index/models.RepositoryIndex` | 9 | 4069 / 4096 | 3436 | 852, 867, 726 | 33.7, 29.3, 23.2 | `ok`, 1, 8, true, 1, true, `built`@493.9, 571.5, 559.2 ms |
+
+The enabled arm is a different context, not a bigger one: 9 symbols where the disabled
+arm sent 11, 115 fewer prompt tokens, and the primary moved into the dirty file - the
+`SWAP` the offline row describes, with `changed_context_differs=true` and
+`changed_primary_promoted=true` on all three records and `changed_symbols_promoted=1`.
+The guard's work is exactly what the extra 3/3 says: the symbol it restored to the second
+content slot kept its source text, so the eviction that used to cost all three facts
+costs none. `analyze_sessions.py` over the enabled arm's log reads 3/3 records
+`proves a change`, `primary changed: 3`, `membership changed: 3`, `reorder only: 0`, sum
+`changed_symbols_promoted` 3 and sum `changed_symbols_selected` 24; over the disabled
+arm's log every column is 0 and `changed_files_signal` is `off` on all three.
+
+
+#### Gain pair, `explain_changed_files_history_cap`
+
+Prompt `HISTORY_CAP_QUERY` - prose that names no symbol - dirty
+`packages/pipeline/history.py`, three repeats per arm, `1/4 -> 4/4` offline. This is
+still the pair the opt-in is offered for, and it still separates the arms.
+
+| arm | repeat 1 | repeat 2 | repeat 3 | total |
+|---|---|---|---|---|
+| feature off | 1/4 | 1/4 | 1/4 | **3/12** |
+| feature on | 3/4 | 2/4 | 3/4 | **8/12** |
+
+Per fact across the three repeats: `cap_history` 3/3 on against 3/3 off;
+`max_current_tool_result_tokens` 2/3 against 0/3;
+`_looks_like_cline_tool_result_message` 3/3 against 0/3; and
+`[... truncated by gateway history cap ...]` 0/3 against 0/3. The enabled arm reached the
+`at least 8/12` gate exactly, and the number is the same `8/12` the 2026-10-13 run
+reached on the same pair, which is the useful coincidence: the guard changed nothing that
+this pair measures.
+
+| arm | primary symbol | symbols | est. context / budget | prompt tokens | completion tokens | latency (s) | `changed_*` |
+|---|---|---|---|---|---|---|---|
+| off | `apps/gateway/api/models.list_models` | 20 | 2807 / 4096 | 3025 | 644, 464, 560 | 19.9, 12.4, 17.1 | `off`, 0, 0, false, 0, false, `none`@0.0 ms |
+| on | `packages/pipeline/history._build_cap_groups.find` | 7 | 4087 / 4096 | 3945 | 753, 694, 710 | 23.1, 22.6, 18.0 | `ok`, 1, 6, true, 4, true, `built`@477.0, 483.3, 427.6 ms |
+
+Twenty symbols became seven and `changed_symbols_promoted=4` on every record: the four
+newly sent are the cap's own definitions, which is where three of the four facts live.
+The fourth, the truncation marker, is a scoring artifact rather than a retrieval failure
+and stays reported that way: the offline row for this exact tree says the enabled arm's
+serialized context supports 4/4, so the string reaches the prompt and the model
+paraphrases it. No answer in this pair quoted it. The same reasoning applies to repeat 2's
+miss of `max_current_tool_result_tokens`, where repeats 1 and 3 hit it: all three records of
+that arm carry the same observable context fingerprint - 7 symbols, `estimated_tokens` 4087,
+3945 prompt tokens, the same primary and the same `changed_*` counters - so what changed
+between those requests was the model's wording, not what was retrieved. A session record does
+not carry the ordered supporting-symbol list, so fingerprint identity is as far as the claim
+about those two requests goes.
+`analyze_sessions.py` reads 3/3 `proves a change` (primary and membership both changed on
+all three) with sum `changed_symbols_promoted` 12 in the enabled arm and 0 everywhere in
+the disabled arm.
+
+#### Negative control, `explain_changed_files_contextbuilder`
+
+Prompt `CONTEXT_BUILDER_BUDGET_QUERY`, dirty `packages/context/budget.py`, three repeats
+per arm. Both arms had to stay intact and neither acquired an artificial difference.
+
+| arm | repeat 1 | repeat 2 | repeat 3 | total |
+|---|---|---|---|---|
+| feature off | 3/3 | 3/3 | 3/3 | **9/9** |
+| feature on | 3/3 | 3/3 | 3/3 | **9/9** |
+
+| arm | primary symbol | symbols | est. context / budget | prompt tokens | completion tokens | latency (s) | `changed_*` |
+|---|---|---|---|---|---|---|---|
+| off | `packages/context/builder.ContextBuilder._enforce_budget` | 3 | 3988 / 4096 | 3466 | 412, 729, 729 | 15.4, 18.7, 21.7 | `off`, 0, 0, false, 0, false, `none`@0.0 ms |
+| on | `packages/context/budget.ContextBudget` | 4 | 3779 / 4096 | 3345 | 357, 357, 357 | 15.3, 10.0, 11.3 | `ok`, 1, 2, true, 2, true, `built`@423.7, 428.4, 376.1 ms |
+
+This is what a control is for: the enabled arm did change its retrieval - the primary
+moved to `ContextBudget`, `changed_context_differs=true` and `changed_symbols_promoted=2`
+on all three records, and the analyzer counts 3/3 `proves a change` with membership
+changed - and the score did not move at all, because the bonus adds the budget file's two
+symbols in front of the builder file's three instead of replacing them. A score
+difference here would have meant the arms ran on different trees.
+
+#### Determinism, cost, and what this run does not settle
+
+Eighteen requests were measured - three repeats, two arms, three pairs - and every one
+of them answered: no request errored, none reached a timeout, none was flagged
+`truncation_risk`, and style was clean (`ok`, no reasoning preamble or tool chatter) in
+all eighteen. The slowest was 33.7 s against a 300 s provider timeout and a 345 s client
+timeout.
+
+**The observable context fingerprint is identical inside each arm; the answers are not, and
+that is the split this measurement is built on.** In all six arms, `primary_symbol`,
+`symbols_selected`, `estimated_tokens`, `prompt_tokens` and the seven `changed_*` fields took
+one value across all three repeats - the tables above list one row per arm because there is
+nothing else to list. That is the fingerprint, not the context text: a session record carries
+counts and the primary and deliberately no ordered supporting-symbol list, so the exact live
+order the serializer emitted is neither recorded nor claimed here. Ordered determinism lives
+offline and in tests instead - the `symbols=` lists the probe prints for the same tree, and
+three checks: `tests/context/test_ranking.py::TestRankingEngine::test_ordering_deterministic`,
+`tests/context/test_ranking_v2.py::TestDeterministicOrdering::test_repeated_runs_produce_same_order`
+and `tests/context/test_changed_file_ranking.py::test_promotion_guard_is_deterministic_and_leaves_the_counter_alone`.
+Answer text moved: three distinct answers in each of the four eviction/gain arms, two of three
+in the control's disabled arm, and the same answer three running times in the control's enabled
+arm. So the gain arm's repeat-2 miss of `max_current_tool_result_tokens`, where repeats 1 and 3
+hit it, is model wording on an unchanged retrieval fingerprint, not retrieval flicker.
+
+Cost, summed over the three repeats of each arm:
+
+| pair | arm | prompt tokens | completion tokens | latency (s) | stage time (ms) | of which counterfactual baseline (ms) |
+|---|---|---|---|---|---|---|
+| eviction / guard | off | 10653 | 2316 | 71.6 | 1468.9 | 0 |
+| eviction / guard | on | 10308 | 2445 | 86.2 | 3171.9 | 1624.6 |
+| gain | off | 9075 | 1668 | 49.4 | 1543.2 | 0 |
+| gain | on | 11835 | 2157 | 63.7 | 2742.5 | 1387.9 |
+| negative control | off | 10398 | 1870 | 55.8 | 1293.8 | 0 |
+| negative control | on | 10035 | 1071 | 36.6 | 2447.6 | 1228.2 |
+
+Read as totals over the nine pairs of requests, the enabled arms spent 32178 prompt tokens
+against 30126 (about +228 a request) and 5673 completion tokens against 5854, and took
+186.5 s against 176.8 s - 9.7 s more in aggregate, about 1.1 s per enabled request, of which
+4.24 s is `changed_baseline_ms` summed over the nine enabled requests (~471 ms each). The rest
+is provider spread, and the spread runs both ways between pairs: the guard pair took 14.6 s
+more with the feature on, the gain pair 14.3 s more, the control pair 19.2 s less. So the fair
+statement is no unexplained or material latency regression in this sample, not no latency
+regression. The stage is where the honest cost sits: 431-514 ms per disabled request against
+816-1057 ms per enabled one, and `changed_baseline_ms` accounts for 409-542 ms of that, so
+an enabled request spends most of its extra time re-ranking itself without the bonus to
+produce a comparison nobody reads in production. That number is B4's target, not a B3
+finding. Token movement is pair-specific and follows retrieval: the guard pair got 115
+tokens cheaper per request with the feature on, the gain pair 920 dearer (the cap's own
+definitions arriving where plumbing used to be), the control 121 cheaper. No arm exceeded
+its budget - the highest estimated context in eighteen requests was 4091 of 4096 - and no
+symbol was promoted that the query had not reached: the gate that admits each promotion is
+the one the offline rows name, `[name match only]` on the eviction and gain pairs and
+`[named in query]` on the control, and every enabled record pairs
+`changed_symbols_selected > 0` with `changed_files_signal=ok` and `changed_files_count=1`.
+
+Validity, stated field by field for the enabled arm of each pair, because a passing score
+means nothing if the signal never ran: `changed_files_signal=ok` on all nine enabled
+records; `changed_files_count=1` on all nine; `changed_baseline_status=built` on all nine
+(the bonus was applied, so the comparison was owed and was made); `changed_context_differs=true`
+on all nine, including all three records of the eviction pair, which is the field that
+proves the reorder reached the final serialization; zero baseline failures anywhere; zero
+budget overruns; and the disabled arm of each pair reading `off`, `0`, `false`, `false`,
+`0`, `false`, `none` - so the counters are the signal, not the flag read in the wrong place.
+
+What this run does not settle, kept where it belongs:
+
+- **The offline table's symbol counts are not the live ones, and the reason is a budget
+  input, not the guard.** Eviction measured `14 -> 10` offline and sent 11 then 9 live; the
+  control measured `3 -> 5` and sent 3 then 4; the gain pair matched at `20 -> 7`. Live, the
+  stage resolves `chars_per_token` from the model definition (`3.5` here) and estimates with
+  it; offline, `_stage_arm` builds a bare `PipelineContext` with no `resolved_model`, so
+  `packages/pipeline/stages/repository_context.py:882-901` falls back to the platform's
+  `4.0`, and a context the gateway estimates at 4091 tokens the probe estimates one-eighth
+  cheaper (the 3.5/4.0 ratio, 12.5% lower) and therefore fills with more symbols. It is the
+  same in both arms and in both modes, so nothing above depends on it, but it is why the two
+  views disagree. It is a separate gap from roadmap item A3, and not evidence about it either
+  way: A3 is about making history capping use the resolved model's `chars_per_token`, whereas
+  this is the offline probe having no resolved model to calibrate against, because `_stage_arm`
+  builds a bare `PipelineContext`. A3 stays open and unchanged by this run.
+- **Live order is asserted, not printed.** A session record deliberately carries no symbol
+  list, so within an arm the order fingerprint is (`primary_symbol`, `symbols_selected`,
+  `estimated_tokens`, `prompt_tokens`) plus the counters, and those matched to the unit. The
+  ordered supporting-symbol list itself was not recorded live, so ordered determinism is what
+  the offline probe's `symbols=` lists and the ranking unit tests establish, not this run.
+- **One preliminary pass is kept aside, not counted.** The first eviction-disabled-arm run
+  finished before the worktree's `logs\` directory had been confirmed created; its three
+  records, its envelope (`*.aborted1.*`) and its answers are retained under
+  `logs\b3\20261025\evict\` and `build\b3\20261025\`; its three records scored 9/9 on the same
+  observable fingerprint the rerun's disabled arm reports - 11 symbols, `estimated_tokens`
+  4091, 3551 prompt tokens, the same primary.
+  The reported figures are the rerun's, taken with both arms writing their own isolated log
+  from the first request.
+- Sampling was not pinned (the harness sends no temperature), both gateways of a pair stayed
+  up together against one backend, and each arm was measured one at a time - so latency is
+  comparable inside a pair and not across pairs. `--reasoning-model` is not part of what
+  `ab_launcher` renders; at `--max-tokens 8192` the warning it drives is inert, so the
+  rendered command was run as rendered.
+- The marker comment is the only thing that made these trees differ from a clean checkout.
+  It is comment-only, it was reverted with `git checkout -- <that one file>` after each pair,
+  the worktree was verified clean before `git worktree remove` deleted it, and it was never
+  committed.
+
+**Decision: B3 passes every gate and is closed.** Eviction/guard `9/9` against a gate of
+`at least 8/9`, with the disabled arm at its documented `9/9`; gain `8/12` against `at
+least 8/12`, with the disabled arm at `3/12`; negative control intact at `9/9` in both arms
+with a real context difference and no score difference; the observable context fingerprint
+identical across the three repeats of all six arms, ordered-symbol identity being an offline
+and unit-test claim rather than a live one; no error, timeout, budget violation, token
+explosion or style regression in any of the eighteen requests, and no unexplained or material
+latency regression at that sample size - 9.7 s more across the nine enabled requests in
+aggregate, 4.24 s of it the counterfactual build. The promotion guard therefore survives the
+builder's own promotions, the serializer and a live provider request - the claim B1 made
+offline and B2 pinned in code, now measured. What it does not authorize is the default: the
+flag stays off,
+`RankingConfig.WEIGHT_CHANGED_FILE` stays `+25`, and the counterfactual build still costs
+about 450 ms of every enabled request, so B4 has to come before any default-on decision.
 
 ## Full Quality Baseline
 
