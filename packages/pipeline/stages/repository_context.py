@@ -66,6 +66,16 @@ with the gateway's startup prime and its background refresher, no request path
 ever reaches Git, and a source that raises degrades to an empty set instead of
 breaking the request.  Only counts are logged - never paths.
 
+The bonus is bounded in the ranking engine, not here: a promoted symbol may not
+push the best candidate that earned its place without the bonus out of the
+positions the context renders with source text, because a symbol past them keeps
+its signature and docstring but loses the source body or preview those facts are
+read from.  See
+``packages.context.ranking.RankingEngine._protect_promotion_anchor`` and roadmap
+Phase B1.  This stage measures the result; it does not decide it - the counters
+below still compare the two composed packages, so a guard that restores a symbol
+shows up as a different context, exactly as a reorder does.
+
 Promotion observability
 ~~~~~~~~~~~~~~~~~~~~~~~
 

@@ -95,19 +95,58 @@ them.
 
 #### Phase B: Settle Change-Aware Ranking
 
-1. **B1 - choose one safety rule offline.** Compare narrowly defined rules with
-   `--changed-file-probe` and `--changed-file-sweep`. Candidates include a
-   reserved budget for the unboosted primary module, a cap on changed-module
-   budget share, or a module-diversity constraint. Merely retaining one symbol
-   from a query-matching module is not sufficient if serialization still omits
-   the facts that module contributed. The offline target is to retain all `3/3`
-   eviction-case facts while retaining all `4/4` gain-case facts.
+1. **B1 - choose one safety rule offline - DONE (2026-10-25).** Chosen rule: a
+   promoted changed-file symbol may not push the best candidate that earned its
+   place without the bonus out of the ranked positions the context actually
+   renders with source text. `RankingEngine.rank` restores that symbol to the
+   last such position - `RankingConfig.PROMOTION_ANCHOR_SLOTS`, currently two:
+   the primary body and the shared supporting preview `ContextBuilder` spends -
+   and it does so only when the symbol's module matched the query, it held one of
+   those positions with the bonus off, and the bonus is what moved it out. The
+   candidate is found by scanning every symbol the promotion passed over, not by
+   looking only at the first one, because the first can still hold its own slot
+   while a later one has lost the only slot it had. A dirty file may still win the
+   primary, which is what the signal is for. The first cut of the guard looked only
+   at the first symbol the bonus did not touch, and review found the shape that
+   left unprotected: a query-matching symbol pushed out of the prefix from behind
+   an untouched one that kept its own slot. The scan is what closes it, pinned by
+   `test_promotion_guard_scans_past_the_candidate_it_did_not_promote` in
+   `tests/context/test_changed_file_ranking.py`.
+   Measured offline on this checkout's index at the configured 4096 tokens: the
+   eviction case now holds `3/3` facts with `facts_lost` empty (it held `0/3`, all
+   three lost, before the rule) while the gain case still reaches `4/4` and
+   reports `MOVE`, the negative control and the path-token gate case are unchanged
+   row for row, and the smallest flip weight of every one of the 12 fixed sweep
+   queries is identical. Rejected: a cap on how much of the selected context
+   promotion may occupy - at every cap tried the eviction case stayed at `0/3`,
+   and the looser forms also changed the primary of the documented path-token
+   case - and plain retention without a content slot, which measured `1/3`: a
+   symbol that survives the reorder past the rendered prefix is still in the
+   context, still named with its signature and docstring, and without the
+   source body its facts are read from - exactly the failure this item warned
+   about. `RankingConfig.WEIGHT_CHANGED_FILE` stays `+25` and the feature stays
+   off by default; no counter or field changed meaning, and `changed_symbols_*`
+   and `changed_context_differs` read the same values they read before. One
+   consequence for B3: the eviction pair is no longer expected to separate the
+   two arms by what is missing from the enabled context - offline it now measures
+   that the guard holds - so the live eviction run becomes a check that the rule
+   survives serialization, and `gains_the_changed_file` /
+   `explain_changed_files_history_cap` stays the discriminating pair.
 2. **B2 - pin the selected invariant.** Add focused regression coverage in
    `tests/context/test_changed_file_ranking.py` and
    `tests/observability/test_quality_harness.py`, which already exercise both
-   arms of the registered pairs.
+   arms of the registered pairs. B1 added the rule's own unit cases and updated
+   the three A/B assertions that pinned the pre-rule eviction loss, and review
+   added the scan case the first cut missed, which is B1 correctness and already
+   pinned by `test_promotion_guard_scans_past_the_candidate_it_did_not_promote`;
+   what remains
+   is broader coverage of the guard's edges - more than one untouched
+   query-matching module competing for the same slot, the guard's interaction with
+   the builder's query-specific promotions, and the counterfactual baseline the
+   stage builds without `changed_modules` (which the guard must not move).
 3. **B3 - validate live.** Re-run the eviction, gain, and negative-control pairs
-   with three repeats per arm in a controlled isolated worktree. Directional
+   with three repeats per arm in a controlled isolated worktree, with the B1 rule
+   in the build being measured. Directional
    gates are eviction at least `8/9`, gain at least `8/12`, an intact negative
    control, deterministic context inside each arm, and no unexplained latency,
    token, quality, or style regression. These pair results validate the rule;
@@ -365,8 +404,11 @@ included, deletions excluded), `apps/gateway/main.py` captures it once during
 startup and keeps it warm through `packages.repository.changed_files_refresh`,
 and `RankingEngine` adds one flat `+25` bonus
 (`RankingConfig.WEIGHT_CHANGED_FILE`) to symbols in those modules only when they
-already carry a query-match or relationship reason. No new Git command, no new
-pipeline stage, no new persisted artifact.
+already carry a query-match or relationship reason. Since Phase B1 that bonus is
+bounded by a promotion guard, which keeps a promoted dirty file from pushing the
+best un-promoted symbol of a query-matching module out of the positions the
+context renders with source text. No new Git command, no new pipeline stage, no
+new persisted artifact.
 Enable with `APP_REPOSITORY_CONTEXT_CHANGED_FILES_ENABLED=true`;
 `APP_REPOSITORY_CONTEXT_CHANGED_FILES_TTL_SECONDS` (default `0`) is the only
 way to let the snapshot refresh after startup, and the refresh never runs in a

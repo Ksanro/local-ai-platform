@@ -202,6 +202,23 @@ class RankingConfig:
       shipped behavior; ``--changed-file-weight`` compares the two without
       editing this file.  See the 2026-10-11 note in ``docs/STATUS.md``."""
 
+    # Change-aware promotion guard (roadmap Phase B1)
+    PROMOTION_ANCHOR_SLOTS: int = 2
+    """Ranked positions that reach the prompt with source text.
+
+    ``ContextBuilder._enrich_with_source_data`` gives the first candidate its
+    full source body and spends the shared supporting preview budget on the
+    next.  A symbol pushed past this many positions is still selected, still
+    counted, still named and still carries its signature and docstring, but it
+    loses the source body or preview - which is the text implementation facts are
+    read from, so those facts can become unavailable.  ``RankingEngine`` uses
+    this as the line the working-tree bonus may not push a symbol over: the dirty
+    file may win the primary slot - that is what the bonus is for - and it may
+    take the first supporting slot, but it may not be the reason the best symbol
+    the query matched without the bonus stops contributing source text to the
+    prompt.  See ``ranking.RankingEngine.rank``.
+    """
+
     # ------------------------------------------------------------------
     # Penalty factors (negative scores)
     # ------------------------------------------------------------------

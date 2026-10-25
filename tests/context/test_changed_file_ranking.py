@@ -10,11 +10,17 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 
+import pytest
+
 from packages.context.builder import ContextBuilder
 from packages.context.models import ContextCandidate, ContextQuery
 from packages.context.ranking import RankingEngine
 from packages.context.ranking_config import RankingConfig
-from packages.context.scoring import RankingReason, carries_query_relevance
+from packages.context.scoring import (
+    RankingReason,
+    carries_query_relevance,
+    module_matches_query,
+)
 from packages.repository.index.models import RepositoryIndex, RepositoryStatistics
 from packages.repository.symbols.models import Module, Symbol, SymbolType
 
@@ -502,3 +508,414 @@ def test_a_dirty_file_alone_never_promotes_a_symbol_at_any_weight() -> None:
 
         assert ranked[-1].qualified_name == FILE_ONLY_SYMBOL
         assert RankingReason.CHANGED_FILE not in ranked[-1].reasons
+
+
+# ------------------------------------------------------------------
+# The promotion guard (roadmap Phase B1)
+#
+# The bonus is a reorder, and a reorder can cost more than position.
+# ``ContextBuilder`` renders the first candidate with its full source body and
+# spends the shared supporting preview on the second, so a symbol pushed past
+# ``RankingConfig.PROMOTION_ANCHOR_SLOTS`` loses the source text its
+# implementation facts are read from: it is still selected, still counted and
+# still named with its signature and docstring, but its body is gone from the
+# prompt.  The guard is what stops a dirty file from being the reason for that:
+# the dirty file
+# may win the primary slot, and it may take the first supporting slot, and it may
+# not erase the best symbol the query matched without it.
+#
+# ``evicts_the_asked_about_file`` in ``scripts/quality_harness.py`` measures the
+# same rule against this repository's real index; what is pinned here is the
+# condition the guard tests, so a change to it cannot hide behind one measurement.
+# ------------------------------------------------------------------
+
+GUARD_QUERY = "widget alpha beta gamma"
+GUARD_ANCHOR = "modules/alpha/beta.WidgetStore"
+GUARD_ANCHOR_MODULE = "modules/alpha/beta"
+GUARD_PROMOTED_MODULE = "modules/beta/gamma"
+GUARD_PROMOTED = (
+    "modules/beta/gamma.WidgetOne",
+    "modules/beta/gamma.WidgetTwo",
+    "modules/beta/gamma.WidgetThree",
+)
+
+#: The same shape on a file the question never pointed at: the clean symbol leads
+#: without the bonus, the promotion passes over it, and its module path contains
+#: no query token, so there is nothing for the guard to preserve.
+QUIET_QUERY = GUARD_QUERY
+QUIET_ANCHOR = "modules/a/quiet.Widget"
+QUIET_ANCHOR_MODULE = "modules/a/quiet"
+QUIET_PROMOTED_MODULE = "modules/beta"
+QUIET_PROMOTED = (
+    "modules/beta.RunnerOne",
+    "modules/beta.RunnerTwo",
+    "modules/beta.RunnerThree",
+)
+
+
+def _guard_candidates() -> list[ContextCandidate]:
+    """Three promoted symbols and one clean symbol that leads without the bonus."""
+    return [_candidate(GUARD_ANCHOR, GUARD_ANCHOR_MODULE)] + [
+        _candidate(name, GUARD_PROMOTED_MODULE) for name in GUARD_PROMOTED
+    ]
+
+
+def _rank_guard(
+    query: str = GUARD_QUERY,
+    candidates: list[ContextCandidate] | None = None,
+    changed: frozenset[str] = frozenset(),
+) -> list[ContextCandidate]:
+    """Rank a guard fixture through a plain engine."""
+    return RankingEngine(changed_modules=changed).rank(
+        query, _guard_candidates() if candidates is None else candidates
+    )
+
+
+def _names(candidates: list[ContextCandidate]) -> list[str]:
+    """The order a ranking produced, as qualified names."""
+    return [candidate.qualified_name for candidate in candidates]
+
+
+def _guard_index() -> RepositoryIndex:
+    """A tiny index mirroring the guard fixture, for the builder path."""
+    names = (GUARD_ANCHOR,) + GUARD_PROMOTED
+    modules = (GUARD_ANCHOR_MODULE, GUARD_PROMOTED_MODULE)
+    symbols = [
+        Symbol(
+            id=name,
+            name=name.rsplit(".", 1)[-1],
+            qualified_name=name,
+            symbol_type=SymbolType.CLASS,
+            module=GUARD_ANCHOR_MODULE if name == GUARD_ANCHOR else GUARD_PROMOTED_MODULE,
+            lineno=1 + index,
+        )
+        for index, name in enumerate(names)
+    ]
+    indexed: dict[str, Module] = {
+        module: Module(
+            path=module,
+            symbols=[s for s in symbols if s.module == module],
+        )
+        for module in modules
+    }
+    return RepositoryIndex(
+        modules=indexed,
+        _symbols=symbols,
+        _relationships=[],
+        _statistics=RepositoryStatistics(
+            module_count=len(indexed),
+            class_count=len(symbols),
+            function_count=0,
+            method_count=0,
+            symbol_count=len(symbols),
+        ),
+    )
+
+
+
+def test_guard_fixture_holds_the_lead_without_the_bonus() -> None:
+    """Guard the fixture: one content slot to lose, and a block to lose it to."""
+    clean = _rank_guard()
+    boosted = _rank_guard(changed=frozenset({GUARD_PROMOTED_MODULE}))
+
+    # Without the bonus the clean symbol leads, so it holds a content slot.
+    assert _names(clean)[0] == GUARD_ANCHOR
+    assert len({candidate.score for candidate in clean}) == 1
+    # With it, the dirty module's three symbols clear the same bar, so the
+    # promotion alone is what pushes the leader past the rendered prefix.
+    assert RankingReason.CHANGED_FILE in boosted[0].reasons
+    assert module_matches_query(clean[0].reasons)
+
+
+def test_promotion_guard_returns_the_passed_over_symbol_to_a_content_slot() -> None:
+    """The rule itself: the primary may move, the module may not vanish."""
+    ranked = _rank_guard(changed=frozenset({GUARD_PROMOTED_MODULE}))
+
+    # The dirty file wins the primary slot, which is what the bonus is for.
+    assert ranked[0].qualified_name == GUARD_PROMOTED[0]
+    # The symbol the promotion passed over is back inside the rendered prefix.
+    assert ranked[1].qualified_name == GUARD_ANCHOR
+    # A restore, not a reset: take the anchor out and the order is the one the
+    # query produced before the bonus touched anything.
+    assert [n for n in _names(ranked) if n != GUARD_ANCHOR] == [
+        n for n in _names(_rank_guard()) if n != GUARD_ANCHOR
+    ]
+    assert sorted(_names(ranked)) == sorted(_names(_rank_guard()))
+
+
+def test_promotion_guard_never_runs_when_nothing_was_promoted() -> None:
+    """A disabled feature and a clean tree rank exactly as they did before."""
+    off = _rank_guard()
+    clean_tree = _rank_guard(changed=frozenset())
+    untouched_file = _rank_guard(changed=frozenset({"modules/nothing/here"}))
+
+    assert _names(off) == _names(clean_tree) == _names(untouched_file)
+    assert all(RankingReason.CHANGED_FILE not in c.reasons for c in off)
+
+
+def test_promotion_guard_leaves_a_module_the_query_never_pointed_at_alone() -> None:
+    """``module matches the query`` is a condition, not a search for a victim.
+
+    The same arithmetic as the case above - the clean symbol leads without the
+    bonus and the promotion passes over it - on a file whose path holds no query
+    token.  Nothing the question asked for is being lost here, so the order the
+    bonus produced stands.
+    """
+    candidates = [_candidate(QUIET_ANCHOR, QUIET_ANCHOR_MODULE)] + [
+        _candidate(name, QUIET_PROMOTED_MODULE) for name in QUIET_PROMOTED
+    ]
+    clean = _rank_guard(QUIET_QUERY, candidates)
+    boosted = _rank_guard(QUIET_QUERY, candidates, frozenset({QUIET_PROMOTED_MODULE}))
+
+    assert _names(clean)[0] == QUIET_ANCHOR
+    assert module_matches_query(clean[0].reasons) is False
+    assert _names(boosted)[0] == QUIET_PROMOTED[0]
+    assert _names(boosted).index(QUIET_ANCHOR) == len(candidates) - 1
+
+
+def test_promotion_guard_is_deterministic_and_leaves_the_counter_alone() -> None:
+    """Same input, same order - and the count still means what it meant.
+
+    The guard is a reorder of the same candidates, so it must not change how many
+    of them the bonus touched: ``changed_file_bonus_count`` is how the stage
+    decides whether a comparison context can differ at all.
+    """
+    engine = RankingEngine(changed_modules=frozenset({GUARD_PROMOTED_MODULE}))
+    first = _names(engine.rank(GUARD_QUERY, _guard_candidates()))
+    second = _names(engine.rank(GUARD_QUERY, _guard_candidates()))
+
+    assert first == second
+    assert engine.changed_file_bonus_count == len(GUARD_PROMOTED)
+
+
+def test_builder_keeps_the_protected_symbol_in_the_selected_context() -> None:
+    """The guard reaches the assembled context, not only the ranked list.
+
+    ``test_builder_does_not_grow_the_context`` says the signal reorders; this says
+    what the reorder is for.  Under the same fixture the dirty module's symbols
+    take the primary and the clean symbol keeps the first supporting slot, so the
+    module the query matched is still in the context the builder selects.
+    """
+    index = _guard_index()
+    query = ContextQuery(
+        text=GUARD_QUERY,
+        max_symbols=10,
+        max_modules=10,
+        relationship_expansion=False,
+    )
+    baseline = ContextBuilder(index).build(query)
+    promoted = ContextBuilder(
+        index, changed_modules=frozenset({GUARD_PROMOTED_MODULE})
+    ).build(query)
+
+    assert baseline.candidates[0].qualified_name == GUARD_ANCHOR
+    assert _names(promoted.candidates)[0] != GUARD_ANCHOR
+    assert _names(promoted.candidates)[1] == GUARD_ANCHOR
+    assert GUARD_ANCHOR_MODULE in promoted.selected_modules
+
+
+
+def test_promotion_guard_does_not_reach_for_a_symbol_that_had_no_content_slot() -> None:
+    """The guard repairs a loss the bonus caused, and nothing else.
+
+    Here the clean symbol sits behind the promoted block even with the working
+    tree empty, so the third position is where the query put it and not where the
+    bonus pushed it.  Pulling it forward would be a different rule - one about
+    module spread rather than about the working tree - and the gate this whole
+    feature is built around is that file state may only break ties.
+    """
+    behind = _candidate("modules/alpha/beta.Runner", GUARD_ANCHOR_MODULE)
+    candidates = [_candidate(name, GUARD_PROMOTED_MODULE) for name in GUARD_PROMOTED]
+    candidates.append(behind)
+    clean = _rank_guard(GUARD_QUERY, candidates)
+    boosted = _rank_guard(GUARD_QUERY, candidates, frozenset({GUARD_PROMOTED_MODULE}))
+
+    assert module_matches_query(behind.reasons)
+    assert _names(clean).index(behind.qualified_name) >= RankingConfig.PROMOTION_ANCHOR_SLOTS
+    assert _names(boosted) == _names(clean)
+
+
+def test_promotion_guard_reads_the_same_tie_break_the_ranking_does() -> None:
+    """An exact tie is the case the signal exists for, and the guard's edge.
+
+    Two candidates level after the bonus are ordered by the documented tie-break,
+    so which of them holds a content slot on a clean tree - and so which of them
+    the guard restores - is decided by the same rule, not by insertion order.
+    """
+    tied = _candidate("modules/alpha/beta.WidgetAardvark", GUARD_ANCHOR_MODULE)
+    candidates = [tied] + [
+        _candidate(name, GUARD_PROMOTED_MODULE) for name in GUARD_PROMOTED
+    ]
+    boosted = _rank_guard(GUARD_QUERY, candidates, frozenset({GUARD_PROMOTED_MODULE}))
+
+    # The name that sorts first leads without the bonus, so it is the anchor the
+    # guard restores, while the dirty file keeps the primary the bonus won for it.
+    assert _names(boosted)[0] == GUARD_PROMOTED[0]
+    assert _names(boosted)[1] == tied.qualified_name
+# ------------------------------------------------------------------
+# The shape the guard must not walk past
+#
+# The published reproduction of the guard's own failure mode is a ranking whose
+# first candidate without the bonus is not the candidate the promotion displaced:
+#
+#     clean tree     0  a symbol whose module the query never named
+#                      1  the best symbol whose module the query did name
+#                      2  a symbol in the dirty file
+#                      3  another symbol in the dirty file
+#     changed tree   0  the same symbol, untouched
+#                      1  the first dirty symbol
+#                      2  the second dirty symbol
+#                      3  the symbol that used to hold the second content slot
+#
+# Examining only the first candidate the bonus did not touch finds position 0,
+# sees that it is still inside the rendered prefix, and stops there - so the loss
+# at position 3 is never repaired.  The guard scans the whole ranking instead,
+# and this is the case that scan exists for.
+# ------------------------------------------------------------------
+
+SHAPE_QUERY = "widget alpha beta gamma"
+SHAPE_LEAD = "modules/north/west.Widget"
+SHAPE_LEAD_MODULE = "modules/north/west"
+SHAPE_ANCHOR = "modules/alpha/beta.Depot"
+SHAPE_ANCHOR_MODULE = "modules/alpha/beta"
+SHAPE_BYSTANDER = "modules/north/alpha.Widget"
+SHAPE_BYSTANDER_MODULE = "modules/north/alpha"
+SHAPE_DIRTY_MODULE = "modules/beta"
+SHAPE_PROMOTED = ("modules/beta.WidgetOne", "modules/beta.WidgetTwo")
+
+
+def _shape_candidate(
+    qualified_name: str,
+    module: str,
+    *,
+    docstring: str = "",
+    exported: bool = False,
+    source: str = "",
+) -> ContextCandidate:
+    """Build a candidate the query seats at a chosen distance from the lead.
+
+    ``score_candidate`` pays +100 for a name segment equal to a query token (a
+    path component counts), +10 for every token appearing in the name or the
+    module path, +20 more once two module path tokens match, +5 for a public
+    name, +10 for a class, +10 for a docstring, +15 for a package export and +15
+    for a short body.  That is how the five symbols below land at 165, 155, 145
+    and two at 135 - and 135 is what the working tree lifts to 160.
+    """
+    return ContextCandidate(
+        symbol_id=qualified_name,
+        qualified_name=qualified_name,
+        module=module,
+        symbol_type=SymbolType.CLASS.value,
+        docstring=docstring,
+        is_in_init_py=exported,
+        source=source,
+    )
+
+
+def _shape_candidates() -> list[ContextCandidate]:
+    """The reproduced shape: a displaced symbol behind an untouched one."""
+    return [
+        _shape_candidate(
+            SHAPE_LEAD,
+            SHAPE_LEAD_MODULE,
+            docstring="No token of the query names this path.",
+            exported=True,
+            source="class Widget:\n    pass",
+        ),
+        _shape_candidate(SHAPE_ANCHOR, SHAPE_ANCHOR_MODULE),
+        _shape_candidate(
+            SHAPE_BYSTANDER,
+            SHAPE_BYSTANDER_MODULE,
+            docstring="One path token, so never a content slot of its own.",
+        ),
+        _shape_candidate(SHAPE_PROMOTED[0], SHAPE_DIRTY_MODULE),
+        _shape_candidate(SHAPE_PROMOTED[1], SHAPE_DIRTY_MODULE),
+    ]
+
+
+def test_promotion_guard_scans_past_the_candidate_it_did_not_promote(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The protected symbol is the one that lost a slot, not the one first in line.
+
+    Every promise the rule makes is checked on this one fixture: a candidate the
+    bonus never touched keeps the primary the query gave it, the dirty file still
+    moves forward, the symbol whose module the question named is restored inside
+    the positions that reach the prompt with source text, the candidate behind it
+    is left alone because it never held a content slot, and the promotion itself
+    is neither undone nor recounted.
+    """
+    engine = RankingEngine(changed_modules=frozenset({SHAPE_DIRTY_MODULE}))
+    clean = RankingEngine().rank(SHAPE_QUERY, _shape_candidates())
+    guarded = engine.rank(SHAPE_QUERY, _shape_candidates())
+    repeated = engine.rank(SHAPE_QUERY, _shape_candidates())
+
+    # The fixture is the published shape, and it holds before anything else here
+    # is asserted: the lead is unpromoted and says nothing of the query's modules,
+    # and the anchor leads the module the question did name.
+    assert _names(clean) == [
+        SHAPE_LEAD,
+        SHAPE_ANCHOR,
+        SHAPE_BYSTANDER,
+        SHAPE_PROMOTED[0],
+        SHAPE_PROMOTED[1],
+    ]
+    assert RankingReason.CHANGED_FILE not in clean[0].reasons
+    assert module_matches_query(clean[0].reasons) is False
+    assert module_matches_query(clean[1].reasons)
+
+    # With the guard switched off this is exactly the ranking that reproduced the
+    # bug: the first candidate without the bonus is still at position 0 - where a
+    # look-ahead that stops at the first unpromoted candidate stops - while the
+    # symbol the query pointed its module at has been pushed out of the prefix it
+    # held on a clean tree, from slot 1 to position 3.
+    monkeypatch.setattr(
+        RankingEngine,
+        "_protect_promotion_anchor",
+        lambda self, ranked: ranked,
+    )
+    displaced = RankingEngine(changed_modules=frozenset({SHAPE_DIRTY_MODULE})).rank(
+        SHAPE_QUERY, _shape_candidates()
+    )
+    assert _names(displaced) == [
+        SHAPE_LEAD,
+        SHAPE_PROMOTED[0],
+        SHAPE_PROMOTED[1],
+        SHAPE_ANCHOR,
+        SHAPE_BYSTANDER,
+    ]
+    assert RankingReason.CHANGED_FILE not in displaced[0].reasons
+    assert _names(displaced).index(SHAPE_ANCHOR) >= RankingConfig.PROMOTION_ANCHOR_SLOTS
+
+    # What the scan does with that list.  The untouched candidate keeps the
+    # primary, the dirty file keeps the forward move the bonus won for it, and the
+    # displaced symbol is back inside the prefix the prompt renders source from.
+    assert _names(guarded)[0] == SHAPE_LEAD
+    assert _names(guarded).index(SHAPE_ANCHOR) < RankingConfig.PROMOTION_ANCHOR_SLOTS
+    assert _names(guarded).index(SHAPE_PROMOTED[0]) < _names(clean).index(
+        SHAPE_PROMOTED[0]
+    )
+    assert _names(guarded).index(SHAPE_PROMOTED[1]) < _names(clean).index(
+        SHAPE_PROMOTED[1]
+    )
+    assert RankingReason.CHANGED_FILE in guarded[2].reasons
+
+    # A candidate that never held a content slot is not pulled forward by the
+    # scan either: that would be a module-spread rule, not a working-tree one.
+    assert _names(guarded)[4] == SHAPE_BYSTANDER
+
+    # The guard reorders the same candidates and changes nothing else about them.
+    assert sorted(_names(guarded)) == sorted(_names(clean))
+    assert engine.changed_file_bonus_count == len(SHAPE_PROMOTED)
+    clean_scores = {candidate.qualified_name: candidate.score for candidate in clean}
+    for candidate in guarded:
+        bonus = (
+            RankingConfig.WEIGHT_CHANGED_FILE
+            if RankingReason.CHANGED_FILE in candidate.reasons
+            else 0
+        )
+        assert candidate.score == clean_scores[candidate.qualified_name] + bonus
+
+    # And it is the same ranking every time it is asked for - the pass above ran
+    # before the guard was switched off below, so it is the guarded order twice.
+    assert _names(repeated) == _names(guarded)

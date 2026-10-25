@@ -212,7 +212,9 @@ snapshot behind `scripts/git_change_snapshot.py` - no new Git command runs, and
 each snapshot is bounded by a 30 second command timeout. Only symbols that
 already carry a query-match or relationship reason can win the bonus; a public
 symbol the query never touched keeps its position no matter how dirty its file
-is. The bonus itself is `RankingConfig.WEIGHT_CHANGED_FILE` (`+25` on the default
+is. The bonus may not, however, be the reason a module the question pointed at
+stops contributing anything to the prompt - see "The Phase B1 promotion guard"
+below. The bonus itself is `RankingConfig.WEIGHT_CHANGED_FILE` (`+25` on the default
 profile). Its size is an open decision, not a settled one: between two candidates
 of equal relevance any nonzero value decides the order, so the size buys nothing
 there, and against a candidate that only reached the query by a name segment the
@@ -267,16 +269,18 @@ cases sit on both sides of it.
   `packages/context/builder.py` are in the text of both arms. It is the **negative
   control**, and both arms of its live pair are expected to score 3/3.
 - `evicts_the_asked_about_file` (query `REPOSITORY_INDEX_BUILD_QUERY`, dirty
-  `packages/repository/index/models`): 14 symbols become 10,
-  `packages/repository/index/builder.py` leaves the context entirely, and all three
+  `packages/repository/index/models`): 14 symbols become 10 and the primary moves
+  into the dirty file. Before the guard described below it also lost the file:
+  `packages/repository/index/builder.py` left the context outright and its three
   implementation facts - `PythonAstExtractor`, `RelationshipRegistry`, and
-  `CallExtractor` - are available off and unavailable on, and none is named in the
-  question. It is the **discriminating** case and happens at `+1` exactly as at
-  `+25`. At 6144 tokens both files' symbols fit and `PythonAstExtractor` returns,
-  but the builder is supporting context and its constructor-body details
-  `RelationshipRegistry` and `CallExtractor` remain unavailable. Run the live A/B
-  at the configured `APP_REPOSITORY_CONTEXT_MAX_TOKENS=4096`, where all three facts
-  are lost, or it measures a different degree of loss.
+  `CallExtractor` - were available off and unavailable on, at `+1` exactly as at
+  `+25`, which is what made this the **discriminating** case. With the guard in
+  place the builder file's best symbol is restored to the supporting content slot
+  and `facts_lost` reads empty: the row is now the check that the guard holds, and
+  the offline pair no longer separates the arms by what is missing from them. The
+  case is still stated at 4096 - the stage default,
+  `APP_REPOSITORY_CONTEXT_MAX_TOKENS` and the EXPLAIN intent budget this probe
+  asks under, all of which agree.
 - `gains_the_changed_file` (query `HISTORY_CAP_QUERY`, dirty
   `packages/pipeline/history`): the other side of that ledger. The prompt is prose, it
   names no symbol, and the file it is about is the file the dirty marker puts in the
@@ -286,7 +290,76 @@ cases sit on both sides of it.
   three of the four facts live: the per-message budget, the envelope detector, and the
   truncation marker. `facts_lost` is empty, `changed_primary_promoted` is true because
   the primary moves *into* the changed file, and the verdict is the `MOVE` case above -
-  the pair whose two arms differ by a gain and not by a loss.
+  the pair whose two arms differ by a gain and not by a loss. The guard leaves this row
+  exactly as it was measured, which is the half of the target that says the bound must
+  not be bought with the benefit.
+
+### The Phase B1 promotion guard
+
+Change-aware ranking reorders within a fixed budget, and a reorder can cost more
+than position. `ContextBuilder` renders the first selected symbol with its full
+source body and spends the shared supporting preview on the next; past those two
+positions a symbol keeps its signature and docstring but loses the source body or
+preview, which is the text implementation facts are read from. So a dirty file with
+many symbols can leave a query-matching module *in* the selected set and still take
+its source text out of the prompt, which is what the eviction row above measured.
+The rule chosen on 2026-10-25 closes that, in `RankingEngine.rank`:
+
+> A promoted changed-file symbol may not push the best candidate that earned its
+> place without the bonus out of the ranked positions that reach the prompt with
+> source text.
+
+Concretely, and only when the bonus actually promoted something: the engine scans
+the ranked list from the first position outside that prefix and takes the strongest
+candidate carrying no `CHANGED_FILE` reason - the scan, rather than a look at the
+first candidate the bonus did not touch, matters because that first candidate can
+still hold its own slot while a later one has lost the only slot it had. A
+candidate is restored only when its module matched the query (`MODULE_MATCH` or
+`MODULE_TOKEN_MATCH`, the existing path-relevance reasons, so no second query
+parser), when it sat inside the first
+`RankingConfig.PROMOTION_ANCHOR_SLOTS` positions with the bonus off, and when the
+bonus is what moved it out; it is moved to the last of those positions. Everything
+else keeps the order the bonus produced. The dirty file still wins the primary -
+that is what the signal is for - and a symbol the promotion never touched, or never
+displaced, is left exactly where the query put it.
+
+| row | before the guard | after the guard |
+|---|---|---|
+| `named_in_query` | SWAP, `3/3 -> 3/3`, 3 -> 5 symbols | identical row |
+| `path_token_gate` | HOLD, primary held, 11 -> 19 symbols | identical row |
+| `evicts_the_asked_about_file` | SWAP, `3/3 -> 0/3`, all three facts lost | SWAP, `3/3 -> 3/3`, `facts_lost` empty, 14 -> 10 symbols |
+| `gains_the_changed_file` | MOVE, `1/4 -> 4/4` | identical row |
+| `dirty_file_the_query_ignores` | HOLD, `skipped_no_bonus`, arms identical | identical row |
+| a ranking whose first unpromoted symbol keeps its slot | unprotected: `other, dirty, dirty, asked-about, quiet` leaves the module the query named outside the rendered prefix | `other, asked-about, dirty, dirty, quiet`: the untouched symbol keeps the primary, the dirty file keeps its forward move, the named module is restored |
+| `--changed-file-sweep`, 12 queries | flips 15, 30, 40, 1, 10, 1, 21, 30, 1, 1, 1, 1 | identical, smallest flip 1, six ties |
+
+Counters are unchanged in both directions: the eviction arm still reads
+`changed_context_differs=true`, `changed_primary_promoted=true` and
+`changed_symbols_promoted=0`, because the guard moves a symbol, it does not add
+one. Two candidates were compared against this rule with the same probe and sweep.
+A **cap on the share of the selected context promotion may occupy** failed on
+substance: at caps of 1, 2 and 4 promoted symbols the eviction case stayed at
+`0/3` - the cap only limits how many dirty symbols get in front, and one is enough
+to push the asked-about file past the rendered prefix - and the looser form that
+took *any* untouched module-matching symbol rather than the best un-promoted one
+changed the primary of the documented `path_token_gate` row, which is a behaviour
+change in a case this task did not ask to touch. Plain **retention** - keeping the
+module's last symbol in the list, which is the narrowest reading of the rule - was
+implemented and measured too: it holds the gain case at `4/4` and brings the
+eviction case only to `1/3`, because the retained symbol sits outside the rendered
+prefix and reaches the prompt with its signature and docstring and without its
+source body, which is where these facts are written. That is why the guard protects
+a slot and not a membership.
+
+The guard is inert whenever the promotion is: with
+`APP_REPOSITORY_CONTEXT_CHANGED_FILES_ENABLED=false`, on a clean tree, and on a
+dirty file the query never matched, no candidate carries `CHANGED_FILE`, the pass
+is skipped and the ranking is bit-for-bit the one the disabled feature produces.
+It is also not visible to `--changed-file-sweep`, which ranks with no bonus at all.
+Whether it holds on a live pair of gateways is B3, not B1: the eviction pair is now
+expected to *tie* on the three facts in both arms, so that run reads as a check
+that the guard survives serialization rather than as the discriminating A/B, and
+`explain_changed_files_history_cap` carries that role alone.
 
 These modes are retrieval diagnostics, not the answer-quality claim. Each case above
 has its scored half in the normal probe set -
@@ -502,8 +575,10 @@ enabled run's session log, the `CHANGED-FILE PROMOTION` section of
 `changed_files_signal="ok"`, `changed_files_count >= 1` and
 `changed_context_differs=true`. That field is the one that decides it, because it
 compares the two composed packages including order: an arm can show
-`changed_symbols_promoted=0` and still have lost a whole file to eviction, which is
-exactly what the discriminating pair above does, so `changed_symbols_promoted` alone
+`changed_symbols_promoted=0` and still have had its whole order changed by the
+bonus - which is what the eviction pair now measures, since the guard restores the
+file it used to lose rather than preventing the reorder - so
+`changed_symbols_promoted` alone
 understates it. A record with `changed_symbols_selected > 0` and
 `changed_context_differs=false` is the other honest result - the bonus was present
 and changed nothing - and it means the two arms measured the same retrieval twice.

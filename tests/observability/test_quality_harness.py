@@ -1915,20 +1915,22 @@ def test_changed_file_ab_probe_facts_are_repository_truth() -> None:
     )
 
 
-def test_changed_file_ab_discriminating_case_loses_the_file_that_carries_the_facts(
+def test_changed_file_ab_discriminating_case_keeps_the_file_that_carries_the_facts(
     checked_out_index: RepositoryIndex,
 ) -> None:
     """The eviction pair, measured on this repository's index with the real stage.
 
     This is the regression behind ``explain_changed_files_repository_index``.  With
     the signal off the context carries ``packages/repository/index/builder.py``; with
-    ``packages/repository/index/models.py`` injected dirty at the shipped ``+25`` it
-    carries none of it, and every fact the probe scores lives in the file that left.
-    That is why this pair can separate two answers and the one it replaced could not:
-    the arms were asserted apart, here they are measured apart.
+    ``packages/repository/index/models.py`` injected dirty at the shipped ``+25`` the
+    dirty module takes the front of the order, and the Phase B1 promotion guard puts the
+    asked-about file's best symbol back into the supporting slot the preview budget is
+    spent on.  The primary still moves - that is what the bonus is for - and none of the
+    three facts the probe scores goes with it, which is the difference between this row
+    and the one that was measured here before the guard existed.
 
     The premise is checked on the way.  The arm with the bonus off must lead with the
-    asked-about file's class, or the changed arm losing it says nothing about a bonus
+    asked-about file's class, or the changed arm keeping it says nothing about a bonus
     that was never in the running.
     """
     case = resolve_changed_file_case("evicts_the_asked_about_file", CHANGED_FILE_PROBES)
@@ -1942,15 +1944,16 @@ def test_changed_file_ab_discriminating_case_loses_the_file_that_carries_the_fac
         expected.label for expected in REPOSITORY_INDEX_BUILD_FACTS
     )
 
-    # The changed arm: the dirty module's symbols take the front of the order and the
-    # budget runs out before the builder file is reached.
+    # The changed arm: the dirty module's symbols take the front of the order, and the
+    # guard spends one of the two slots the serializer renders with source text on the
+    # symbol the promotion passed over.
     assert changed_file_verdict(outcome) == "SWAP"
     assert outcome.changed_primary.startswith(f"{REPOSITORY_INDEX_BUILD_DIRTY_MODULE}.")
-    assert outcome.changed_facts == ()
-    assert outcome.facts_lost == outcome.baseline_facts
+    assert outcome.changed_facts == outcome.baseline_facts
+    assert outcome.facts_lost == ()
 
-    # The loss is eviction rather than the dirty file contributing anything new: a
-    # flat bonus reorders, and here reordering is what pushes a whole file out.
+    # The counters still read the shape this case was registered for: a flat bonus
+    # reorders, and here reordering is what the guard bounds.
     assert outcome.context_differs is True
     assert outcome.primary_promoted is True
     assert outcome.symbols_promoted == 0
@@ -2051,16 +2054,18 @@ def _module_of(qualified_name: str) -> str:
     return f"{prefix}{last.split('.', 1)[0]}"
 
 
-def test_changed_file_ab_discriminating_case_loses_symbols_not_just_position(
+def test_changed_file_ab_discriminating_case_keeps_symbols_not_just_position(
     checked_out_index: RepositoryIndex,
 ) -> None:
-    """The changed arm is not reordered - the fact-bearing symbols are gone.
+    """The changed arm is reordered, and the fact-bearing symbol is kept with content.
 
-    A symbol that stays in the context stays available, whatever position it holds, so
-    the loss is checked symbol by symbol instead of read off the primary: every symbol
-    of the asked-about file the off arm sent has to be absent from the on arm, and the
-    on arm may not be the off arm plus the dirty file.  Primary movement alone proves
-    nothing, which is the mistake the first version of this comparison made.
+    A symbol that stays in the context only stays available while the serializer still
+    renders something for it, so the pair is checked symbol by symbol instead of read off
+    the primary: the asked-about file must still be sent, it must be sent in one of the
+    two positions that carry source text, and the on arm may not be the off arm plus the
+    dirty file.  Primary movement alone proves nothing, which is the mistake the first
+    version of this comparison made; retention without a content slot proves nothing
+    either, which is what roadmap Phase B1 asked for the guard to close.
     """
     case = resolve_changed_file_case("evicts_the_asked_about_file", CHANGED_FILE_PROBES)
     stage_kwargs: dict[str, object] = {
@@ -2085,7 +2090,11 @@ def test_changed_file_ab_discriminating_case_loses_symbols_not_just_position(
 
     assert off_target, "the off arm must send the asked-about file's symbols"
     assert _module_of(off[0]) == REPOSITORY_INDEX_BUILD_TARGET_MODULE
-    assert on_target == []
+    # Exactly one symbol of the file survives, and it is the one the case says the
+    # question was about: the guard protects the best symbol the promotion passed over,
+    # not every symbol of the module.
+    assert on_target == [case.expected_primary]
+    assert on.index(case.expected_primary) == RankingConfig.PROMOTION_ANCHOR_SLOTS - 1
     assert set(on) < set(off)
 
 
@@ -2120,20 +2129,19 @@ def test_changed_file_ab_negative_control_moves_the_primary_and_loses_nothing(
     assert swapped.baseline_facts == swapped.changed_facts == labels
 
 
-def test_changed_file_ab_loss_is_not_removed_by_more_supporting_budget(
+def test_changed_file_ab_guard_holds_at_every_weight_and_budget(
     checked_out_index: RepositoryIndex,
 ) -> None:
-    """More budget restores symbols, not source detail omitted from support context.
+    """The guard is not a number to tune, and it is not a budget to widen.
 
-    The case ships stated at ``+25`` because that is the configured weight and at 4096
-    tokens because the stage default, ``APP_REPOSITORY_CONTEXT_MAX_TOKENS`` and the
-    EXPLAIN intent budget all say 4096.  A bonus of ``+1`` costs exactly what ``+25``
-    costs, so the number is not the lever.  At 6144 tokens all builder symbols fit
-    again, but they are supporting context: the class summary mentions its default
-    ``PythonAstExtractor``, while the constructor-body details
-    ``RelationshipRegistry`` and ``CallExtractor`` remain unavailable.  This pins
-    the distinction between a visible supporting symbol and implementation detail
-    that its representation genuinely does not carry.
+    The loss this test used to pin was weight-independent - a bonus of ``+1`` cost
+    exactly what ``+25`` costed - and only partly budget-dependent: at 6144 tokens the
+    asked-about file's symbols fit again and still carried one of the three facts,
+    because a symbol that lands past the two positions the serializer renders with
+    source text keeps its signature and docstring and loses its source body.  Phase
+    B1's guard puts the file's best symbol
+    into the second of those positions, so the facts survive at every weight and at
+    both budgets, and more budget is no longer the remedy being measured against.
     """
     case = resolve_changed_file_case("evicts_the_asked_about_file", CHANGED_FILE_PROBES)
     labels = tuple(expected.label for expected in REPOSITORY_INDEX_BUILD_FACTS)
@@ -2142,10 +2150,10 @@ def test_changed_file_ab_loss_is_not_removed_by_more_supporting_budget(
         checked_out_index, case, budget=CHANGED_FILE_AB_BUDGET_TOKENS + 2048
     )
 
-    assert at_one.facts_lost == labels
-    assert roomier.baseline_facts == labels
-    assert roomier.changed_facts == ("PythonAstExtractor",)
-    assert roomier.facts_lost == ("RelationshipRegistry", "CallExtractor")
+    assert at_one.facts_lost == ()
+    assert at_one.changed_facts == labels
+    assert roomier.baseline_facts == roomier.changed_facts == labels
+    assert roomier.facts_lost == ()
     assert roomier.baseline_symbols == roomier.changed_symbols
 
 

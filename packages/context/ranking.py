@@ -78,6 +78,24 @@ Scoring Factors
 | Public name (no underscore prefix) | +5 |
 | Symbol in a locally modified file | +25 (opt-in, only for symbols that already match the query) |
 
+**Change-aware promotion guard (opt-in, ranking v2 extension):**
+
+The working-tree bonus reorders, and a reorder can cost more than position.
+`ContextBuilder` renders the first candidate with its full source body and spends
+the shared supporting preview budget on the next, so a symbol pushed past
+`RankingConfig.PROMOTION_ANCHOR_SLOTS` loses the source text its implementation
+facts are read from; it is still selected, still counted and still carries its
+signature and docstring. `RankingEngine.rank` therefore restores the strongest
+candidate that did **not** receive the bonus and that the promotion knocked out
+of that prefix - out of it by the bonus, and with a module path that matched the
+query - to the last content-bearing position. The scan covers every unpromoted
+candidate rather than the first one, because the first may still hold a slot
+while a later one has lost its only one. A dirty file may win the primary slot,
+which is what the bonus is for; it may not be the reason a module the question
+pointed at stops contributing source text. The guard never runs when no candidate
+was promoted, so a disabled feature and an inert working tree rank exactly as
+before. See roadmap Phase B1 and `docs/live-gateway-runbook.md`.
+
 **Penalties (subtractive):**
 
 | Rule | Score |
@@ -133,6 +151,7 @@ from packages.context.ranking_config import RankingConfig
 from packages.context.scoring import (
     RankingReason,
     carries_query_relevance,
+    module_matches_query,
     normalise_query_text,
     score_candidate,
     score_relationship,
@@ -410,7 +429,132 @@ class RankingEngine:
         # duplicates by qualified_name) and return the final ranked list.
         ranked = self._dedup_candidates(ranked)
 
+        # Bound what the working-tree bonus can do to the symbols it did not
+        # promote.  Only ever reached when the bonus moved something.
+        if self._changed_file_bonus_count:
+            ranked = self._protect_promotion_anchor(ranked)
+
         return ranked
+
+    def _protect_promotion_anchor(
+        self,
+        ranked: list[_ContextCandidate],
+    ) -> list[_ContextCandidate]:
+        """Keep a promoted dirty file from erasing an untouched module.
+
+        The bonus is a reorder, and a reorder can cost more than position:
+        ``ContextBuilder`` renders the first candidate with its full source body
+        and spends the shared supporting preview on the next, so a symbol pushed
+        past ``RankingConfig.PROMOTION_ANCHOR_SLOTS`` loses the source text
+        implementation facts are read from.  It is still selected, still counted
+        and still carries its signature and docstring, but its body is gone.  A
+        dirty file may win the primary slot - that is what the signal is for -
+        and it may take the first supporting slot, but it may not be the reason a
+        module the question pointed at stops contributing source text.
+
+        The guard therefore scans the ranking for the candidates the promotion
+        displaced instead of stopping at the first candidate that did not receive
+        the bonus: that first candidate may well still hold a content slot while
+        a later one has lost the only slot it ever had.  A candidate is eligible
+        when all of these hold:
+
+        * it did not receive the bonus, so it is one the promotion passed over;
+        * its module path matched the query, which is the ``MODULE_MATCH`` /
+          ``MODULE_TOKEN_MATCH`` the scoring pass already recorded - the same
+          reasons the bonus gate reads, so no second query parser is involved;
+        * it sat inside the content-bearing prefix before the bonus was added;
+        * it sits outside that prefix now, and since unpromoted candidates cannot
+          pass one another, the positions it lost are positions a promoted
+          candidate took - the displacement is the bonus's, not someone else's.
+
+        Of the candidates that qualify, the strongest is protected.  The scan
+        follows the ranked order, and the ranked order of the candidates that did
+        not receive the bonus is the order their pre-bonus scores put them in, so
+        the first one found is the one with the highest score before the bonus
+        was added and, level scores aside, the one the documented tie-break puts
+        first.  It is moved back to the last content-bearing position and
+        everything else keeps the order the bonus produced, so a ranking the
+        promotion did not change comes back untouched - as does a disabled
+        feature, which never reaches this method at all.
+
+        Args:
+            ranked: The final ranked candidate list.
+
+        Returns:
+            The same list, with the anchor restored when the rule fires.
+        """
+        slots = RankingConfig.PROMOTION_ANCHOR_SLOTS
+        anchor_at = next(
+            (
+                index
+                for index, candidate in enumerate(ranked)
+                if index >= slots
+                and RankingReason.CHANGED_FILE not in candidate.reasons
+                and module_matches_query(candidate.reasons)
+                and self._held_a_content_slot(ranked, candidate)
+            ),
+            None,
+        )
+        if anchor_at is None:
+            return ranked
+
+        anchor = ranked[anchor_at]
+        ranked.pop(anchor_at)
+        ranked.insert(slots - 1, anchor)
+        return ranked
+
+    @classmethod
+    def _held_a_content_slot(
+        cls,
+        ranked: list[_ContextCandidate],
+        anchor: _ContextCandidate,
+    ) -> bool:
+        """Whether ``anchor`` sat in the content-bearing prefix without the bonus.
+
+        The anchor itself never received the bonus, and no other unpromoted
+        candidate can pass it, so the order the same query produced on a clean
+        tree is rebuilt by taking the flat working-tree weight back off every
+        candidate that carries it and comparing what is left with the documented
+        tie-break.  A promoted candidate that only cleared
+        ``MINIMUM_CANDIDATE_SCORE`` because of the bonus was not ranked at all on
+        a clean tree, so it is not counted as having held one of its slots.
+
+        Args:
+            ranked: The final ranked candidate list.
+            anchor: The candidate the guard would protect.
+
+        Returns:
+            ``True`` when fewer than ``PROMOTION_ANCHOR_SLOTS`` of the other
+            candidates outranked the anchor before the bonus was added.
+        """
+        weight = RankingConfig.WEIGHT_CHANGED_FILE
+        minimum = RankingConfig.MINIMUM_CANDIDATE_SCORE
+        anchor_key = cls._tie_break_key(anchor)
+        outranking = 0
+        for candidate in ranked:
+            if candidate is anchor:
+                continue
+            score = candidate.score
+            if RankingReason.CHANGED_FILE in candidate.reasons:
+                score -= weight
+                if score < minimum:
+                    continue
+            if score > anchor.score or (
+                score == anchor.score and cls._tie_break_key(candidate) < anchor_key
+            ):
+                outranking += 1
+        return outranking < RankingConfig.PROMOTION_ANCHOR_SLOTS
+
+    @staticmethod
+    def _tie_break_key(candidate: _ContextCandidate) -> tuple[str, int, str]:
+        """The documented tie-break, without the score."""
+        return (
+            candidate.qualified_name,
+            -RankingConfig.SYMBOL_TYPE_RANK.get(
+                str(candidate.symbol_type).upper(), 0
+            ),
+            candidate.module,
+        )
 
     def _expand_with_relationships(
         self,

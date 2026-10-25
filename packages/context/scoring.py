@@ -208,6 +208,35 @@ def carries_query_relevance(reasons: Iterable[RankingReason]) -> bool:
     return any(reason in QUERY_RELEVANCE_REASONS for reason in reasons)
 
 
+#: Reasons that say the candidate's **module path** matched the query, as
+#: opposed to its name or a relationship to the primary symbol.
+MODULE_MATCH_REASONS: frozenset[RankingReason] = frozenset(
+    {
+        RankingReason.MODULE_MATCH,
+        RankingReason.MODULE_TOKEN_MATCH,
+    }
+)
+
+
+def module_matches_query(reasons: Iterable[RankingReason]) -> bool:
+    """Return whether the candidate's module path matched a query token.
+
+    This is the weaker half of name matching - ``MODULE_MATCH`` is awarded when
+    a query token appears anywhere in the module path and
+    ``MODULE_TOKEN_MATCH`` when at least two path tokens do - and it is the
+    condition the change-aware promotion guard asks about: a symbol whose file
+    the question pointed at must keep reaching the prompt with its source text
+    whatever the working tree looks like.
+
+    Args:
+        reasons: The reasons attached to a candidate.
+
+    Returns:
+        ``True`` when a module-path reason is present.
+    """
+    return any(reason in MODULE_MATCH_REASONS for reason in reasons)
+
+
 # ------------------------------------------------------------------
 # Query normalisation
 # ------------------------------------------------------------------

@@ -3,7 +3,17 @@
 This file is the current runtime snapshot. It intentionally describes only
 what matters for the live gateway path and calls out dormant code explicitly.
 
-Last reviewed: 2026-10-24 (roadmap item A1 measured the current controlled quality
+Last reviewed: 2026-10-25 (roadmap item B1 chose and implemented one offline safety
+rule for change-aware repository-context ranking: a promoted changed-file symbol may no
+longer push the best un-promoted symbol of a module the query matched out of the ranked
+positions that reach the prompt with source text, and the symbol it restores is found
+by scanning every symbol the promotion passed over rather than the first one.
+Measured on this checkout's index at
+the configured 4096-token budget, the eviction case holds `3/3` facts where it held
+`0/3`, the gain case still reaches `4/4`, the negative control and the path-token gate
+case are unchanged row for row, and every one of the 12 sweep flip weights is identical.
+`RankingConfig.WEIGHT_CHANGED_FILE` stays `+25` and the feature stays off by default.
+Before that, 2026-10-24: roadmap item A1 measured the current controlled quality
 baseline: the 2026-10-24 `--compare-context` run at commit `0371d64`, `25/30` expected
 facts with repository context against `4/30` without it, style `11/11` ok in both arms,
 no errored and no timed-out request, taken from a detached worktree with changed-file
@@ -109,6 +119,22 @@ without pulling unrelated symbols in; the token budget still decides how many
 symbols fit, so the signal reorders the same candidate pool instead of enlarging
 it.
 
+The reorder has a bound since 2026-10-25 (roadmap Phase B1). A promoted symbol may
+not push the best candidate that earned its place without the bonus out of the
+ranked positions that reach the prompt with source text - the primary body and the
+one shared supporting preview `ContextBuilder` spends - because a symbol past
+those positions keeps its signature and docstring but loses the source body or
+preview its implementation facts are read from. `RankingEngine.rank` restores such
+a symbol to the last of those positions
+(`RankingConfig.PROMOTION_ANCHOR_SLOTS`) when its module matched the query, it
+held one of them on a clean tree, and the bonus is what moved it out - the scan
+runs over every candidate the promotion passed over, not only the first, because
+the first may still hold a slot while a later one has lost its only one. The dirty
+file may still win the primary, which is what the signal is for. Nothing else
+about the bonus changed: same gate, same `+25`, same reasons, same counters, and
+no guard pass at all when the bonus touched nothing - a disabled feature and a
+clean tree rank exactly as they did before.
+
 How large that bonus should be is measured, and still open. Two terms have to be
 kept apart, because `EXACT_SYMBOL_NAME` fires when *any* segment of a qualified
 name equals a query token - the module-path segments included. A **name match**
@@ -143,23 +169,27 @@ configured 4096-token budget and reads its own counters back:
   `+5` and `+10` (13 at `+25`) while the primary stays put: the token `model` is a
   segment of that module path and `MODULE_MATCH` counts as query relevance, so the
   gate admits the whole file. Shrinking the bonus does not undo that.
-- one query does lose something, and what it loses is a file. "How does the
+- one query did lose something, and what it lost was a file - the case the bound
+  above exists for. "How does the
   repository index builder construct the index, including its collaborators for
-  files and models?" with `packages/repository/index/models.py` dirty sends 10 symbols
-  instead of 14: the dirty module's symbols take the front of the order, the
-  budget runs out inside `packages/repository/index/models.py`, and
-  `packages/repository/index/builder.py` leaves the context outright.
-  `PythonAstExtractor`, `RelationshipRegistry`, and `CallExtractor` are available
+  files and models?" with `packages/repository/index/models.py` dirty sent 10 symbols
+  instead of 14: the dirty module's symbols took the front of the order, the
+  budget ran out inside `packages/repository/index/models.py`, and
+  `packages/repository/index/builder.py` left the context outright.
+  `PythonAstExtractor`, `RelationshipRegistry`, and `CallExtractor` were available
   in the arm with the bonus off and unavailable in the arm with it on -
-  `facts_lost` says all three, none can be copied from the question, and no symbol
-  of that file survives to be
-  counted as still-visible. It happens at `+1` exactly as at `+25`
-  (`changed_symbols_promoted=0`, `changed_primary_promoted=1`), so the lever is
-  the gate and representation choice rather than the number. At 6144 tokens both
-  files' symbols fit and `PythonAstExtractor` returns, but the builder is supporting
-  context, whose summary omits the constructor-body details `RelationshipRegistry`
-  and `CallExtractor`. The case is stated at the configured 4096-token budget, where
-  all three details are lost.
+  `facts_lost` said all three, none could be copied from the question, and no symbol
+  of that file survived to be
+  counted as still-visible. It happened at `+1` exactly as at `+25`
+  (`changed_symbols_promoted=0`, `changed_primary_promoted=1`), so the lever was
+  the gate and the rendered prefix rather than the number. Measured again on
+  2026-10-25 with the guard in place, the same run still sends 10 symbols, still
+  moves the primary into the dirty file, and loses nothing: the builder file's own
+  best symbol is restored to the supporting slot and the three facts stay available
+  on both arms. Keeping *a* symbol of that file was not enough on its own - the
+  form of this rule that only kept one in the list measured `1/3` - and at 6144
+  tokens, where both files' symbols fit either way, the two arms now agree on all
+  three facts as well.
 - one query gains instead, and it is the case the opt-in is offered for. "How does the
   gateway cap conversation history before sending it to the model?" with
   `packages/pipeline/history` dirty sends 7 symbols instead of 20, four of them new

@@ -218,10 +218,14 @@ CONTEXT_BUILDER_BUDGET_FACTS: tuple[ExpectedFact, ...] = (
 #: facts are the ones only the asked-about file can support.  Measured offline on
 #: this repository's index at the configured 4096-token budget: with the bonus off
 #: the context sends 14 symbols from both files and all three facts reach the
-#: prompt; with `packages/repository/index/models` dirty at the shipped `+25` the
-#: whole of `packages/repository/index/builder.py` is evicted, 10 symbols from one
-#: file are sent, and none of the three survives.  The query, the injected module
-#: and the facts are constants because the offline diagnostic (``CHANGED_FILE_PROBES``
+#: prompt; with `packages/repository/index/models` dirty at the shipped `+25` it
+#: sent 10 symbols from one file, because the whole of
+#: `packages/repository/index/builder.py` was evicted and none of the three
+#: survived.  That is what the Phase B1 promotion guard in
+#: `packages/context/ranking.py` changed: the builder's best symbol is restored to
+#: the supporting slot the preview budget is spent on, so the primary still moves
+#: and the three facts now reach both arms.  The query, the injected module and the
+#: facts are constants because the offline diagnostic (``CHANGED_FILE_PROBES``
 #: id ``evicts_the_asked_about_file``) and the scored live probe (``PROBES`` id
 #: ``explain_changed_files_repository_index``) have to be measuring the same
 #: retrieval: an A/B whose arms ask different questions cannot attribute an answer
@@ -1229,26 +1233,26 @@ CHANGED_FILE_PROBES: tuple[ChangedFileProbe, ...] = (
             "a path token. At the configured 4096-token budget the bonus lifts the "
             "dirty module's ten symbols to the front of the order - "
             "changed_symbols_promoted is 0, because none of them was absent from the "
-            "context before, and changed_primary_promoted is 1 - and the budget then "
-            "runs out inside packages/repository/index/models: "
-            "packages/repository/index/builder.py leaves the context outright, 14 "
-            "symbols become 10, and its PythonAstExtractor, RelationshipRegistry "
-            "and CallExtractor collaborators are all absent from what a request "
-            "would have been sent. All three are in the arm with the bonus off and "
-            "none is named in the question. That is the "
-            "measurable loss the scored half of this case needs, and it is not "
-            "something a supporting symbol softens: nothing in the changed context "
-            "names the builder at all. It is weight-independent (+1 through +30 are "
-            "identical), so the lever is the gate and the budget, not the number. "
-            "At 6144 tokens the builder symbols fit in both arms and "
-            "PythonAstExtractor returns, but the changed arm still carries only a "
-            "supporting representation of the builder: constructor-body details "
-            "RelationshipRegistry and CallExtractor remain unavailable. The case is "
+            "context before, and changed_primary_promoted is 1 - and 14 symbols "
+            "become 10. It used to cost a file: "
+            "packages/repository/index/builder.py left the context outright and its "
+            "PythonAstExtractor, RelationshipRegistry and CallExtractor collaborators "
+            "were available with the bonus off and unavailable with it on, at +1 "
+            "exactly as at +25. Since the Phase B1 promotion guard in "
+            "packages/context/ranking.py the builder's own best symbol is restored to "
+            "the supporting slot the shared preview budget is spent on, so the three "
+            "facts stay available on both arms and facts_lost is empty while the "
+            "primary still moves. That is the difference between retaining a symbol "
+            "and retaining what it contributes: the version of this rule that only "
+            "kept a symbol of the file in the list measured 1/3, because past the two "
+            "rendered positions a candidate keeps its signature and docstring but "
+            "loses its source body or preview, and these are body facts. At 6144 tokens "
+            "both arms now send 20 symbols and agree on all three facts. The case is "
             "stated at 4096 - the "
             "stage default, APP_REPOSITORY_CONTEXT_MAX_TOKENS and the EXPLAIN intent "
             "budget this probe asks under, all of which agree. Scored live by probe "
             "explain_changed_files_repository_index, which asks this same prompt and "
-            "checks these same facts."
+            "checks these same facts, and which the guard now expects to tie."
         ),
     ),
     ChangedFileProbe(
