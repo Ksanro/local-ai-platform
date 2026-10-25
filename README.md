@@ -68,6 +68,7 @@ APP_REPOSITORY_CONTEXT_MAX_TOKENS=4096
 APP_REPOSITORY_CONTEXT_INTENT_BUDGETS=SEARCH:2048,TEST:2048,DEBUG:2048,REFACTOR:4096,IMPLEMENT:4096,EXPLAIN:4096
 APP_REPOSITORY_CONTEXT_CHANGED_FILES_ENABLED=false
 APP_REPOSITORY_CONTEXT_CHANGED_FILES_TTL_SECONDS=0
+APP_REPOSITORY_CONTEXT_CHANGED_FILES_COMPARISON_ENABLED=false
 APP_CONTEXT_INTENT_RULES={}
 APP_SESSION_LOG_ENABLED=true
 APP_HISTORY_CAP_ENABLED=true
@@ -165,19 +166,29 @@ Behaviour notes:
   the cached set, and each capture is bounded by the Git command timeout. Set a
   positive value only when mid-session edits must be picked up without a
   restart.
+- `APP_REPOSITORY_CONTEXT_CHANGED_FILES_COMPARISON_ENABLED` (default `false`)
+  lets the stage build the no-bonus context that
+  `changed_context_differs`, `changed_primary_promoted` and
+  `changed_symbols_promoted` are measured from. It costs a second full context
+  build, so an ordinary request does not pay it and records
+  `changed_baseline_status=not_sampled` instead; turn it on for a diagnostic or
+  A/B run. It changes nothing about the context that is sent, and setting it
+  alone does not enable this feature or the Git snapshot.
 - Logs, stage metadata and session records report counts only - never paths,
   module names, symbol names or file contents.
 
 Whether the bonus actually *changed* the context you sent is measurable from
-those counts. The stage re-ranks the same request without the bonus and compares
-the two composed contexts, so the fields describe an effect, not a presence:
+those counts, when you ask for it. The stage can re-rank the same request without
+the bonus and compare the two composed contexts, so the fields describe an
+effect, not a presence:
 `changed_files_signal` (`ok`, `off`, or `unavailable`), `changed_files_count`
 (modified files mapped onto indexed modules), `changed_symbols_selected` (sent
 symbols carrying the bonus), `changed_context_differs` (whether the sent context
 differs from the no-bonus one - order included), `changed_symbols_promoted`
 (sent symbols the no-bonus context did not contain), `changed_primary_promoted`
 (whether the primary symbol itself moved) and `changed_baseline_status`
-(`none`, `built`, `skipped_no_bonus`, or `failed`). They are measured on the final
+(`none`, `built`, `skipped_no_bonus`, `not_sampled`, or `failed`). They are measured
+on the final
 package, after budget trimming and delta suppression. Promotion is proven by
 `changed_files_signal="ok"`, `changed_files_count >= 1`,
 `changed_baseline_status="built"` and `changed_context_differs=true`; with
@@ -185,10 +196,24 @@ package, after budget trimming and delta suppression. Promotion is proven by
 reorder-only case, which is what a flat bonus usually does.
 `changed_symbols_selected` above zero with `changed_context_differs=false` is the
 other honest result: the bonus was present and changed nothing. A `failed`
-comparison is neither - it is a request that could not be measured. Building the
-comparison context is a second full build (about +50 ms per request on a dirty
-tree on this repository's index), so it is made only when the ranking pass gave
-the bonus to at least one candidate.
+comparison is neither - it is a request that could not be measured.
+
+Building the comparison context is a second full build: measured on this
+repository's index a dirty-tree stage goes from about 50 ms to about 105 ms, and a
+live B3 run priced it at roughly 450 ms of an enabled request. So it is opt-in -
+`APP_REPOSITORY_CONTEXT_CHANGED_FILES_COMPARISON_ENABLED`, default `false` - and on
+top of that it is made only when the ranking pass gave the bonus to at least one
+candidate. An ordinary enabled request therefore builds and sends its context
+once, still reports the counters that need no comparison (`changed_files_signal`,
+`changed_files_count`, `changed_symbols_selected`), and records
+`changed_baseline_status=not_sampled` with `changed_baseline_ms=0` on the requests
+whose bonus fired. That status is neither a promotion nor a measured no-change:
+the three fields that require a comparison are placeholders there, and only the
+status says so. Set the flag to `true` for a diagnostic or A/B run -
+`scripts/ab_launcher.py` does it for every experiment it renders, and refuses a
+changed-file pair that leaves it off - and the previous behaviour, `built` and all,
+returns unchanged. The flag never alters what is sent, and on its own it activates
+neither the ranking bonus nor the Git snapshot.
 
 ```powershell
 # what the bonus did across a session log - one section of the normal report

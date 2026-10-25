@@ -100,6 +100,10 @@ class Settings(BaseSettings):
     repository_context_intent_budgets: str = ""
     repository_context_changed_files_enabled: bool = False  # opt-in change-aware ranking
     repository_context_changed_files_ttl_seconds: int = 0  # 0 = snapshot once at startup
+    # The counterfactual comparison build is opt-in too (roadmap B4): off means an
+    # enabled request builds its context once and reports changed_baseline_status
+    # "not_sampled" instead of paying a second full build on every request.
+    repository_context_changed_files_comparison_enabled: bool = False
     context_intent_rules: str = ""
     models_config: str = ""  # JSON array of model definitions; empty = single-provider fallback
     context_delta_injection: bool = True  # inject only symbols not already sent

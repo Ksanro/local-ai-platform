@@ -86,3 +86,39 @@ def test_changed_file_signal_reads_app_prefix(monkeypatch: pytest.MonkeyPatch) -
 
     assert settings.repository_context_changed_files_enabled is True
     assert settings.repository_context_changed_files_ttl_seconds == 45
+
+
+def test_changed_file_comparison_is_off_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Roadmap B4: the counterfactual second build is never paid for unasked.
+
+    An enabled request that fires the changed-file bonus used to build the whole
+    context twice, which B3 measured at roughly 450 ms per request.  With the
+    comparison knob left unset - the shipping default - it must be built once.
+    """
+    monkeypatch.delenv(
+        "APP_REPOSITORY_CONTEXT_CHANGED_FILES_COMPARISON_ENABLED", raising=False
+    )
+
+    settings = Settings()
+
+    assert settings.repository_context_changed_files_comparison_enabled is False
+
+
+def test_changed_file_comparison_reads_app_prefix(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The opt-in a diagnostic run uses is configured like the feature it measures."""
+    monkeypatch.setenv("APP_REPOSITORY_CONTEXT_CHANGED_FILES_COMPARISON_ENABLED", "true")
+
+    settings = Settings()
+
+    assert settings.repository_context_changed_files_comparison_enabled is True
+
+
+def test_changed_file_comparison_is_off_for_a_false_spelling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The knob is a boolean, so an explicit ``false`` is not an absent default."""
+    monkeypatch.setenv("APP_REPOSITORY_CONTEXT_CHANGED_FILES_COMPARISON_ENABLED", "false")
+
+    settings = Settings()
+
+    assert settings.repository_context_changed_files_comparison_enabled is False

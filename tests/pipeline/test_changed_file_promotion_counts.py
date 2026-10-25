@@ -10,7 +10,10 @@ counts against the difference between the two packages.  The difference itself i
 compared, because a flat bonus is a reordering signal: a request where the
 supporting symbols swap places changed what the model reads even though the
 primary and the membership are identical.  ``changed_baseline_status`` says
-whether that comparison ran, was provably unnecessary, or failed.  Everything is
+whether that comparison ran, was provably unnecessary, was not sampled, or
+failed - and since roadmap B4 the stage does not run it at all unless asked, so
+the tests that measure it opt in through ``_stage(comparison=True)`` and the ones
+that pin the production default say so with ``comparison=False``.  Everything is
 count only: no test here touches Git or a model, and none of them can put a path,
 module name or symbol name into a log line or a session record.
 """
@@ -160,14 +163,23 @@ def _stage(
     changed: bool = True,
     index: RepositoryIndex | None = None,
     source: Any = _UNSET,
+    comparison: bool = True,
     **kwargs: Any,
 ) -> RepositoryContextStage:
-    """Build a stage with the signal wired to the fixture's changed module."""
+    """Build a stage with the signal wired to the fixture's changed module.
+
+    ``comparison`` is the stage's ``changed_files_comparison_enabled``.  It is on
+    here because most of this file measures the counterfactual, and it is off by
+    default in the stage itself because roadmap B4 stopped an ordinary request
+    from paying a second full build for it.  The tests that pin what a production
+    request states pass ``comparison=False`` explicitly.
+    """
     if source is _UNSET:
         source = _StubSource(frozenset({CHANGED_MODULE})) if changed else None
     return RepositoryContextStage(
         index=_index() if index is None else index,
         changed_files=source,
+        changed_files_comparison_enabled=comparison,
         **kwargs,
     )
 
@@ -498,6 +510,46 @@ def test_missing_baseline_does_not_invent_a_promotion() -> None:
     assert counts["changed_symbols_promoted"] == 0
     assert counts["changed_context_differs"] is False
     assert counts["changed_baseline_status"] == "failed"
+
+
+def test_an_unsampled_comparison_is_stated_as_unsampled() -> None:
+    """Roadmap B4 at counter level: not looking is not the same as failing.
+
+    A bonus that fired with no baseline package means either that the comparison
+    was asked for and could not be built, or that it was never asked for.  The
+    same fields, and one word of difference - which is the whole reason the
+    setting reaches this function instead of staying inside the stage.
+    """
+    package = _package(CHANGED_SYMBOL, UNCHANGED_SYMBOL)
+    candidates = [
+        _candidate(CHANGED_SYMBOL, CHANGED_MODULE, RankingReason.CHANGED_FILE),
+        _candidate(UNCHANGED_SYMBOL, UNCHANGED_MODULE),
+    ]
+
+    unsampled = changed_file_promotion_counts(
+        package,
+        candidates,
+        frozenset({CHANGED_MODULE}),
+        None,
+        1,
+        comparison_enabled=False,
+    )
+    attempted = changed_file_promotion_counts(
+        package, candidates, frozenset({CHANGED_MODULE}), None, 1
+    )
+
+    assert unsampled["changed_baseline_status"] == "not_sampled"
+    assert attempted["changed_baseline_status"] == "failed"
+    assert unsampled["changed_baseline_status"] != attempted["changed_baseline_status"]
+    # The directly observable counters are the same either way...
+    assert unsampled["changed_files_count"] == attempted["changed_files_count"] == 1
+    assert unsampled["changed_symbols_selected"] == attempted["changed_symbols_selected"] == 1
+    # ...and the counterfactual ones are placeholders that the status marks as such.
+    for key in ("changed_primary_promoted", "changed_context_differs"):
+        assert unsampled[key] is False, key
+        assert attempted[key] is False, key
+    assert unsampled["changed_symbols_promoted"] == 0
+    assert not any(forbidden in repr(unsampled) for forbidden in FORBIDDEN)
 
 
 def test_no_bonus_candidate_needs_no_comparison() -> None:
@@ -1000,6 +1052,304 @@ async def test_the_baseline_package_is_never_attached_anywhere() -> None:
         value for value in result.data.values() if isinstance(value, ContextPackage)
     ]
     assert packages_in_result == [context.context_package]
+
+
+# ---------------------------------------------------------------------------
+# The comparison opt-in (roadmap B4)
+# ---------------------------------------------------------------------------
+
+
+def _baseline_spy(monkeypatch: pytest.MonkeyPatch, stage: Any) -> list[int]:
+    """Replace one stage's counterfactual build with a call counter.
+
+    ``RepositoryContextStage._build_baseline_package`` is the only thing on the
+    request path that builds a second full context, so counting its calls says
+    whether a request paid for the comparison - the cost roadmap B4 took out of
+    the ordinary enabled request, and the one thing a
+    ``changed_baseline_status`` of ``not_sampled`` claims about it.
+
+    Args:
+        monkeypatch: The fixture that restores the method afterwards.
+        stage: The stage instance to watch.
+
+    Returns:
+        A list that grows by one for every baseline build attempted.
+    """
+    calls: list[int] = []
+
+    def _never_build(*args: Any, **kwargs: Any) -> None:
+        calls.append(1)
+        return None
+
+    monkeypatch.setattr(stage, "_build_baseline_package", _never_build)
+    return calls
+
+
+@pytest.mark.asyncio
+async def test_an_enabled_request_without_the_opt_in_builds_once(
+    builder_spy: list[frozenset[str]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The bonus fires, the context goes out once, and nothing is compared.
+
+    ``FLIP_QUERY`` is the case where the bonus really does move the primary, so
+    until roadmap B4 every such request paid for a second full build - about
+    450 ms of a live request's wall time.  The stage must now build once, never
+    reach ``_build_baseline_package``, and still send the change-aware context it
+    ranked.
+    """
+    stage = _stage(comparison=False)
+    baseline_calls = _baseline_spy(monkeypatch, stage)
+
+    result = await stage.execute(_context({"role": "user", "content": FLIP_QUERY}))
+
+    assert result.data is not None
+    assert baseline_calls == []
+    assert builder_spy == [frozenset({CHANGED_MODULE})]
+    assert result.data["changed_baseline_ms"] == 0.0
+    assert result.data["changed_baseline_status"] == "not_sampled"
+    # The counters that need no counterfactual are still stated exactly.
+    assert result.data["changed_files_signal"] == "ok"
+    assert result.data["changed_files_count"] == 1
+    assert result.data["changed_symbols_selected"] > 0
+    assert result.data["symbols_selected"] > 0
+    # And what went out is the change-aware context, not a degraded one.
+    assert result.data["package"].primary_symbol == CHANGED_SYMBOL
+
+
+@pytest.mark.asyncio
+async def test_the_comparison_setting_never_changes_what_is_sent(
+    builder_spy: list[frozenset[str]],
+) -> None:
+    """Opting out of the measurement must not change the thing being measured.
+
+    The counterfactual is composed after the real package and dropped, so the two
+    arms of this test send identical provider messages; the only difference
+    between them is whether the second build happened, and what the record can
+    therefore claim.
+    """
+    sampled = _stage(comparison=True)
+    unsampled = _stage(comparison=False)
+    context_on = _context({"role": "user", "content": FLIP_QUERY})
+    context_off = _context({"role": "user", "content": FLIP_QUERY})
+
+    on = await sampled.execute(context_on)
+    off = await unsampled.execute(context_off)
+
+    assert on.data is not None and off.data is not None
+    assert on.data["package"] == off.data["package"]
+    request_on = context_on.get_metadata("provider_request")
+    request_off = context_off.get_metadata("provider_request")
+    assert request_on is not None and request_off is not None
+    assert request_on.messages == request_off.messages
+
+    assert on.data["changed_baseline_status"] == "built"
+    assert off.data["changed_baseline_status"] == "not_sampled"
+    # What the request can state without a counterfactual is stated identically;
+    # what needs one is measured in one arm and a placeholder in the other.
+    for key in ("changed_files_signal", "changed_files_count", "changed_symbols_selected"):
+        assert on.data[key] == off.data[key], key
+    assert on.data["changed_primary_promoted"] is True
+    assert off.data["changed_primary_promoted"] is False
+    assert on.data["changed_context_differs"] is True
+    assert off.data["changed_context_differs"] is False
+    assert on.data["changed_symbols_promoted"] == 0
+    assert off.data["changed_symbols_promoted"] == 0
+    # One build per request for the opted-out stage, two for the measuring one.
+    assert builder_spy.count(frozenset({CHANGED_MODULE})) == 2
+    assert builder_spy.count(frozenset()) == 1
+
+
+@pytest.mark.asyncio
+async def test_not_sampled_is_not_a_measured_no_change() -> None:
+    """The distinction the status exists for, on one request shape.
+
+    ``SAME_QUERY`` sends the identical context with or without the bonus, so a
+    compared record proves "selected, unchanged".  An un-compared record carries
+    the very same numbers in the three counterfactual fields, and only
+    ``changed_baseline_status`` separates a finding from a placeholder.
+    """
+    measured = await _stage().execute(_context({"role": "user", "content": SAME_QUERY}))
+    unmeasured = await _stage(comparison=False).execute(
+        _context({"role": "user", "content": SAME_QUERY})
+    )
+
+    assert measured.data is not None and unmeasured.data is not None
+    assert measured.data["package"] == unmeasured.data["package"]
+    assert measured.data["changed_baseline_status"] == "built"
+    assert unmeasured.data["changed_baseline_status"] == "not_sampled"
+    # The counterfactual fields read alike, which is why the status is needed.
+    for key in ("changed_context_differs", "changed_primary_promoted"):
+        assert measured.data[key] is False, key
+        assert unmeasured.data[key] is False, key
+    assert measured.data["changed_symbols_promoted"] == 0
+    assert unmeasured.data["changed_symbols_promoted"] == 0
+    # The directly observable counters do not depend on the comparison at all.
+    for key in ("changed_files_signal", "changed_files_count", "changed_symbols_selected"):
+        assert measured.data[key] == unmeasured.data[key], key
+    assert unmeasured.data["changed_symbols_selected"] > 0
+
+
+@pytest.mark.asyncio
+async def test_a_bonus_that_fired_nowhere_is_still_stated_as_skipped(
+    builder_spy: list[frozenset[str]],
+) -> None:
+    """``skipped_no_bonus`` needs no second build, so the opt-in cannot unset it.
+
+    That status rests on ``changed_bonus_count``, a direct count of what the
+    ranking pass did.  Turning the comparison off must not relabel it
+    ``not_sampled``, which would claim a difference nobody could have found.
+    """
+    result = await _stage(comparison=False).execute(
+        _context({"role": "user", "content": NO_BONUS_QUERY})
+    )
+
+    assert result.data is not None
+    assert builder_spy == [frozenset({CHANGED_MODULE})]
+    assert result.data["changed_files_signal"] == "ok"
+    assert result.data["changed_files_count"] == 1
+    assert result.data["changed_symbols_selected"] == 0
+    assert result.data["changed_baseline_status"] == "skipped_no_bonus"
+    assert result.data["changed_baseline_ms"] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_no_candidates_are_still_stated_as_skipped_without_a_comparison(
+    builder_spy: list[frozenset[str]],
+) -> None:
+    """A request that ranks nothing has nothing to compare, sampled or not."""
+    result = await _stage(comparison=False).execute(
+        _context({"role": "user", "content": "zzz qqq xyzzy plugh"})
+    )
+
+    assert result.data is not None
+    assert builder_spy == [frozenset({CHANGED_MODULE})]
+    assert result.data["changed_files_signal"] == "ok"
+    assert result.data["changed_files_count"] == 1
+    assert result.data["changed_symbols_selected"] == 0
+    assert result.data["changed_baseline_status"] == "skipped_no_bonus"
+    assert result.data["changed_baseline_ms"] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_the_opt_in_builds_nothing_extra_on_a_clean_tree(
+    builder_spy: list[frozenset[str]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A clean tree is ``none``, never ``not_sampled``, whichever way the knob sits.
+
+    Nothing carries the bonus when nothing changed, so there is no counterfactual
+    worth paying for and the state of the signal is the whole answer.
+    """
+    for comparison in (True, False):
+        stage = _stage(source=_StubSource(frozenset()), comparison=comparison)
+        calls = _baseline_spy(monkeypatch, stage)
+        builder_spy.clear()
+
+        result = await stage.execute(_context({"role": "user", "content": FLIP_QUERY}))
+
+        assert result.data is not None
+        assert calls == [], comparison
+        assert builder_spy == [frozenset()], comparison
+        assert result.data["changed_files_signal"] == "ok", comparison
+        assert result.data["changed_files_count"] == 0, comparison
+        assert result.data["changed_baseline_status"] == "none", comparison
+        assert result.data["changed_baseline_ms"] == 0.0, comparison
+
+
+@pytest.mark.asyncio
+async def test_the_opt_in_alone_never_builds_a_second_context(
+    builder_spy: list[frozenset[str]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Asking for the comparison cannot turn the feature on.
+
+    With no source configured there is no changed-module set, so the stage builds
+    once and says ``none``; the knob only decides what is measured after ranking
+    has already fired the bonus.
+    """
+    stage = _stage(changed=False, comparison=True)
+    calls = _baseline_spy(monkeypatch, stage)
+
+    result = await stage.execute(_context({"role": "user", "content": FLIP_QUERY}))
+
+    assert result.data is not None
+    assert calls == []
+    assert builder_spy == [frozenset()]
+    assert result.data["changed_files_signal"] == "off"
+    assert result.data["changed_baseline_status"] == "none"
+    assert result.data["changed_baseline_ms"] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_a_comparison_that_fails_is_not_relabeled_as_unsampled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``failed`` and ``not_sampled`` must not collapse into one another.
+
+    Both leave the difference fields inert, so the status is the only place the
+    difference between "we tried to measure this and could not" and "we did not
+    try" can live.  Same request, same broken baseline, knob in each position.
+    """
+    real = stage_module.ContextBuilder
+    builds: list[frozenset[str]] = []
+
+    class _FailOnBaseline(real):  # type: ignore[valid-type]
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            super().__init__(*args, **kwargs)
+            builds.append(frozenset(kwargs.get("changed_modules", ())))
+
+        def build(self, *args: Any, **kwargs: Any) -> Any:
+            if not builds[-1]:  # the second pass is the one without the bonus
+                raise RuntimeError("simulated baseline failure")
+            return super().build(*args, **kwargs)
+
+    monkeypatch.setattr(stage_module, "ContextBuilder", _FailOnBaseline)
+    builds.clear()
+
+    compared = await _stage().execute(_context({"role": "user", "content": FLIP_QUERY}))
+    unsampled = await _stage(comparison=False).execute(
+        _context({"role": "user", "content": FLIP_QUERY})
+    )
+
+    assert compared.data is not None and unsampled.data is not None
+    assert compared.data["changed_baseline_status"] == "failed"
+    assert unsampled.data["changed_baseline_status"] == "not_sampled"
+    # The un-sampled request never reached the broken second build at all.
+    assert len(builds) == 3
+
+
+@pytest.mark.asyncio
+async def test_an_unsampled_request_touches_the_delta_tracker_once() -> None:
+    """Skipping the counterfactual changes nothing about the conversation state.
+
+    The baseline borrows the already-sent set rather than reading or writing the
+    tracker, so the lookup and store counts are the same with the comparison on
+    or off - one lookup and one store per request either way.
+    """
+    turn_one = {"role": "user", "content": SAME_QUERY}
+    reply = {"role": "assistant", "content": "it runs the widgets"}
+    turn_two = {"role": "user", "content": f"{SAME_QUERY} again"}
+
+    for comparison in (True, False):
+        stage = _stage(comparison=comparison)
+        tracker = _RecordingTracker()
+        stage._tracker = tracker
+
+        await stage.execute(_context(turn_one))
+        second = await stage.execute(_context(turn_one, reply, turn_two))
+
+        assert second.data is not None
+        assert tracker.lookups == 2, comparison
+        assert len(tracker.stored) == 2, comparison
+        assert second.data["changed_files_signal"] == "ok", comparison
+        if comparison:
+            # The arm that pays for the comparison pays for it on both turns.
+            assert second.data["changed_baseline_ms"] > 0.0
+            assert second.data["changed_baseline_status"] == "built"
+        else:
+            assert second.data["changed_baseline_ms"] == 0.0
+            assert second.data["changed_baseline_status"] == "not_sampled"
 
 
 # ---------------------------------------------------------------------------

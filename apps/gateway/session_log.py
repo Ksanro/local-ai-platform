@@ -66,15 +66,26 @@ repository-context stage assembled for the request:
 * ``changed_baseline_status`` — whether that comparison was made at all:
   ``none`` (nothing to compare — signal off, unavailable, or a clean tree),
   ``built`` (compared), ``skipped_no_bonus`` (no candidate received the bonus, so
-  the two contexts are identical by construction), or ``failed`` (the comparison
-  could not be built, which is an unmeasurable request, not an inert one).
+  the two contexts are identical by construction), ``not_sampled`` (the bonus did
+  fire and the comparison was deliberately not asked for, which is what an
+  ordinary enabled request records now), or ``failed`` (the comparison was asked
+  for and could not be built, which is an unmeasurable request, not an inert one).
+  Only ``built`` and ``skipped_no_bonus`` make ``changed_context_differs``,
+  ``changed_primary_promoted`` and ``changed_symbols_promoted`` readings; on a
+  ``not_sampled`` or ``failed`` record those three are placeholders, and the
+  status field is what says so.
 
 Building the comparison context costs a second full context build, which on a
 dirty tree roughly doubles this stage — measured on this repository's real index
-of 328 modules with 8 changed, about 50 ms becomes about 105 ms.  It is therefore
-built only when the ranking pass gave the bonus to at least one candidate; the
-cost of a build that was made is reported as ``changed_baseline_ms`` on the
-request log line and deliberately never recorded here.
+of 328 modules with 8 changed, about 50 ms becomes about 105 ms, and roadmap B3
+measured about 450 ms of a live request.  It is therefore made only when the
+ranking pass gave the bonus to at least one candidate **and** the gateway was
+started with ``APP_REPOSITORY_CONTEXT_CHANGED_FILES_COMPARISON_ENABLED=true``,
+which is off by default: a normal request pays one build and states
+``not_sampled``, while a diagnostic A/B run opts in and keeps the measured
+counters.  The cost of a build that was made is reported as
+``changed_baseline_ms`` on the request log line and deliberately never recorded
+here; it is ``0`` on a request that was never compared.
 
 The changed-file fields are counts, two booleans, and two state tokens.  Changed
 file paths, module names derived from them, symbol names, and Git output are

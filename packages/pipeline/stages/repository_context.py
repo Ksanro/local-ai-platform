@@ -80,17 +80,22 @@ Promotion observability
 ~~~~~~~~~~~~~~~~~~~~~~~
 
 The signal is worth measuring only if "the bonus was sent" can be told apart
-from "the bonus changed what was sent".  So the stage builds a **counterfactual
+from "the bonus changed what was sent".  So the stage can build a **counterfactual
 baseline**: the same query, the same index, the same chars-per-token, the same
 already-sent set, and no changed modules.  That baseline is composed, compared
 and dropped - it is never serialized, never attached to the context, never
 stored in the tracker and never leaves this method.  Because a second full build
 roughly doubles the stage on a dirty tree - measured on this repository's real
-index of 328 modules with 8 changed, about 50 ms becomes about 105 ms - it is
-built only when ``ContextResult.changed_bonus_count`` says the ranking pass
-actually gave the bonus to a candidate.  That count is the exact condition: the
-bonus is the only thing ``changed_modules`` influences, so with zero bonus
-candidates the two arms cannot differ.
+index of 328 modules with 8 changed, about 50 ms becomes about 105 ms, and about
+450 ms of a live request's wall time - it is built only when
+``ContextResult.changed_bonus_count`` says the ranking pass actually gave the
+bonus to a candidate **and** the stage was built with
+``changed_files_comparison_enabled``.  That count is the exact condition for the
+first half: the bonus is the only thing ``changed_modules`` influences, so with
+zero bonus candidates the two arms cannot differ.  The setting is the whole
+answer for the second half, and it is off by default (roadmap B4): an ordinary
+enabled request builds and sends its context once and pays nothing to find out
+what the bonus changed.
 
 ``changed_file_promotion_counts`` turns the pair into count-only fields that
 ride along in the stage result and land in every session record:
@@ -107,8 +112,13 @@ whose supporting symbols merely swapped places reads as
 ``changed_context_differs=True`` with both detail fields at ``False``/``0``.
 ``changed_baseline_status`` states which of those readings applies: ``"none"``
 (nothing to compare), ``"built"`` (compared), ``"skipped_no_bonus"`` (the bonus
-touched no candidate, so the arms are identical by construction), or ``"failed"``
-(the comparison could not be built, which is unmeasurable rather than inert).
+touched no candidate, so the arms are identical by construction),
+``"not_sampled"`` (the bonus fired and the comparison was not asked for, which is
+the ordinary enabled request) or ``"failed"`` (the comparison was asked for and
+could not be built, which is unmeasurable rather than inert).  Only ``"built"``
+and ``"skipped_no_bonus"`` make the three difference fields a reading; on
+``"not_sampled"`` and ``"failed"`` records they are placeholders, and the status
+is what says so.
 A dirty file that was already going to be sent therefore reports a count above
 zero and a difference of false, which is the distinction a review could not make
 before.
@@ -117,7 +127,8 @@ Counting happens on the final composed package, so a bonus-carrying symbol that
 the budget trimmed or delta injection suppressed is neither selected nor
 promoted.  With no changed modules the baseline is skipped entirely and the
 promotion fields stay inert; the duration of a baseline build that was made is
-reported as ``changed_baseline_ms`` on the log line so its cost is visible.  A
+reported as ``changed_baseline_ms`` on the log line so its cost is visible, and
+it is ``0`` on a request whose comparison was never sampled.  A
 stage that composes nothing still reports the signal state it read, or
 ``unavailable`` when it failed before reading it, so a degraded request never
 records as a disabled feature.  No path, module name, symbol name or Git output
@@ -174,12 +185,19 @@ SIGNAL_OFF: Final = "off"
 SIGNAL_OK: Final = "ok"
 SIGNAL_UNAVAILABLE: Final = "unavailable"
 
-#: The four states of the counterfactual comparison itself.  They exist because
+#: The five states of the counterfactual comparison itself.  They exist because
 #: "the bonus changed nothing" and "the comparison could not be made" are
 #: different answers, and only one of them is a measurement.
 BASELINE_NONE: Final = "none"
 BASELINE_BUILT: Final = "built"
 BASELINE_SKIPPED_NO_BONUS: Final = "skipped_no_bonus"
+#: The bonus fired and the comparison was deliberately not paid for, because
+#: ``RepositoryContextStage`` was built with ``changed_files_comparison_enabled``
+#: off - the ordinary case for a production request (roadmap B4).  The three
+#: difference fields are placeholders on such a request, and this status is what
+#: says so: it is neither a measured no-change (``built`` with the difference
+#: false) nor an attempted comparison that broke (``failed``).
+BASELINE_NOT_SAMPLED: Final = "not_sampled"
 BASELINE_FAILED: Final = "failed"
 
 #: The promotion fields as the stage states them when the signal did nothing.
@@ -254,6 +272,8 @@ def changed_file_promotion_counts(
     changed_modules: frozenset[str],
     baseline_package: ContextPackage | None = None,
     changed_bonus_count: int = 0,
+    *,
+    comparison_enabled: bool = True,
 ) -> dict[str, Any]:
     """Measure the working-tree bonus, and what it changed, in counts alone.
 
@@ -284,9 +304,13 @@ def changed_file_promotion_counts(
     - ``changed_baseline_status`` says whether the comparison was made at all:
       ``"built"`` compared the two packages, ``"skipped_no_bonus"`` means no
       candidate received the bonus so the two arms are provably identical,
-      ``"failed"`` means the comparison could not be built - and then the three
-      difference fields are reported as inert rather than as a measurement - and
-      ``"none"`` means nothing needed comparing.
+      ``"not_sampled"`` means the bonus did fire and the second build was
+      deliberately not paid for because ``comparison_enabled`` is off - the
+      ordinary production request after roadmap B4 - ``"failed"`` means the
+      comparison was asked for and could not be built - and then, as under
+      ``"not_sampled"``, the three difference fields are reported as inert
+      placeholders rather than as a measurement - and ``"none"`` means nothing
+      needed comparing.
 
     Args:
         package: The composed context package, or ``None`` when no context was
@@ -296,11 +320,16 @@ def changed_file_promotion_counts(
         changed_modules: Index module keys of the locally modified files.
         baseline_package: The counterfactual package for the same request
             without ``changed_modules``.  ``None`` means there is no package to
-            compare with - either the bonus touched nothing, or the build
-            failed, or the signal is off.
+            compare with - the bonus touched nothing, the comparison was not
+            sampled, the build failed, or the signal is off.
         changed_bonus_count: How many candidates the ranking pass gave the
             bonus to.  It separates "no comparison was needed" from "a
-            comparison was attempted and failed", and is itself a count only.
+            comparison was worth having", and is itself a count only.
+        comparison_enabled: Whether this stage was allowed to build the
+            counterfactual.  With it off, a bonus that fired and no baseline
+            package is a request that was not sampled, not a request whose
+            comparison failed - which is exactly why the stage passes its own
+            setting through rather than leaving the two to read alike.
 
     Returns:
         Count-only fields for the stage result and the session log.  No path,
@@ -313,13 +342,17 @@ def changed_file_promotion_counts(
             if key != "changed_files_signal"
         }
 
-    status = (
-        BASELINE_BUILT
-        if baseline_package is not None
-        else BASELINE_FAILED
-        if changed_bonus_count > 0
-        else BASELINE_SKIPPED_NO_BONUS
-    )
+    if baseline_package is not None:
+        status = BASELINE_BUILT
+    elif changed_bonus_count == 0:
+        # No candidate carried the bonus, so the two arms are identical by
+        # construction.  That is a proof, and it holds whatever the comparison
+        # setting says - which is why it outranks "not sampled" here.
+        status = BASELINE_SKIPPED_NO_BONUS
+    elif comparison_enabled:
+        status = BASELINE_FAILED
+    else:
+        status = BASELINE_NOT_SAMPLED
 
     sent = _sent_symbols(package)
     promoted = {
@@ -380,6 +413,7 @@ class RepositoryContextStage(PipelineStage):
         max_context_tokens: int = 4096,
         intent_context_budgets: dict[str, int] | None = None,
         changed_files: ChangedModuleSource | None = None,
+        changed_files_comparison_enabled: bool = False,
     ) -> None:
         """Initialize with an optional repository index.
 
@@ -396,12 +430,22 @@ class RepositoryContextStage(PipelineStage):
             changed_files: Optional source of index module keys for locally
                 modified files, derived from the read-only Git change
                 snapshot.  ``None`` (the default) leaves ranking untouched.
+            changed_files_comparison_enabled: When ``True``, a request whose
+                ranking pass gave the working-tree bonus to a candidate also
+                builds the no-bonus counterfactual, so ``changed_context_differs``,
+                ``changed_primary_promoted`` and ``changed_symbols_promoted`` are
+                measured.  ``False`` (the default) skips that second build - it
+                roughly doubles this stage on a dirty tree - and states the three
+                fields as unmeasured placeholders under
+                ``changed_baseline_status="not_sampled"``.  It never changes the
+                context that is sent, only what is known about it afterwards.
         """
         self._index = index
         self._delta_enabled = context_delta_injection
         self._tracker = SentSymbolTracker(maxsize=context_delta_cache_size)
         self._max_context_tokens = max_context_tokens if max_context_tokens > 0 else 4096
         self._changed_files = changed_files
+        self._changed_files_comparison_enabled = changed_files_comparison_enabled
         self._intent_context_budgets = {
             intent.upper(): tokens
             for intent, tokens in (intent_context_budgets or {}).items()
@@ -552,8 +596,8 @@ class RepositoryContextStage(PipelineStage):
                 # was attempted, "failed" cannot be claimed here.  The bonus count
                 # is deliberately not passed: with nothing composed the two arms
                 # send the same (empty) context either way, which is the skip
-                # state.  What the signal saw, and whether it worked at all, is
-                # still stated.
+                # state, sampled or not.  What the signal saw, and whether it
+                # worked at all, is still stated.
                 promotion = {
                     **changed_file_promotion_counts(None, (), changed_modules, None),
                     "changed_files_signal": changed_signal,
@@ -626,13 +670,19 @@ class RepositoryContextStage(PipelineStage):
             # Measure the working-tree bonus against the same request without
             # it.  The counterfactual is a second full build, and it doubles the
             # stage on a dirty tree - measured on this repository's real index
-            # (328 modules, 8 changed) about 50 ms becomes about 105 ms - so it
-            # is paid only when the bonus actually moved a candidate.  With zero
-            # bonus candidates the two arms are provably identical, and saying
-            # so is the honest answer rather than a measurement.
+            # (328 modules, 8 changed) about 50 ms becomes about 105 ms - so it is
+            # paid only when it is asked for.  An ordinary enabled request does
+            # not ask: roadmap B4 made the comparison opt-in after B3 measured it
+            # at roughly 450 ms of every request that fired the bonus.  Zero bonus
+            # candidates need no build either way, since the two arms are then
+            # provably identical.
             baseline_package: ContextPackage | None = None
             changed_baseline_ms = 0.0
-            if changed_modules and changed_bonus_count > 0:
+            if (
+                changed_modules
+                and changed_bonus_count > 0
+                and self._changed_files_comparison_enabled
+            ):
                 baseline_start = time.perf_counter()
                 baseline_package = self._build_baseline_package(
                     self._index,
@@ -643,7 +693,9 @@ class RepositoryContextStage(PipelineStage):
                 changed_baseline_ms = (time.perf_counter() - baseline_start) * 1000
 
             # Counted on the composed packages - not on the ranked candidates -
-            # so budget trimming and delta suppression are already applied.
+            # so budget trimming and delta suppression are already applied.  The
+            # comparison setting rides along so a skipped comparison reads as "not
+            # sampled" rather than as a comparison that failed.
             promotion = {
                 **changed_file_promotion_counts(
                     package,
@@ -651,6 +703,7 @@ class RepositoryContextStage(PipelineStage):
                     changed_modules,
                     baseline_package,
                     changed_bonus_count,
+                    comparison_enabled=self._changed_files_comparison_enabled,
                 ),
                 "changed_files_signal": changed_signal,
             }
@@ -820,7 +873,9 @@ class RepositoryContextStage(PipelineStage):
     ) -> ContextPackage | None:
         """Compose the same request as it would have been sent without the bonus.
 
-        This is the counterfactual the promotion fields are measured against.
+        This is the counterfactual the promotion fields are measured against, and
+        the request path reaches it only when the stage was built with
+        ``changed_files_comparison_enabled`` and the ranking pass fired the bonus.
         ``ContextBuilder.build`` creates fresh candidates on every call, so this
         pass cannot disturb the scores or reasons of the package that is really
         going out.  Nothing here is serialized, attached to the context, or

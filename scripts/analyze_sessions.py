@@ -774,7 +774,15 @@ _PROMOTION_FIELDS = (
 
 #: The baseline states a record can carry.  ``failed`` and an absent state both
 #: mean the comparison was never made, so neither can be read either way.
-_BASELINE_STATES = ("none", "built", "skipped_no_bonus", "failed")
+#: ``not_sampled`` is the state roadmap B4 added: the bonus fired and the second
+#: build was not asked for, which is a request that was never compared - not one
+#: whose comparison found no difference.
+_BASELINE_STATES = ("none", "built", "skipped_no_bonus", "not_sampled", "failed")
+#: The states a counterfactual field is a reading under, and therefore the only
+#: records the promotion counts and their rate divide by.  ``none`` is inert
+#: rather than unmeasured - nothing was there to compare - so it is counted in
+#: neither the numerator nor this denominator, while ``not_sampled`` and
+#: ``failed`` land in ``unmeasured``.
 _BASELINE_MEASURED = ("built", "skipped_no_bonus")
 
 
@@ -785,26 +793,41 @@ def changed_file_promotion_summary(records: list[dict[str, Any]]) -> dict[str, A
     sent - the stage re-ranked the same request without the bonus and compared
     the two composed packages - so the verdicts are read off
     ``changed_context_differs`` and ``changed_baseline_status``, not off whether
-    changed files happened to exist:
+    changed files happened to exist.  Since roadmap B4 that second build is
+    opt-in, so an ordinary enabled request states ``not_sampled`` and belongs in
+    neither verdict:
 
     - ``proved``: ``changed_files_signal`` is ``ok``, at least one file was
       modified, the comparison was ``built``, and the sent context differs;
     - ``inert``: the signal is ``ok``, at least one sent symbol carried the
       bonus, the comparison was made or was provably unnecessary, and nothing
       differs;
-    - ``unmeasured``: the comparison ``failed``, or the record never stated the
-      comparison fields.  It is reported on its own line and counted in neither
-      verdict, because an unmeasurable request looks exactly like a zero only
-      when nobody separates them.
+    - ``unmeasured``: the comparison ``failed``, was never sampled, or the record
+      never stated the comparison fields.  It is reported on its own line and
+      counted in neither verdict, because an unmeasurable request looks exactly
+      like a zero only when nobody separates them.
 
     Args:
         records: Session log record dicts, as read from JSONL.
 
     Returns:
-        Counts and rates keyed by signal and baseline state.  Records written
-        before the promotion fields existed are tallied in ``"before_fields"``
-        and excluded from every denominator, so old logs can neither inflate nor
-        deflate a rate.
+        Counts and rates keyed by signal and baseline state.  The two kinds of
+        field get two denominators, because only one kind is a measurement on
+        every record.  ``with_changed_files``, ``symbols_selected``,
+        ``by_signal`` and ``by_baseline_status`` are directly observable and are
+        read off every fielded record: a request states what the signal saw and
+        what the ranking selected whether or not anyone asked for a comparison.
+        ``primary_promoted``, ``symbols_promoted`` and ``rate_primary_promoted``
+        need a counterfactual, so they are read off the ``"measured"`` records
+        only - the ones whose comparison was ``built`` or was provably
+        unnecessary (``skipped_no_bonus``) under an ``ok`` signal - and that
+        count is the denominator the printed rate names.  Counting the
+        placeholder ``False`` and ``0`` of a ``not_sampled`` or ``failed`` record
+        alongside real measurements would report a request nobody compared as a
+        measured no-change and pull the rate below what the run observed.
+        Records written before the promotion fields existed are tallied in
+        ``"before_fields"`` and excluded from every denominator, so old logs can
+        neither inflate nor deflate a rate.
     """
     fielded: list[dict[str, Any]] = []
     before_fields = 0
@@ -844,14 +867,21 @@ def changed_file_promotion_summary(records: list[dict[str, Any]]) -> dict[str, A
     def _flag(context: dict[str, Any], key: str) -> bool:
         return context.get(key) is True
 
+    # Directly observable: what the signal read and what the ranking selected.
+    # Both are stated by every record that reached the stage, whichever way the
+    # comparison setting went, so these read across all fielded records.
     dirty = [c for c in fielded if _count(c, "changed_files_count") > 0]
-    primary_promoted = [c for c in fielded if _flag(c, "changed_primary_promoted")]
     unmeasured = [c for c in fielded if _status(c) not in _BASELINE_MEASURED + ("none",)]
+    # Counterfactual: only a record whose comparison was made - or that proved it
+    # unnecessary - can say what the bonus did to the context it sent.  A
+    # `not_sampled` or `failed` record states `False` and `0` as placeholders, so
+    # it enters neither of the promotion counts below nor their denominator.
     usable = [
         c
         for c in fielded
         if str(c.get("changed_files_signal")) == "ok" and _status(c) in _BASELINE_MEASURED
     ]
+    primary_promoted = [c for c in usable if _flag(c, "changed_primary_promoted")]
     proved = [
         c
         for c in usable
@@ -881,8 +911,9 @@ def changed_file_promotion_summary(records: list[dict[str, Any]]) -> dict[str, A
         "by_signal": by_signal,
         "by_baseline_status": by_status,
         "with_changed_files": len(dirty),
+        "measured": len(usable),
         "primary_promoted": len(primary_promoted),
-        "symbols_promoted": sum(_count(c, "changed_symbols_promoted") for c in fielded),
+        "symbols_promoted": sum(_count(c, "changed_symbols_promoted") for c in usable),
         "symbols_selected": sum(_count(c, "changed_symbols_selected") for c in fielded),
         "proved": len(proved),
         "proved_primary": len(proved_primary),
@@ -891,7 +922,9 @@ def changed_file_promotion_summary(records: list[dict[str, Any]]) -> dict[str, A
         "present_but_inert": len(inert),
         "unmeasured": len(unmeasured),
         "rate_with_changed_files": (len(dirty) / len(fielded)) if fielded else 0.0,
-        "rate_primary_promoted": (len(primary_promoted) / len(fielded)) if fielded else 0.0,
+        # "How often did the bonus move the primary, of the requests that were
+        # compared" - never of every request, including the ones nobody compared.
+        "rate_primary_promoted": (len(primary_promoted) / len(usable)) if usable else 0.0,
     }
 
 
@@ -926,7 +959,7 @@ def _print_changed_file_promotion(records: list[dict[str, Any]]) -> None:
         if by_signal[state]:
             print(f"    {state:<18}{by_signal[state]:>6}")
     print("  changed_baseline_status:")
-    for state in ("built", "skipped_no_bonus", "none", "failed", "unknown"):
+    for state in ("built", "skipped_no_bonus", "not_sampled", "none", "failed", "unknown"):
         if by_status[state]:
             print(f"    {state:<18}{by_status[state]:>6}")
     print()
@@ -937,10 +970,20 @@ def _print_changed_file_promotion(records: list[dict[str, Any]]) -> None:
     )
     print(
         f"    changed_primary_promoted:     {summary['primary_promoted']:>6} "
-        f"({summary['rate_primary_promoted']:.1%} of fielded)"
+        f"({summary['rate_primary_promoted']:.1%} of {summary['measured']} measured)"
     )
-    print(f"    sum changed_symbols_promoted: {summary['symbols_promoted']:>6}")
-    print(f"    sum changed_symbols_selected: {summary['symbols_selected']:>6}")
+    print(
+        f"    sum changed_symbols_promoted: {summary['symbols_promoted']:>6} "
+        f"(of {summary['measured']} measured)"
+    )
+    print(
+        f"    sum changed_symbols_selected: {summary['symbols_selected']:>6} "
+        f"(of {summary['with_fields']} fielded)"
+    )
+    print(
+        "    measured = comparison built or provably unnecessary; fielded = every"
+        " record stating the fields"
+    )
     print()
     print(
         "    proves a change (signal=ok, count>=1, baseline built, context differs): "
@@ -954,7 +997,7 @@ def _print_changed_file_promotion(records: list[dict[str, Any]]) -> None:
         f"{summary['present_but_inert']}"
     )
     print(
-        "    unmeasured (comparison failed or fields absent): "
+        "    unmeasured (comparison failed, not sampled, or fields absent): "
         f"{summary['unmeasured']}"
     )
     print()

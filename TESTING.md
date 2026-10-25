@@ -62,7 +62,27 @@ Use these to confirm code is correct before any live run. Fast, repeatable, no n
 `scripts\ab_launcher.py` builds and checks the configuration the two isolated-worktree
 A/B arms start with; `template` with no `--out` prints the experiment it would write, and
 the script never starts a gateway or harness and never contacts the backend, so it is a
-deterministic check rather than a live probe.
+deterministic check rather than a live probe. It also declares
+`APP_REPOSITORY_CONTEXT_CHANGED_FILES_COMPARISON_ENABLED=true` in the block both arms
+share: since roadmap B4 the gateway builds the no-bonus counterfactual only when asked,
+and a changed-file pair whose enabled arm never asked would report
+`changed_baseline_status=not_sampled` and leave `changed_context_differs`,
+`changed_primary_promoted` and `changed_symbols_promoted` as placeholders. The launcher
+refuses such a pair rather than rendering it, so a run it produces keeps the promotion
+fields readable; `tests\scripts\test_ab_launcher.py` pins that, and
+`test_both_arms_opt_into_the_counterfactual_comparison` pins that the setting is identical
+in both arms and so never appears in `show --diff`.
+
+The same opt-in is what makes an ordinary enabled request cheap. A gateway started with
+only `APP_REPOSITORY_CONTEXT_CHANGED_FILES_ENABLED=true` composes and sends its
+change-aware context once, and the requests whose bonus fired are exactly the ones that
+read `not_sampled`: the directly observable counters (`changed_files_signal`,
+`changed_files_count`, `changed_symbols_selected`) are still measurements, and the three
+that need a comparison are not. A log of that traffic can therefore say nothing about
+whether the bonus changed anything, and `scripts\analyze_sessions.py` counts those records
+as `unmeasured` rather than as `present but inert`, and keeps them out of the
+`changed_primary_promoted` count and its rate, which are taken over the records whose
+comparison was actually made (`built`) or proved unnecessary (`skipped_no_bonus`).
 `tests\scripts\test_ab_launcher.py` keeps that property: its
 `test_the_launcher_never_starts_a_process_or_opens_a_connection` replaces every
 `subprocess` and `os.exec`/`os.spawn` entry point with one that fails the test, then runs
@@ -249,6 +269,15 @@ type run_B.txt
 ```
 
 Compare `run_A.txt` and `run_B.txt` on the specific metrics named in the test request.
+
+When the one flag is `APP_REPOSITORY_CONTEXT_CHANGED_FILES_ENABLED`, set
+`APP_REPOSITORY_CONTEXT_CHANGED_FILES_COMPARISON_ENABLED=true` in **both** runs
+(roadmap B4 default: off). It changes nothing about what either arm sends - that is
+pinned by `test_the_comparison_setting_never_changes_what_is_sent` - and it is the only
+way the enabled arm's `changed_context_differs`, `changed_primary_promoted` and
+`changed_symbols_promoted` become measurements instead of `not_sampled` placeholders.
+Skipping it costs the second build out of the run, which is exactly what a latency
+measurement wants and exactly what a promotion measurement cannot read.
 
 ## Cline task strings - rules
 

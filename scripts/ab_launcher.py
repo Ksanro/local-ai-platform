@@ -37,6 +37,14 @@ either gateway starts. Nothing in the shared block is left to the terminal that
 starts an arm: a setting the launcher does not print is a code default, and a
 setting the terminal carries by accident is one half of the pair measured on it.
 
+One of those shared settings is the counterfactual comparison build,
+``APP_REPOSITORY_CONTEXT_CHANGED_FILES_COMPARISON_ENABLED``. Roadmap B4 made the
+gateway skip that second context build by default - B3 measured it at roughly
+450 ms of an enabled live request - and leaves its promotion counters unmeasured
+when it does; an experiment rendered here always says ``true``, because those
+counters are what an A/B of the changed-file bonus is measured with. See
+``_comparison_problems``.
+
 The tree both arms run from is checked without asking Git anything, because
 starting a process is outside this launcher's contract: it must be a directory
 holding a ``.git`` file whose ``gitdir:`` line reaches a worktree administration
@@ -177,6 +185,15 @@ SECRET_ENV_KEYS: tuple[str, ...] = ("OPENAI_API_KEY", "VLLM_API_KEY")
 #: to a config file and echoed by ``show``.
 SECRET_ENV_SUFFIXES: tuple[str, ...] = ("_API_KEY", "_ACCESS_TOKEN", "_TOKEN", "_SECRET")
 
+#: The one setting that decides whether an enabled request pays for the
+#: counterfactual second context build, and so whether its promotion counters are
+#: measurements or placeholders.  The gateway defaults it to ``False`` (roadmap
+#: B4, ``apps/gateway/core/config.py:106``); an A/B run rendered by this launcher
+#: always says ``true`` in both arms, because the pair it is comparing is the
+#: changed-file bonus and the counters that build produces are how the runbook
+#: says whether the bonus did anything (see ``_comparison_problems``).
+CHANGED_FILES_COMPARISON_ENV_KEY = "APP_REPOSITORY_CONTEXT_CHANGED_FILES_COMPARISON_ENABLED"
+
 #: Shared settings both arms must receive with identical values. This is the
 #: environment block README.md:58-70 documents for a gateway, plus the
 #: relationship-ranking switches that ``packages/context`` reads straight from the
@@ -185,6 +202,10 @@ SECRET_ENV_SUFFIXES: tuple[str, ...] = ("_API_KEY", "_ACCESS_TOKEN", "_TOKEN", "
 #: an arm does not get from a worktree is a ``.env``: a setting that is absent is
 #: a code default the experiment never declared, and a setting the terminal
 #: happens to carry is a difference between the arms nobody wrote down.
+#:
+#: ``APP_REPOSITORY_CONTEXT_CHANGED_FILES_COMPARISON_ENABLED`` is named by the
+#: constant below rather than spelled out here because this launcher insists on
+#: one value for it; see ``_comparison_problems``.
 REQUIRED_SHARED_ENV_KEYS: tuple[str, ...] = (
     "DEFAULT_MODEL",
     "APP_LOG_LEVEL",
@@ -196,6 +217,7 @@ REQUIRED_SHARED_ENV_KEYS: tuple[str, ...] = (
     "APP_REPOSITORY_CONTEXT_MAX_TOKENS",
     "APP_REPOSITORY_CONTEXT_INTENT_BUDGETS",
     "APP_REPOSITORY_CONTEXT_CHANGED_FILES_TTL_SECONDS",
+    CHANGED_FILES_COMPARISON_ENV_KEY,
     "APP_REPOSITORY_EXCLUDE_TESTS",
     "APP_REPOSITORY_EXCLUDE_GLOBS",
     "APP_CONTEXT_DELTA_INJECTION",
@@ -208,21 +230,29 @@ REQUIRED_SHARED_ENV_KEYS: tuple[str, ...] = (
     "APP_HISTORY_CAP_TOKENS",
 )
 
-#: The five settings that used to be inherited from whichever terminal started an
-#: arm, each with the value the source falls back to when it is unset. They are in
-#: ``REQUIRED_SHARED_ENV_KEYS`` for real, and this names what the value is worth:
+#: The six settings that can change what an A/B run measures without changing any
+#: prompt, each with the value the source falls back to when it is unset. They are
+#: in ``REQUIRED_SHARED_ENV_KEYS`` for real, and this names what the value is
+#: worth:
 #:
 #: * ``APP_REPOSITORY_CONTEXT_CHANGED_FILES_TTL_SECONDS`` (``0``,
 #:   ``apps/gateway/core/config.py:102``) - with ``0`` the changed-files snapshot is
 #:   taken once at startup; any other number lets a background task move it mid-run
 #:   (docs/live-gateway-runbook.md:416), which makes the dirty set a function of
 #:   when a probe happened to run.
-#: * ``APP_CONTEXT_INTENT_RULES`` (``{}``, ``apps/gateway/core/config.py:103``,
+#: * ``CHANGED_FILES_COMPARISON_ENV_KEY``, the counterfactual second context build
+#:   (``False`` in the gateway since roadmap B4,
+#:   ``apps/gateway/core/config.py:106``) - with it off an enabled request builds
+#:   its context once, so every record of the enabled arm reads
+#:   ``changed_baseline_status=not_sampled`` and the promotion counters are
+#:   placeholders. The runbook's changed-file gates read those counters, so this
+#:   launcher pins it on.
+#: * ``APP_CONTEXT_INTENT_RULES`` (``{}``, ``apps/gateway/core/config.py:107``,
 #:   README.md:66) - custom phrases redirect a request to another intent, so a
 #:   leftover rule in a terminal changes the retrieval profile of one arm.
-#: * ``APP_CONTEXT_DELTA_CACHE_SIZE`` (``256``, ``apps/gateway/core/config.py:106``)
+#: * ``APP_CONTEXT_DELTA_CACHE_SIZE`` (``256``, ``apps/gateway/core/config.py:110``)
 #:   - the number of conversation keys ``SentSymbolTracker`` holds
-#:   (``packages/pipeline/stages/repository_context.py:392``); a smaller one evicts
+#:   (``packages/pipeline/stages/repository_context.py:444``); a smaller one evicts
 #:   mid-run and re-sends symbols the arm had already sent.
 #: * ``RELATIONSHIP_RANKING_ENABLED`` and ``RELATIONSHIP_EXPANSION_ENABLED``
 #:   (``true``, ``packages/context/builder.py:205,209`` and
@@ -232,6 +262,7 @@ REQUIRED_SHARED_ENV_KEYS: tuple[str, ...] = (
 TEMPLATE_MEASUREMENT_ENV: Mapping[str, str] = MappingProxyType(
     {
         "APP_REPOSITORY_CONTEXT_CHANGED_FILES_TTL_SECONDS": "0",
+        CHANGED_FILES_COMPARISON_ENV_KEY: "true",
         "APP_CONTEXT_INTENT_RULES": "{}",
         "APP_CONTEXT_DELTA_CACHE_SIZE": "256",
         "RELATIONSHIP_RANKING_ENABLED": "true",
@@ -258,6 +289,7 @@ BOOL_ENV_KEYS: tuple[str, ...] = (
     "APP_SESSION_LOG_ENABLED",
     "APP_HISTORY_CAP_ENABLED",
     "APP_REPOSITORY_CONTEXT_CHANGED_FILES_ENABLED",
+    CHANGED_FILES_COMPARISON_ENV_KEY,
 )
 
 #: Keys read straight from the process environment by a comparison with the text
@@ -300,8 +332,8 @@ ALLOW_EMPTY_ENV_KEYS: tuple[str, ...] = ("APP_REPOSITORY_CONTEXT_INTENT_BUDGETS"
 
 #: Keys whose value must parse as an integer greater than zero.
 #: ``APP_CONTEXT_DELTA_CACHE_SIZE`` is the number of conversation keys the
-#: already-sent tracker keeps (``apps/gateway/core/config.py:106``, applied at
-#: ``packages/pipeline/stages/repository_context.py:392``); zero would remember
+#: already-sent tracker keeps (``apps/gateway/core/config.py:110``, applied at
+#: ``packages/pipeline/stages/repository_context.py:444``); zero would remember
 #: nothing and re-send the whole context on every turn.
 POSITIVE_INT_ENV_KEYS: tuple[str, ...] = (
     "APP_REPOSITORY_CONTEXT_MAX_TOKENS",
@@ -309,7 +341,7 @@ POSITIVE_INT_ENV_KEYS: tuple[str, ...] = (
 )
 
 #: Keys whose value must parse as an integer that is not negative; ``0`` means
-#: the setting derives its own value (``apps/gateway/core/config.py:110``) or
+#: the setting derives its own value (``apps/gateway/core/config.py:114``) or
 #: acts once (``apps/gateway/core/config.py:102``, the changed-files snapshot
 #: taken at startup).
 NON_NEGATIVE_INT_ENV_KEYS: tuple[str, ...] = (
@@ -327,7 +359,7 @@ ARM_FIELD_FOR_ENV_KEY: Mapping[str, str] = MappingProxyType(
 )
 
 #: Spellings of a boolean that pydantic-settings accepts for the ``bool`` fields
-#: in ``apps/gateway/core/config.py:95-110``; checked case-insensitively, and
+#: in ``apps/gateway/core/config.py:95-114``; checked case-insensitively, and
 #: verified against the installed pydantic (``yes``, ``on`` and ``1`` all parse
 #: as true). The first of each tuple is the spelling the launcher writes.
 BOOL_TRUE_VALUES: tuple[str, ...] = ("true", "t", "yes", "y", "on", "1")
@@ -781,6 +813,7 @@ def _config_problems(experiment: AbExperiment) -> list[str]:
     problems.extend(_shared_setting_problems(experiment))
     problems.extend(_timeout_problems(experiment))
     problems.extend(_arm_problems(experiment))
+    problems.extend(_comparison_problems(experiment))
     problems.extend(_symmetry_problems(experiment))
     problems.extend(_model_selection_problems(experiment))
     problems.extend(_harness_problems(experiment))
@@ -976,6 +1009,47 @@ def _arm_problems(experiment: AbExperiment) -> list[str]:
                 " or there is nothing to compare"
             )
     return problems
+
+
+def _comparison_problems(experiment: AbExperiment) -> list[str]:
+    """Check that a changed-file A/B actually measures the bonus it sends.
+
+    Roadmap B4 made the counterfactual second context build opt-in, so the
+    setting a gateway starts with decides whether the enabled arm's promotion
+    counters are measurements or placeholders.  With it off the arm still ranks
+    with the bonus and still sends it - and every one of its records then reads
+    ``changed_baseline_status=not_sampled``, because the second build that
+    answers "did the bonus change what was sent?" was never made.  Those three
+    counters are how ``docs/live-gateway-runbook.md`` decides whether the bonus
+    did anything, so a run that cannot state them is not the comparison this
+    launcher renders, and it is refused before either gateway starts.
+
+    Args:
+        experiment: The experiment being checked.
+
+    Returns:
+        One problem when the arms differ in the changed-file setting - which is
+        what makes this a changed-file A/B - and the shared block declares the
+        comparison off.  A key that is missing is left to
+        ``_shared_setting_problems``, which names it as the missing setting it
+        is, and a key one arm overrides is caught by ``_arm_env_problems``,
+        which refuses a per-arm difference in any shared name.
+    """
+    if len(experiment.arms) != 2:
+        return []
+    if {arm.changed_files_enabled for arm in experiment.arms} != {False, True}:
+        return []
+    value = experiment.shared_env.get(CHANGED_FILES_COMPARISON_ENV_KEY)
+    if value is None or value.strip().lower() not in BOOL_FALSE_VALUES:
+        return []
+    return [
+        f"{CHANGED_FILES_COMPARISON_ENV_KEY}={_format_bool(False)} in both arms; the enabled"
+        " arm would send the changed-file bonus without ever building the no-bonus context to"
+        " compare it with, so every one of its records reads"
+        " changed_baseline_status=not_sampled and its changed_context_differs,"
+        " changed_primary_promoted and changed_symbols_promoted are placeholders. Set it to"
+        f" {_format_bool(True)} to measure the pair this experiment is about"
+    ]
 
 
 def _port_problems(label: str, port: int, seen: dict[int, str]) -> list[str]:
@@ -1266,7 +1340,7 @@ def _value_problems(key: str, value: str) -> list[str]:
     if key in BOOL_ENV_KEYS and value.strip().lower() not in BOOL_TRUE_VALUES + BOOL_FALSE_VALUES:
         return [
             f"{key} is not a boolean pydantic-settings accepts;"
-            f" apps/gateway/core/config.py:95-110 declares it as a bool field, so {value!r} makes"
+            f" apps/gateway/core/config.py:95-114 declares it as a bool field, so {value!r} makes"
             " the arm fail to start (write 'true' or 'false')"
         ]
     if key in LITERAL_BOOL_ENV_KEYS and value.strip() not in LITERAL_BOOL_VALUES:
@@ -1317,7 +1391,7 @@ def _int_problems(key: str, value: str) -> list[str]:
         number = int(value.strip(), 10)
     except ValueError:
         return [
-            f"{key} must be an integer; apps/gateway/core/config.py:99-110 declares these as int"
+            f"{key} must be an integer; apps/gateway/core/config.py:99-114 declares these as int"
             f" fields, so {value!r} makes pydantic-settings refuse to start the arm at all"
         ]
     if number <= 0 and key in POSITIVE_INT_ENV_KEYS:

@@ -20,6 +20,7 @@ import pytest
 
 import scripts.ab_launcher as ab_launcher
 from scripts.ab_launcher import (
+    CHANGED_FILES_COMPARISON_ENV_KEY,
     HARNESS_TIMEOUT_MARGIN_SECONDS,
     REQUIRED_SHARED_ENV_KEYS,
     REQUIRED_WORKTREE_PATHS,
@@ -50,9 +51,11 @@ from scripts.ab_launcher import (
 
 SECRET_VALUE = "sk-should-never-be-printed"
 
-#: The settings that used to be inherited from whichever terminal started an arm.
+#: The settings that used to be inherited from whichever terminal started an arm,
+#: plus the counterfactual comparison that roadmap B4 turned into a setting.
 MEASUREMENT_ENV_KEYS = (
     "APP_REPOSITORY_CONTEXT_CHANGED_FILES_TTL_SECONDS",
+    CHANGED_FILES_COMPARISON_ENV_KEY,
     "APP_CONTEXT_INTENT_RULES",
     "APP_CONTEXT_DELTA_CACHE_SIZE",
     "RELATIONSHIP_RANKING_ENABLED",
@@ -803,7 +806,7 @@ def test_a_directory_that_was_never_made_is_refused_by_name(tmp_path: Path) -> N
 
 
 # ---------------------------------------------------------------------------
-# The five settings that can change what a run measures
+# The six settings that can change what a run measures
 # ---------------------------------------------------------------------------
 
 
@@ -942,3 +945,68 @@ def test_template_carries_the_measurement_settings(tmp_path: Path) -> None:
     for arm in experiment_document(experiment)["arms"].values():
         for key, value in TEMPLATE_MEASUREMENT_ENV.items():
             assert arm["environment"][key] == value, key
+
+
+# ---------------------------------------------------------------------------
+# The counterfactual comparison (roadmap B4)
+# ---------------------------------------------------------------------------
+
+
+def test_both_arms_opt_into_the_counterfactual_comparison(tmp_path: Path) -> None:
+    """A changed-file A/B always asks for the build its counters come from.
+
+    Roadmap B4 made the gateway stop building the no-bonus context by default, so
+    an arm that did not ask for it would still send the bonus and record
+    ``not_sampled`` on every request - and the promotion fields the runbook's
+    gates read would be placeholders on one side of the pair.
+    """
+    experiment = _experiment(tmp_path)
+    off = arm_environment(experiment, experiment.arms[0])
+    on = arm_environment(experiment, experiment.arms[1])
+
+    assert off[CHANGED_FILES_COMPARISON_ENV_KEY] == "true"
+    assert on[CHANGED_FILES_COMPARISON_ENV_KEY] == "true"
+    assert CHANGED_FILES_COMPARISON_ENV_KEY not in render_diff(experiment)
+
+
+def test_a_changed_file_ab_may_not_decline_the_comparison(tmp_path: Path) -> None:
+    """Saying ``false`` is refused: it would measure an arm that cannot be read."""
+    base = _experiment(tmp_path)
+    shared = dict(base.shared_env)
+    shared[CHANGED_FILES_COMPARISON_ENV_KEY] = "false"
+
+    problems = _problems(dataclasses.replace(base, shared_env=shared))
+
+    assert CHANGED_FILES_COMPARISON_ENV_KEY.lower() in problems
+    assert "not_sampled" in problems
+
+
+def test_only_a_value_that_reads_false_is_refused(tmp_path: Path) -> None:
+    """The setting is a gateway boolean, so every ``true`` spelling is accepted."""
+    base = _experiment(tmp_path)
+    for value in ("true", "TRUE", "True", "yes", "on", "1"):
+        shared = dict(base.shared_env)
+        shared[CHANGED_FILES_COMPARISON_ENV_KEY] = value
+
+        assert _problems(dataclasses.replace(base, shared_env=shared)) == "", value
+    for value in ("false", "FALSE", "no", "off", "0"):
+        shared = dict(base.shared_env)
+        shared[CHANGED_FILES_COMPARISON_ENV_KEY] = value
+
+        assert CHANGED_FILES_COMPARISON_ENV_KEY.lower() in _problems(
+            dataclasses.replace(base, shared_env=shared)
+        ), value
+
+
+def test_the_comparison_survives_a_config_round_trip(tmp_path: Path) -> None:
+    """What ``template`` writes is what a later ``show`` validates against."""
+    tree = _make_worktree(tmp_path / "rt")
+    experiment = template_experiment(name="rt", worktree=str(tree))
+
+    reloaded = experiment_from_dict(experiment_to_dict(experiment))
+
+    assert reloaded == experiment
+    assert validate_experiment(reloaded) == ()
+    assert (
+        arm_environment(reloaded, reloaded.arms[1])[CHANGED_FILES_COMPARISON_ENV_KEY] == "true"
+    )

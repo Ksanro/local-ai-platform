@@ -5,10 +5,13 @@ and it is only safe to record if it carries counts.  These tests pin both ends:
 the gateway mapping from the ``repository_context`` stage result onto the ASGI
 scope, and the record the session logger writes.
 
-The fields are counterfactual.  The stage re-ranks the same request without the
-working-tree bonus and compares the two contexts, so a test that could pass on
-"changed files were present" would be pinning the wrong contract.  No Git,
-model, or network is involved; the stage result is handed over directly.
+The fields are counterfactual.  The stage can re-rank the same request without the
+working-tree bonus and compare the two contexts, so a test that could pass on
+"changed files were present" would be pinning the wrong contract.  Since roadmap
+B4 it does that only when asked, which adds a fifth state to
+``changed_baseline_status`` - ``not_sampled`` - and makes it worth pinning that a
+request nobody compared cannot read as a request whose comparison found nothing.
+No Git, model, or network is involved; the stage result is handed over directly.
 """
 
 from __future__ import annotations
@@ -249,6 +252,62 @@ def test_clean_tree_and_disabled_signal_stay_distinguishable() -> None:
     assert disabled["changed_files_signal"] == "off"
 
 
+def test_an_unsampled_request_is_not_recorded_as_a_measured_zero() -> None:
+    """Roadmap B4 end to end: the second build was declined, not inconclusive.
+
+    An enabled request that fires the bonus no longer builds the no-bonus
+    context, so its three counterfactual fields are placeholders.  They read
+    exactly like a comparison that found no difference, which is why the status
+    has to survive from the stage result through the scope into the record: a
+    later reader must be able to tell the two requests apart.
+    """
+    unsampled = {
+        "changed_files_signal": "ok",
+        "changed_files_count": 1,
+        "changed_symbols_selected": 2,
+        "changed_primary_promoted": False,
+        "changed_symbols_promoted": 0,
+        "changed_context_differs": False,
+        "changed_baseline_status": "not_sampled",
+    }
+    measured = dict(unsampled, changed_baseline_status="built")
+
+    unsampled_record = _record(
+        _scope(**{f"session_{key}": value for key, value in unsampled.items()})
+    )["context"]
+    measured_record = _record(
+        _scope(**{f"session_{key}": value for key, value in measured.items()})
+    )["context"]
+
+    assert unsampled_record["changed_baseline_status"] == "not_sampled"
+    assert measured_record["changed_baseline_status"] == "built"
+    assert (
+        unsampled_record["changed_baseline_status"]
+        != measured_record["changed_baseline_status"]
+    )
+    # Everything the request knows without a counterfactual still crosses over.
+    for key in ("changed_files_signal", "changed_files_count", "changed_symbols_selected"):
+        assert unsampled_record[key] == measured_record[key] == unsampled[key], key
+    # The cost field stays on the log line: a record never carries it.
+    assert "changed_baseline_ms" not in unsampled_record
+
+
+def test_a_not_sampled_status_survives_the_type_coercion() -> None:
+    """The status is a state token, so the coercion must not fall back to ``none``.
+
+    ``none`` would mean "nothing needed comparing", which on a request whose
+    bonus fired is the wrong answer twice over: it hides that the comparison was
+    declined, and it makes the inert difference fields read as a measurement.
+    """
+    scope: dict[str, Any] = {}
+
+    _surface_changed_file_promotion(scope, {"changed_baseline_status": "not_sampled"})
+
+    assert scope["session_changed_baseline_status"] == "not_sampled"
+    record = _record(_scope(**scope))["context"]
+    assert record["changed_baseline_status"] == "not_sampled"
+
+
 def test_unavailable_signal_is_recorded_as_itself() -> None:
     """A failed source must not read as a clean tree or as a disabled feature."""
     context = _record(
@@ -276,7 +335,7 @@ def test_record_promotion_is_json_serialisable_and_count_only() -> None:
         if field == "changed_files_signal":
             assert value in ("ok", "off", "unavailable"), field
         elif field == "changed_baseline_status":
-            assert value in ("none", "built", "skipped_no_bonus", "failed"), field
+            assert value in ("none", "built", "skipped_no_bonus", "not_sampled", "failed"), field
         else:
             assert isinstance(value, (int, bool)) and not isinstance(value, str), field
     assert "changed_paths" not in decoded["context"]

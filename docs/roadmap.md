@@ -181,8 +181,9 @@ them.
    no budget overrun (highest estimated context 4091 of 4096), style clean in all eighteen
    answers, +228 prompt tokens per enabled request on average, and no unexplained or material
    latency regression at this sample size - +1.1 s per enabled request, 9.7 s over the nine, of
-   which ~450 ms a request is the counterfactual baseline build that B4 owns and this run left
-   untouched. `RankingConfig.WEIGHT_CHANGED_FILE` stays `+25`, the feature stays off by default,
+   which ~450 ms a request is the counterfactual baseline build that this run left
+   untouched and B4 has since made opt-in. `RankingConfig.WEIGHT_CHANGED_FILE` stays
+   `+25`, the feature stays off by default,
    and this passing run does not authorize switching it on: it prices and validates the
    rule. Full configuration, per-repeat tables, determinism, promotion counters, token and
    latency comparison and the recorded confounds are in `docs/live-gateway-runbook.md`,
@@ -195,11 +196,35 @@ them.
    same in both arms so it moves no verdict. Item A3 stays as written and stays open - it is
    about history capping using the resolved model's `chars_per_token`, which this
    run neither advances nor measures.
-4. **B4 - remove mandatory counterfactual cost.** Keep cheap direct counters on
-   every request, but make the second context build used for counterfactual
-   observability explicitly enabled or sampled. Records not compared must have
-   a distinct status such as `not_sampled`; they must not be classified as an
-   inert promotion. Complete this before any default-on decision.
+4. **B4 - remove mandatory counterfactual cost - DONE (2026-10-25).** The cheap
+   direct counters stay on every request and the second context build is now a
+   separate opt-in,
+   `APP_REPOSITORY_CONTEXT_CHANGED_FILES_COMPARISON_ENABLED`, default off, wired
+   through `Settings`, the gateway lifespan and `RepositoryContextStage`. An
+   ordinary enabled request that fires the bonus builds and sends its context
+   once and records `changed_baseline_status="not_sampled"` with
+   `changed_baseline_ms=0` - a state of its own, never `built`, `none`,
+   `skipped_no_bonus` or `failed`, so it cannot be read as a measured no-change.
+   What needs no counterfactual is still measured there: the signal state, the
+   changed-file count and the sent symbols that carry the bonus. What needs one -
+   `changed_context_differs`, `changed_primary_promoted`,
+   `changed_symbols_promoted` - keeps its name, type and place in the record and
+   is inert, the status being the only thing that says so. The setting never
+   changes what is sent: `test_the_comparison_setting_never_changes_what_is_sent`
+   serializes one change-aware request both ways and compares the provider
+   messages, and `test_an_enabled_request_without_the_opt_in_builds_once` counts
+   the builds. Turning the comparison on alone turns on neither ranking nor Git
+   capture. Opting in reproduces the old behavior exactly, `built`,
+   `skipped_no_bonus` and `failed` included, so B3's recorded measurements stand
+   as recorded. `scripts/ab_launcher.py` pins the setting to `true` in the shared
+   block of every experiment it renders and refuses a changed-file A/B that
+   declines it, and the offline probes in `scripts/quality_harness.py` opt in the
+   same way, so the promotion fields those workflows read stay measurable;
+   `scripts/analyze_sessions.py` tallies `not_sampled` with `failed`, as
+   unmeasured rather than inert. No ranking arithmetic and no recorded result
+   changed. This is the last cost question ahead of the decision below, which
+   stays open and is unchanged by this item: nothing here authorizes switching
+   the feature on.
 5. **Default and weight decision.** Only after B4, run the full fixed probe set
    with the candidate behavior across more than one controlled dirty-file
    layout. Decide the shipped weight and default from quality, style, context,
@@ -494,6 +519,19 @@ purpose. `changed_modules` reaches nothing else in the builder, which makes the
 skip exact. A stage that composes nothing still states the signal state it read,
 or `unavailable` when it failed before reading it, so a degraded request cannot
 record as a disabled feature.
+
+Roadmap B4 (2026-10-25) changed the trigger of that second build, not this
+paragraph's measurements. The build is now gated on
+`APP_REPOSITORY_CONTEXT_CHANGED_FILES_COMPARISON_ENABLED` in addition to the
+bonus count, and the setting is off by default, so an ordinary enabled request
+pays one build and records `changed_baseline_status="not_sampled"` - a fifth
+state, kept apart from `skipped_no_bonus`, which is still the proof that the two
+arms cannot differ and still costs nothing, and from `failed`, which is still an
+attempted comparison that could not be made. Everything described above, and the
+B3 figures recorded further below, was measured with that second build in place
+and stands as recorded; a run that wants those fields today has to ask for them,
+which is what `scripts/ab_launcher.py` now does for every experiment it renders
+and what `scripts/quality_harness.py` does for its offline probes.
 `scripts/analyze_sessions.py` summarizes the fields from session JSONL in a
 changed-file promotion section, splitting proved (primary changed, membership
 changed, reorder only) from present but inert and unmeasured, and counting records

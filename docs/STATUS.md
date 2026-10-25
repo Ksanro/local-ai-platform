@@ -3,7 +3,16 @@
 This file is the current runtime snapshot. It intentionally describes only
 what matters for the live gateway path and calls out dormant code explicitly.
 
-Last reviewed: 2026-10-25 (roadmap item B3 validated change-aware ranking live: three
+Last reviewed: 2026-10-25 (roadmap item B4 removed the mandatory per-request
+counterfactual cost from change-aware ranking: the no-bonus comparison build now
+sits behind `APP_REPOSITORY_CONTEXT_CHANGED_FILES_COMPARISON_ENABLED`, off by
+default, so an ordinary enabled request that fires the changed-file bonus builds
+and sends its context once and records `changed_baseline_status=not_sampled` - a
+state of its own, not a measured no-change - while every counter that needs no
+counterfactual stays exact, and a diagnostic run that opts in gets precisely the
+measurements B3 recorded. B3's numbers below stand as recorded, and the item that
+produced them is unchanged. Earlier the same day, B3 validated change-aware
+ranking live: three
 A/B pairs of two gateways, run from one detached worktree of `57bd045` holding no `.env`
 with one comment-only marker dirty per pair, three repeats per arm, against
 `qwen3.8-flash-next` on the vLLM backend through the alias `qwen38-27b` - eviction/guard
@@ -15,9 +24,9 @@ session record carries no ordered supporting-symbol list, so ordered determinism
 offline-probe and unit-test claim); no error, timeout, budget overrun or style regression in
 eighteen requests, and no unexplained or material latency regression at that sample size - 9.7 s
 more across the nine enabled requests, ~450 ms of each one being the counterfactual baseline
-build, which is B4's to remove. `RankingConfig.WEIGHT_CHANGED_FILE`
+build, which B4 has since made opt-in. `RankingConfig.WEIGHT_CHANGED_FILE`
 stays `+25`, the feature stays off by default, and a passing B3 does not authorize switching
-it on. Earlier the same day, roadmap item B1 chose and implemented one offline safety
+it on. Before that, roadmap item B1 chose and implemented one offline safety
 rule for change-aware repository-context ranking: a promoted changed-file symbol may no
 longer push the best un-promoted symbol of a module the query matched out of the ranked
 positions that reach the prompt with source text, and the symbol it restores is found
@@ -148,6 +157,26 @@ file may still win the primary, which is what the signal is for. Nothing else
 about the bonus changed: same gate, same `+25`, same reasons, same counters, and
 no guard pass at all when the bonus touched nothing - a disabled feature and a
 clean tree rank exactly as they did before.
+
+The counterfactual that makes promotion measurable is opt-in since 2026-10-25
+(roadmap B4). `RepositoryContextStage` builds the no-bonus context only when
+`APP_REPOSITORY_CONTEXT_CHANGED_FILES_COMPARISON_ENABLED=true`, which the gateway
+passes through at startup and which is off by default: an ordinary enabled request
+now composes, serializes and sends its change-aware context once, where it used to
+compose it twice - B3 priced that second build at roughly 450 ms of a live
+request's wall time. What a request can state without a counterfactual is
+unchanged and still exact: `changed_files_signal`, `changed_files_count`,
+`changed_symbols_selected` and the rest of the direct counts. What needs one -
+`changed_context_differs`, `changed_primary_promoted`, `changed_symbols_promoted` -
+keeps its field, name and type and is inert, and
+`changed_baseline_status="not_sampled"` is what says so, so such a record cannot be
+read as a comparison that found no difference. The setting changes nothing about
+what is sent, and on its own it switches on neither the ranking bonus nor the Git
+snapshot: with the feature off the status stays `none`. `scripts/ab_launcher.py`
+declares it `true` in the shared block of every experiment it renders and refuses a
+changed-file A/B that declines it, and the offline probes in
+`scripts/quality_harness.py` build with it on, so a controlled comparison still
+measures what B3 measured.
 
 How large that bonus should be is measured, and still open. Two terms have to be
 kept apart, because `EXACT_SYMBOL_NAME` fires when *any* segment of a qualified
@@ -323,7 +352,14 @@ lifespan startup that calls the signal on a worker thread, so refreshing never
 runs inside a request; with the default
 `0`, "currently being edited" means "dirty when the gateway started", exactly
 like the index itself. A clean tree, a directory without Git metadata, and a
-failed snapshot all fall back to today's behaviour. Paths are matched after
+failed snapshot all fall back to today's behaviour.
+`APP_REPOSITORY_CONTEXT_CHANGED_FILES_COMPARISON_ENABLED` (default `false`,
+roadmap B4) is a third, separate opt-in: it lets the stage build the no-bonus
+context that `changed_context_differs`, `changed_primary_promoted` and
+`changed_symbols_promoted` are measured from, it changes nothing about the
+context that is sent, and on its own it switches on neither the ranking bonus nor
+the Git snapshot - startup states it as
+`changed_files_comparison enabled=true|false` either way. Paths are matched after
 `realpath`, so a repository configured through a symlink, junction, `subst`
 drive or 8.3 short name still works, and the count of paths that resolve
 outside the indexed root is reported. Logs and stage data carry counts only -
@@ -351,8 +387,13 @@ and in the session record's `context` block:
 - `changed_primary_promoted` - whether the bonus changed the primary symbol;
 - `changed_baseline_status` - whether that comparison ran: `none` (nothing to
   compare), `built` (compared), `skipped_no_bonus` (no candidate received the
-  bonus, so the two contexts are identical by construction), or `failed` (the
-  comparison could not be built - an unmeasurable request, not an inert one).
+  bonus, so the two contexts are identical by construction), `not_sampled` (the
+  bonus fired and the comparison was deliberately not asked for, which is what an
+  ordinary enabled request records since roadmap B4), or `failed` (the comparison
+  was asked for and could not be built - an unmeasurable request, not an inert
+  one). Only `built` and `skipped_no_bonus` make the three `*_promoted` /
+  `*_differs` fields readings; on `not_sampled` and `failed` they are placeholders
+  and the status is what says so.
 
 The counters describe the final context - after budget trimming and delta
 suppression - so a promoted candidate that did not survive the budget is not
@@ -364,19 +405,29 @@ bonus changed what was sent; a record with `changed_primary_promoted=false` and
 `changed_symbols_promoted=0` inside that proof is the reorder-only case.
 `changed_symbols_selected` above zero with `changed_context_differs=false` and a
 status of `built` or `skipped_no_bonus` proves it was present and changed
-nothing, and `failed` proves nothing at all. `changed_files_count` above zero
+nothing. `not_sampled` and `failed` prove nothing at all: on the first the
+comparison was declined, on the second it was tried and could not be made, and
+neither is the finding that the bonus changed nothing.
+`changed_files_count` above zero
 with `changed_symbols_selected` zero means the tree was dirty and nothing
 qualified, which is a selection-gate result rather than a broken signal.
 Building the comparison context costs a second full context build: measured on
 this repository's real index (328 modules, 8 changed) about 50 ms becomes about
-105 ms per request on a dirty tree, so it is paid only when the ranking pass gave
-the bonus to at least one candidate - `changed_modules` reaches nothing else in
-the builder, which makes the skip exact. The cost of a build that was made is
-reported as `changed_baseline_ms` on the log line only and never recorded.
+105 ms per request on a dirty tree, and B3 measured roughly 450 ms of a live
+enabled request. Since roadmap B4 it is paid only when
+`APP_REPOSITORY_CONTEXT_CHANGED_FILES_COMPARISON_ENABLED=true` - off by default,
+so an ordinary request does not pay it at all - and then only when the ranking
+pass gave the bonus to at least one candidate: `changed_modules` reaches nothing
+else in the builder, which makes that second skip exact. The cost of a build that
+was made is reported as `changed_baseline_ms` on the log line only and never
+recorded; a request that skipped the comparison reports `0`.
 `scripts/analyze_sessions.py` aggregates the fields from session JSONL without
 reading any content, tallies `proved` (with a primary-changed,
 membership-changed and reorder-only breakdown) apart from `present but inert` and
-`unmeasured`, and separates records that predate them from every rate - see the
+`unmeasured` - which is where a `not_sampled` record lands - keeps the unmeasured
+records out of the counterfactual counts and their rate, which divide by the
+records whose comparison was made or proved unnecessary, and separates records
+that predate them from every rate - see the
 runbook.
 
 For anaphoric multi-turn follow-ups such as "for that capping logic" or
@@ -836,7 +887,8 @@ The count-only changed-file promotion counters ride the same gate:
 `tests/scripts/test_analyze_sessions_promotion.py`, plus the existing
 `tests/pipeline/test_repository_context_changed_files.py`,
 `tests/pipeline/test_repository_context_stage.py` and
-`tests/context/test_changed_file_ranking.py` - 139 tests. Measured on
+`tests/context/test_changed_file_ranking.py` - 182 tests with roadmap B4 and its
+review fix in the tree, 139 when the count was first recorded. Measured on
 2026-10-10 (Python 3.13.14) with this work in the tree,
 `bash scripts/precommit_test_gate.sh --full` ran the whole suite at the documented
 dormant baseline: `43 failed, 4645 passed, 3 skipped`, gate output

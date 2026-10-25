@@ -172,3 +172,95 @@ def test_lifespan_schedules_background_refresh_for_a_positive_ttl(
 
     # Leaving the lifespan cancels the task instead of orphaning it.
     assert refresher.running is False
+
+
+def test_lifespan_does_not_compare_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    """An enabled signal must not buy the counterfactual build unasked (B4)."""
+    from starlette.testclient import TestClient
+
+    import apps.gateway.main as gateway_main
+    from apps.gateway.core.config import Settings
+
+    monkeypatch.setattr(
+        gateway_main,
+        "get_settings",
+        lambda: Settings(
+            repository_path=str(tmp_path),
+            models_config="",
+            repository_context_changed_files_enabled=True,
+        ),
+    )
+
+    with TestClient(
+        gateway_main.create_app(), raise_server_exceptions=False
+    ) as client:
+        stage = _repository_context_stage(client)
+
+    assert stage._changed_files is not None
+    assert stage._changed_files_comparison_enabled is False
+
+
+def test_lifespan_passes_the_comparison_opt_in_to_the_stage(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    """A diagnostic run reaches the stage through the same setting it starts with."""
+    from starlette.testclient import TestClient
+
+    import apps.gateway.main as gateway_main
+    from apps.gateway.core.config import Settings
+
+    monkeypatch.setattr(
+        gateway_main,
+        "get_settings",
+        lambda: Settings(
+            repository_path=str(tmp_path),
+            models_config="",
+            repository_context_changed_files_enabled=True,
+            repository_context_changed_files_comparison_enabled=True,
+        ),
+    )
+
+    with TestClient(
+        gateway_main.create_app(), raise_server_exceptions=False
+    ) as client:
+        stage = _repository_context_stage(client)
+
+    assert stage._changed_files_comparison_enabled is True
+
+
+def test_lifespan_comparison_opt_in_alone_does_not_activate_the_signal(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    """Asking for the measurement must not switch on ranking or capture any Git."""
+    from starlette.testclient import TestClient
+
+    import apps.gateway.main as gateway_main
+    from apps.gateway.core.config import Settings
+
+    monkeypatch.setattr(
+        gateway_main,
+        "get_settings",
+        lambda: Settings(
+            repository_path=str(tmp_path),
+            models_config="",
+            repository_context_changed_files_enabled=False,
+            repository_context_changed_files_comparison_enabled=True,
+        ),
+    )
+
+    with TestClient(
+        gateway_main.create_app(), raise_server_exceptions=False
+    ) as client:
+        stage = _repository_context_stage(client)
+        refresher = client.app.state.changed_files_refresher
+
+    assert stage._changed_files is None
+    assert refresher is None
+    # The knob is still carried to the stage, where it can only ever be inert:
+    # with no changed modules there is nothing for a counterfactual to compare.
+    assert stage._changed_files_comparison_enabled is True

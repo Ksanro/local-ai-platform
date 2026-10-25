@@ -383,15 +383,35 @@ $env:APP_REPOSITORY_CONTEXT_CHANGED_FILES_ENABLED='true'
 .\uv.exe run python -m uvicorn apps.gateway.main:create_app --factory --port 8001
 ```
 
+That is all a normal enabled request needs. To also measure what the bonus
+*changed* - the counterfactual this section's tables are read from - set the
+second flag, which roadmap B4 made opt-in and off by default:
+
+```powershell
+$env:APP_REPOSITORY_CONTEXT_CHANGED_FILES_ENABLED='true'
+$env:APP_REPOSITORY_CONTEXT_CHANGED_FILES_COMPARISON_ENABLED='true'
+.\uv.exe run python -m uvicorn apps.gateway.main:create_app --factory --port 8001
+```
+
+Without it the stage composes and sends the change-aware context once and never
+builds the no-bonus one, so every request whose bonus fired records
+`changed_baseline_status=not_sampled` and the three difference fields are
+placeholders. The comparison setting alone turns on neither the ranking bonus nor
+the Git capture, and never changes what is sent.
+
 Check that startup captured something - the line reports counts only, never
 paths or contents:
 
 ```powershell
 # in the gateway terminal
 changed_files_signal enabled=true paths=5 captures=1 failures=0 outside_root=0 last_error=none
+changed_files_comparison enabled=false
 ```
 
-`paths=0` means a clean tree (expected on a freshly committed checkout); take the
+The second line states the effective comparison setting, and it is stated whether
+or not the signal above it is enabled, because it can only ever be inert without
+the feature. `paths=0` means a clean tree (expected on a freshly committed
+checkout); take the
 same number from `scripts\git_change_snapshot.py --json .` to cross-check.
 `last_error` names an exception type only, and a non-zero `failures` value means
 ranking fell back to its normal behaviour. A non-zero `outside_root` with
@@ -403,6 +423,11 @@ Per-request lines carry the same bound, and name the promotion in counts only:
 ```text
 repository_context request_id=... context_status=ok ... estimated_tokens=1840 changed_files_signal=ok changed_files_count=5 changed_symbols_selected=2 changed_primary_promoted=True changed_symbols_promoted=1 changed_context_differs=True changed_baseline_status=built changed_baseline_ms=0.4 duration_ms=...
 ```
+
+That line is a request whose run asked for the comparison. The ordinary enabled
+request today is the same line with
+`changed_baseline_status=not_sampled changed_baseline_ms=0.0`: the changed-file
+counters are still exact, and the three difference fields say nothing.
 
 The same seven fields also land in the session record's `context` block, so a
 session log alone is enough to measure the signal (`changed_baseline_ms` is a
@@ -416,13 +441,17 @@ cost, so it stays on the log line and is never recorded):
 | `changed_context_differs` | whether the sent context differs from the same request composed without the bonus - order included, which is what a flat bonus usually moves |
 | `changed_symbols_promoted` | symbols sent now that the same request re-ranked without the bonus did not send |
 | `changed_primary_promoted` | whether the bonus changed the primary symbol |
-| `changed_baseline_status` | whether that comparison ran: `none`, `built`, `skipped_no_bonus`, or `failed` |
+| `changed_baseline_status` | whether that comparison ran, and if not, why: `none` (nothing needed comparing), `built` (compared), `skipped_no_bonus` (no candidate carried the bonus, so the two arms cannot differ), `not_sampled` (the bonus fired and the comparison was not asked for - the ordinary enabled request since roadmap B4), or `failed` (it was asked for and could not be built) |
 
 `changed_symbols_selected` answers "was the bonus in the context";
 `changed_context_differs` answers "did it change the context", because the stage
-builds the no-bonus context for the same request and compares the two composed
-packages. The two `promoted` fields are detail on top of that difference: which
-part of it the primary and the added symbols account for. Read together:
+can build the no-bonus context for the same request and compare the two composed
+packages - and since roadmap B4 only when
+`APP_REPOSITORY_CONTEXT_CHANGED_FILES_COMPARISON_ENABLED=true` says to. The two
+`promoted` fields are detail on top of that difference: which part of it the
+primary and the added symbols account for. Only `built` and `skipped_no_bonus`
+make those three fields readings; on `not_sampled` and `failed` they are
+placeholders that the status field unmasks. Read together:
 
 - `changed_files_signal=ok`, `changed_files_count >= 1`,
   `changed_baseline_status=built` and `changed_context_differs=true` - the bonus
@@ -436,6 +465,10 @@ part of it the primary and the added symbols account for. Read together:
   promotion;
 - `changed_files_count > 0` with `changed_symbols_selected = 0` - the tree was
   dirty and nothing qualified, which is the selection gate, not a failure;
+- `changed_baseline_status=not_sampled` - the bonus fired, the context went out
+  once, and nobody built the no-bonus one. Every counter that does not need the
+  comparison is exact; the three that do are placeholders, and this record is not
+  evidence that the bonus changed nothing;
 - `changed_baseline_status=failed` - the comparison could not be built, so the
   request is unmeasurable; it is neither a promotion nor a measured zero;
 - `changed_files_signal=unavailable` - the source failed, so every other field on
@@ -450,9 +483,11 @@ suppression - so a promoted candidate that did not survive the budget is not
 counted. The comparison context is never sent, never stored, and never written to
 a record. Building it costs a second full context build, which on a dirty tree
 roughly doubles this stage - measured on this repository's real index of 328
-modules with 8 changed, about 50 ms becomes about 105 ms - so it is built only
-when the ranking pass gave the bonus to at least one candidate, and the cost of a
-build that was made is what `changed_baseline_ms` states. Note that
+modules with 8 changed, about 50 ms becomes about 105 ms, and B3's live pairs
+measured roughly 450 ms of request time - so since roadmap B4 it is made only when
+the run asks for it, and then only when the ranking pass gave the bonus to at
+least one candidate, and the cost of a build that was made is what
+`changed_baseline_ms` states - `0` on a request that was never compared. Note that
 `changed_files_signal` also appears in the startup line quoted above, where it
 names the snapshot rather than a per-request state.
 
@@ -470,8 +505,19 @@ and by `changed_baseline_status`, counts the records with
 `changed_symbols_promoted` and `changed_symbols_selected`, and splits the three
 verdicts above: `proves a change` (broken down into `primary changed`,
 `membership changed` and `reorder only`), `present but inert`, and `unmeasured`.
-A record whose comparison `failed`, and one that never states the comparison
-fields, land in `unmeasured` and in neither verdict. Records written before the
+Those counts have two denominators, because the two kinds of field are not
+equally available: `changed_files_count > 0` and `changed_symbols_selected` are
+directly observable and are tallied over every record stating the fields, while
+`changed_primary_promoted` and `changed_symbols_promoted` need a comparison, so
+they are tallied over the `measured` records only - a status of `built` or
+`skipped_no_bonus` under an `ok` signal - and the printed rate says `of N
+measured` rather than `of fielded`. Averaging a `not_sampled` placeholder `false`
+into that rate would report a request nobody compared as a measured no-change.
+A record whose comparison `failed` or was `not_sampled`, and one that never states
+the comparison fields, land in `unmeasured` and in neither verdict - which since
+roadmap B4 is where an ordinary production request sits, so a log of normal traffic
+says nothing either way about the bonus and must not be read as if it said
+"inert". Records written before the
 fields existed are listed as `predating the fields` and excluded from every rate,
 so an old log can neither inflate nor deflate the measurement. Point it at the
 path the gateway writes to (`APP_SESSION_LOG_PATH`, default
@@ -512,13 +558,22 @@ over a working tree in which that pair's module is dirty - and in which nothing 
 the index can see is dirty, or the enabled arm's bonus is not the pair's module's
 bonus; the run that needed that used a detached worktree, described below. Both arms
 are sent the identical prompt, because each pair reads one shared prompt constant.
+Both arms also set `APP_REPOSITORY_CONTEXT_CHANGED_FILES_COMPARISON_ENABLED=true`:
+since roadmap B4 an enabled arm that does not ask for the counterfactual still sends
+the bonus and still ranks with it, but records `not_sampled` and leaves
+`changed_context_differs`, `changed_primary_promoted` and
+`changed_symbols_promoted` as placeholders, so the promotion gates below could not be
+read at all. `scripts/ab_launcher.py` declares that setting in the shared block of
+every experiment it renders and refuses a changed-file pair that declines it.
 
 ```powershell
 # arm 1: gateway started with APP_REPOSITORY_CONTEXT_CHANGED_FILES_ENABLED=false
+#        and APP_REPOSITORY_CONTEXT_CHANGED_FILES_COMPARISON_ENABLED=true
 #        (and APP_REPOSITORY_CONTEXT_MAX_TOKENS=4096 on both arms: all three scored
 #         implementation facts are lost at that configured budget)
 .\uv.exe run python scripts\quality_harness.py --probe explain_changed_files_repository_index --repeat 3 --json --model qwen38-27b --max-tokens 8192 --timeout 300 --reasoning-model qwen38-27b > logs\quality_changed_files_off.json
 # arm 2: restart with APP_REPOSITORY_CONTEXT_CHANGED_FILES_ENABLED=true
+#        (keeping APP_REPOSITORY_CONTEXT_CHANGED_FILES_COMPARISON_ENABLED=true)
 .\uv.exe run python scripts\quality_harness.py --probe explain_changed_files_repository_index --repeat 3 --json --model qwen38-27b --max-tokens 8192 --timeout 300 --reasoning-model qwen38-27b > logs\quality_changed_files_on.json
 .\uv.exe run python scripts\analyze_sessions.py logs\changed_files_on.jsonl
 # the control pair, same two gateways, a different file dirty in the tree
@@ -761,6 +816,13 @@ override of a name that is not `APP_SESSION_LOG_PATH` or
 `APP_REPOSITORY_CONTEXT_CHANGED_FILES_ENABLED`. They differ in exactly those two lines:
 `APP_SESSION_LOG_PATH`, and
 `APP_REPOSITORY_CONTEXT_CHANGED_FILES_ENABLED` (`false` for arm 1, `true` for arm 2).
+Roadmap B4 later added a sixth line to the shared block -
+`APP_REPOSITORY_CONTEXT_CHANGED_FILES_COMPARISON_ENABLED=true` - which both arms of a
+re-run receive identically, so a re-run still differs in exactly those same two lines;
+this run predates the setting, when the counterfactual was not optional and every
+enabled request that fired the bonus paid for it. That is why the enabled arm's records
+below carry `changed_baseline_status=built`, and why a present-day ordinary request
+would instead read `not_sampled`.
 Observed before the first request: backend `/v1/models` served one model,
 `qwen3.8-flash-next` (`owned_by: vllm`, `max_model_len: 400000`); the gateway's
 `/v1/models` listed the alias `qwen38-27b`; `/debug/runtime-context` reported

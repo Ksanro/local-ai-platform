@@ -1376,7 +1376,16 @@ def _probe_stage(
     """
     from packages.pipeline.stages.repository_context import RepositoryContextStage
 
-    kwargs: dict[str, Any] = {"index": index, "changed_files": source}
+    kwargs: dict[str, Any] = {
+        "index": index,
+        "changed_files": source,
+        # The probe compares the two arms of one request inside one process, so it
+        # always wants the counterfactual built; the gateway, since roadmap B4,
+        # does not build it unless asked.  Left to the settings default the probe
+        # would report ``not_sampled`` and every promotion counter it prints would
+        # be a placeholder.
+        "changed_files_comparison_enabled": True,
+    }
     if stage_kwargs is None:
         try:
             from apps.gateway.core.config import get_settings

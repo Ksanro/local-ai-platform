@@ -192,6 +192,14 @@ async def lifespan(app: FastAPI):
                 change_refresher.interval_seconds,
             )
     app.state.changed_files_refresher = change_refresher
+    # The counterfactual comparison is a separate opt-in on top of the signal
+    # (roadmap B4): it decides what the stage measures after it has composed the
+    # context, never what the stage sends, so it is stated even when the signal
+    # itself is off - and it cannot start a Git capture on its own.
+    logger.info(
+        "changed_files_comparison enabled=%s",
+        "true" if settings.repository_context_changed_files_comparison_enabled else "false",
+    )
 
     if model_router is not None:
         engine = PipelineEngine()
@@ -208,6 +216,9 @@ async def lifespan(app: FastAPI):
                 max_context_tokens=settings.repository_context_max_tokens,
                 intent_context_budgets=settings.repository_context_intent_budget_map,
                 changed_files=changed_files,
+                changed_files_comparison_enabled=(
+                    settings.repository_context_changed_files_comparison_enabled
+                ),
             )
         )
         # ProviderStage is routing-agnostic — reads from context.resolved_model.
