@@ -13,7 +13,7 @@ from contextlib import contextmanager
 import pytest
 
 from packages.context.builder import ContextBuilder
-from packages.context.models import ContextCandidate, ContextQuery
+from packages.context.models import ContextCandidate, ContextQuery, ContextResult
 from packages.context.ranking import RankingEngine
 from packages.context.ranking_config import RankingConfig
 from packages.context.scoring import (
@@ -919,3 +919,405 @@ def test_promotion_guard_scans_past_the_candidate_it_did_not_promote(
     # And it is the same ranking every time it is asked for - the pass above ran
     # before the guard was switched off below, so it is the guarded order twice.
     assert _names(repeated) == _names(guarded)
+
+
+# ------------------------------------------------------------------
+# More than one candidate lost a content slot
+#
+# Every case above displaces exactly one untouched symbol, so none of them shows
+# what the scan is permitted to do when several do.  One dirty file can pass a
+# whole block of clean candidates at once, and then the prefix the prompt renders
+# source from has fewer positions left than modules that lost them.  The rule is
+# still a restore, not a reset, and a restore has one target: the strongest of
+# the displaced.  Pulling the second one forward as well would be a rule about
+# how many modules appear in a prompt, which is module spread - a different
+# feature with its own weight, budget and measurements.
+#
+# The mirror case matters just as much: when the last content slot is already
+# held by a candidate the promotion did not touch, there is nothing left to take
+# back, and taking one anyway moves the loss from the dirty file to the guard.
+# ------------------------------------------------------------------
+
+MULTI_QUERY = GUARD_QUERY
+MULTI_ANCHOR = GUARD_ANCHOR
+MULTI_ANCHOR_MODULE = GUARD_ANCHOR_MODULE
+MULTI_SECOND = "modules/beta/alpha.WidgetDepot"
+MULTI_SECOND_MODULE = "modules/beta/alpha"
+MULTI_PROMOTED_MODULE = GUARD_PROMOTED_MODULE
+#: The order the dirty file's three symbols hold among themselves, which is the
+#: documented tie-break - ``WidgetOne``, ``WidgetThree``, ``WidgetTwo``.
+MULTI_PROMOTED_TIED = (
+    "modules/beta/gamma.WidgetOne",
+    "modules/beta/gamma.WidgetThree",
+    "modules/beta/gamma.WidgetTwo",
+)
+
+
+def _multi_candidates() -> list[ContextCandidate]:
+    """Two untouched modules that lead together, and a dirty file behind them.
+
+    All five symbols carry the same relevance - each has one name segment equal to
+    a query token and two module path tokens in the question - so they score level
+    before the working tree is consulted, and the dirty file's three symbols clear
+    the same bar the moment the bonus is added.
+    """
+    return [
+        _candidate(MULTI_ANCHOR, MULTI_ANCHOR_MODULE),
+        _candidate(MULTI_SECOND, MULTI_SECOND_MODULE),
+    ] + [_candidate(name, MULTI_PROMOTED_MODULE) for name in MULTI_PROMOTED_TIED]
+
+
+def _rank_multi(
+    candidates: list[ContextCandidate] | None = None,
+    changed: frozenset[str] = frozenset(),
+) -> list[ContextCandidate]:
+    """Rank a multi-candidate fixture through a plain engine."""
+    return RankingEngine(changed_modules=changed).rank(
+        MULTI_QUERY, _multi_candidates() if candidates is None else candidates
+    )
+
+
+#: The mirror shape: one untouched symbol strong enough to survive the promotion
+#: inside the prefix, one that is not, and a dirty symbol in each of the two
+#: modules the promotion touched.
+MULTI_KEPT = MULTI_ANCHOR
+MULTI_DISPLACED = MULTI_SECOND
+MULTI_LIFTED_MODULE = "modules/beta/quiet"
+MULTI_DIRTY = ("modules/beta/gamma.WidgetOne", "modules/beta/quiet.WidgetTwo")
+
+#: The three symbols of the changed file in ``_multi_index``, in the order the
+#: pipeline's final sort leaves them - by name, because they score identically.
+MULTI_DIRTY_BY_NAME = sorted(MULTI_PROMOTED_TIED)
+
+
+def _slot_kept_candidates() -> list[ContextCandidate]:
+    """A fixture in which the slot the guard restores into is already held.
+
+    Scoring uses the extra shapes ``_shape_candidate`` exposes: the kept symbol is
+    a package export, so it lands two tiers above the rest, and the second dirty
+    symbol carries a docstring, so the bonus drops it between the other two - which
+    is what leaves the weakest untouched symbol as the only candidate the promotion
+    displaced.
+    """
+    return [
+        _shape_candidate(MULTI_KEPT, MULTI_ANCHOR_MODULE, exported=True),
+        _shape_candidate(MULTI_DISPLACED, MULTI_SECOND_MODULE),
+        _shape_candidate(MULTI_DIRTY[0], MULTI_PROMOTED_MODULE),
+        _shape_candidate(
+            MULTI_DIRTY[1],
+            MULTI_LIFTED_MODULE,
+            docstring="One path token, so the bonus lands this symbol between the others.",
+        ),
+    ]
+
+
+def test_promotion_guard_restores_one_slot_when_several_candidates_lose_theirs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One dirty file, two displaced modules, one restored slot.
+
+    Both anchors hold a content position with the tree clean and both lose one to
+    the promotion with it dirty, so this is the shape where a second restore would
+    quietly turn the guard into a breadth rule.  It restores the strongest and
+    leaves the rest of the order the promotion produced.
+    """
+    slots = RankingConfig.PROMOTION_ANCHOR_SLOTS
+    clean_order = [MULTI_ANCHOR, MULTI_SECOND, *MULTI_PROMOTED_TIED]
+    guarded = _rank_multi(changed=frozenset({MULTI_PROMOTED_MODULE}))
+
+    # The fixture: five symbols level on relevance, so the tie-break - not the
+    # working tree - is what seats them, and both anchors sit inside the prefix.
+    clean = _rank_multi()
+    assert _names(clean) == clean_order
+    assert len({candidate.score for candidate in clean}) == 1
+    assert _names(clean)[:slots] == [MULTI_ANCHOR, MULTI_SECOND]
+
+    # The dirty file keeps the primary slot, which is what the signal is for, and
+    # keeps the forward move the bonus won for the rest of its symbols.
+    assert _names(guarded)[0] == MULTI_PROMOTED_TIED[0]
+    assert RankingReason.CHANGED_FILE in guarded[0].reasons
+    assert _names(guarded).index(MULTI_PROMOTED_TIED[1]) < _names(clean).index(
+        MULTI_PROMOTED_TIED[1]
+    )
+
+    # The strongest of the displaced is back inside the rendered prefix.
+    assert _names(guarded)[slots - 1] == MULTI_ANCHOR
+    # The weaker one is not: selected, counted, named with its signature - and
+    # last, exactly where the promotion left it.
+    assert _names(guarded).index(MULTI_SECOND) == len(guarded) - 1
+    assert RankingReason.CHANGED_FILE not in guarded[-1].reasons
+
+    # A restore and nothing more: take the anchor out and the order is the one the
+    # bonus produced, and no candidate appears or disappears.
+    monkeypatch.setattr(
+        RankingEngine, "_protect_promotion_anchor", lambda self, ranked: ranked
+    )
+    displaced = _rank_multi(changed=frozenset({MULTI_PROMOTED_MODULE}))
+    assert _names(displaced) == [*MULTI_PROMOTED_TIED, MULTI_ANCHOR, MULTI_SECOND]
+    assert [name for name in _names(guarded) if name != MULTI_ANCHOR] == [
+        name for name in _names(displaced) if name != MULTI_ANCHOR
+    ]
+    assert sorted(_names(guarded)) == sorted(_names(clean))
+
+
+def test_promotion_guard_picks_the_tie_break_and_not_the_first_candidate_in_line() -> None:
+    """Level scores: the protected module is the one the tie-break seats first.
+
+    Insertion order is the thing a caller could accidentally rely on, so the two
+    anchors are handed over the other way round here.  The guard scans the ranked
+    list, and the ranked order of level candidates is the documented tie-break,
+    which puts ``modules/alpha/beta`` before ``modules/beta/alpha``.
+    """
+    candidates = [
+        _candidate(MULTI_SECOND, MULTI_SECOND_MODULE),
+        _candidate(MULTI_ANCHOR, MULTI_ANCHOR_MODULE),
+    ] + [_candidate(name, MULTI_PROMOTED_MODULE) for name in MULTI_PROMOTED_TIED]
+    guarded = _rank_multi(candidates, frozenset({MULTI_PROMOTED_MODULE}))
+
+    assert _names(guarded)[RankingConfig.PROMOTION_ANCHOR_SLOTS - 1] == MULTI_ANCHOR
+    assert _names(guarded)[-1] == MULTI_SECOND
+
+
+def test_promotion_guard_leaves_one_slot_alone_when_a_stronger_candidate_keeps_it() -> None:
+    """The scan starts at the last content slot so a held slot stays held.
+
+    The published shape has the untouched lead at position 0 and a dirty symbol in
+    every slot below it.  Add one more clean symbol strong enough to survive the
+    promotion in position 1, and the picture changes: the promotion displaced the
+    weaker symbol, but the slot the guard restores into is already occupied by the
+    stronger one.  Restoring anyway would push that symbol out of the prefix - the
+    guard, not the working tree, becoming the reason a matched module stops
+    contributing source text - so the order the bonus produced has to stand.
+    """
+    dirty = frozenset({MULTI_PROMOTED_MODULE, MULTI_LIFTED_MODULE})
+
+    clean = _rank_guard(GUARD_QUERY, _slot_kept_candidates())
+    clean_scores = [candidate.score for candidate in clean]
+    dirty_engine = RankingEngine(changed_modules=dirty)
+    guarded = dirty_engine.rank(GUARD_QUERY, _slot_kept_candidates())
+
+    # The fixture holds: scores 180, 165, 165 and 145, so both untouched symbols
+    # sit inside the prefix with the tree clean, and the bonus moves only the first
+    # dirty symbol past the stronger one - the weaker one is the displaced.
+    assert _names(clean) == [MULTI_KEPT, MULTI_DISPLACED, *MULTI_DIRTY]
+    assert clean_scores == [180, 165, 165, 145]
+    assert _names(guarded)[0] == MULTI_DIRTY[0]
+    assert _names(guarded).index(MULTI_DISPLACED) >= (
+        RankingConfig.PROMOTION_ANCHOR_SLOTS
+    )
+    assert RankingReason.CHANGED_FILE in guarded[0].reasons
+    assert dirty_engine.changed_file_bonus_count == 2  # One symbol per dirty file.
+
+    # The stronger symbol still holds a content slot, so nothing is restored and
+    # the ranking is the one the promotion alone produced.
+    assert _names(guarded) == [MULTI_DIRTY[0], MULTI_KEPT, MULTI_DIRTY[1], MULTI_DISPLACED]
+
+
+def test_promotion_guard_is_inert_when_the_slot_is_already_restored() -> None:
+    """Asking twice is the same as asking once - and never asking is free.
+
+    The builder runs the rule a second time on the order its own promotion passes
+    produced, so the scan has to be able to look at a list it already fixed and
+    leave it alone, and it has to be able to look at a list where the working tree
+    changed nothing without touching that either.
+    """
+    engine = RankingEngine(changed_modules=frozenset({MULTI_PROMOTED_MODULE}))
+    guarded = engine.rank(MULTI_QUERY, _multi_candidates())
+
+    assert _names(engine.restore_promotion_anchor(guarded)) == _names(guarded)
+
+    clean_engine = RankingEngine()
+    clean = clean_engine.rank(MULTI_QUERY, _multi_candidates())
+    # Shuffled into the order the second pass would see after a file reference
+    # hoisted the second anchor, the disabled feature still has no opinion.
+    shuffled = [clean[1], clean[0], *clean[2:]]
+    assert _names(clean_engine.restore_promotion_anchor(shuffled)) == _names(shuffled)
+
+
+def test_builder_keeps_the_restored_symbol_inside_the_source_preview_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """What the guard buys at the level the prompt is assembled.
+
+    A preview budget of one symbol makes position 1 and position 2 different kinds
+    of candidate: the first is shown, the second is not shown at all.  With the
+    working tree dirty and the guard active, the symbol the strongest promotion
+    displaced is still inside that budget.  With the guard switched off by making
+    the restore step return its input, the same query on the same dirty tree leaves
+    the same symbol with neither a body nor a preview - the change-aware bonus
+    having cost an untouched file its source text.
+    """
+    index = _multi_index(MULTI_SOURCE)
+
+    baseline = _build_multi(index)
+    guarded = _build_multi(index, frozenset({MULTI_PROMOTED_MODULE}))
+
+    assert _names(baseline.candidates)[:2] == [MULTI_ANCHOR, MULTI_SECOND]
+    assert baseline.candidates[0].source
+    assert baseline.candidates[1].source_preview
+
+    assert guarded.candidates[0].qualified_name == MULTI_DIRTY[0]
+    assert guarded.candidates[0].source
+    assert _names(guarded.candidates) == [
+        MULTI_DIRTY_BY_NAME[0],
+        MULTI_ANCHOR,
+        *MULTI_DIRTY_BY_NAME[1:],
+        MULTI_SECOND,
+    ]
+    anchor = guarded.candidates[1]
+    assert anchor.source_preview
+    assert anchor.source == ""
+
+    monkeypatch.setattr(
+        RankingEngine, "_protect_promotion_anchor", lambda self, ranked: ranked
+    )
+    displaced = _build_multi(index, frozenset({MULTI_PROMOTED_MODULE}))
+
+    # The tie-break inside the changed file puts two of its symbols in the two
+    # content slots, so both untouched anchors fall behind them; the one this query
+    # pointed at ends up fourth, where a preview would have been served second.
+    assert _names(displaced.candidates) == [
+        *MULTI_DIRTY_BY_NAME,
+        MULTI_ANCHOR,
+        MULTI_SECOND,
+    ]
+    lost = displaced.candidates[3]
+    assert lost.source == ""
+    assert lost.source_preview == ""
+    # The disabled guard is the only difference between the two dirty arms.
+    assert displaced.changed_bonus_count == guarded.changed_bonus_count == 3
+
+
+def test_builder_promotion_that_names_a_file_does_not_undo_the_guard() -> None:
+    """A promotion pass is a reorder, and a reorder must not erase the restore.
+
+    The other promotion mechanism in the project works after ranking, on the
+    ordered result, and moves a symbol to the front when the query names its file
+    path outright.  Hoisting shifts everything behind it down by one - enough to
+    push the restored symbol back out of the content-bearing prefix again.  This is
+    the case the user asked about: does the guard hold when a candidate is already
+    in its target slot, and a builder promotion is what put someone else there?
+    The answer the test pins is that the rule is applied to the final order, so the
+    built context is identical to the one a clean tree produces, and the precedence
+    reads in favour of the symbol with no change: the explicitly referenced module
+    keeps its full body, the untouched file that merely matched a query word keeps
+    its preview, and it is the changed file that gives the preview up - even though
+    the changed file is the strongest-scoring candidate in the list.
+    """
+    index = _multi_index(MULTI_SOURCE)
+    text = f"{MULTI_QUERY} modules/beta/alpha.py"
+
+    baseline = _build_multi(index, text=text)
+    guarded = _build_multi(index, frozenset({MULTI_PROMOTED_MODULE}), text=text)
+
+    assert _names(baseline.candidates) == [
+        MULTI_SECOND,
+        MULTI_ANCHOR,
+        *MULTI_DIRTY_BY_NAME,
+    ]
+    # Same order, so the change moved no source text out of reach of the query.
+    assert _names(guarded.candidates) == _names(baseline.candidates)
+    assert guarded.candidates[0].source
+    assert guarded.candidates[1].source_preview
+    assert [
+        candidate.qualified_name
+        for candidate in guarded.candidates
+        if RankingReason.CHANGED_FILE in candidate.reasons
+    ] == MULTI_DIRTY_BY_NAME
+    assert guarded.changed_bonus_count == 3
+
+
+def test_builder_leaves_the_order_alone_when_the_change_matches_nothing() -> None:
+    """The second look costs nothing when the working tree touched no candidate.
+
+    A changed file outside the candidate set gives every candidate the same score
+    it would have had with the feature switched off, so the bonus count is zero and
+    neither guard pass may reorder anything - a reference promotion on top of a
+    ranking that has no changed-file bonus in it must stay where it was hoisted.
+    """
+    index = _multi_index(MULTI_SOURCE)
+    text = f"{MULTI_QUERY} modules/beta/alpha.py"
+
+    baseline = _build_multi(index, text=text)
+    elsewhere = _build_multi(
+        index,
+        frozenset({"modules/nothing/here.py"}),
+        text=text,
+    )
+
+    assert baseline.changed_bonus_count == elsewhere.changed_bonus_count == 0
+    assert _names(elsewhere.candidates) == _names(baseline.candidates)
+    assert _names(elsewhere.candidates)[0] == MULTI_SECOND
+    assert elsewhere.candidates[0].source
+
+
+#: Long enough that one supporting preview spends the whole shared budget, which is
+#: what makes position 1 and position 2 different things in a built context.
+MULTI_SOURCE = (
+    "class Widget:\n"
+    "    def run(self):\n"
+    "        return self.registry.resolve()\n"
+    "    # " + "filler " * 60 + "\n"
+)
+
+
+def _multi_index(source: str = "") -> RepositoryIndex:
+    """An index mirroring the multi-candidate fixture, for the builder path."""
+    entries = (
+        (MULTI_ANCHOR, MULTI_ANCHOR_MODULE),
+        (MULTI_SECOND, MULTI_SECOND_MODULE),
+        *((name, MULTI_PROMOTED_MODULE) for name in MULTI_PROMOTED_TIED),
+    )
+    symbols = [
+        Symbol(
+            id=qualified_name,
+            name=qualified_name.rsplit(".", 1)[-1],
+            qualified_name=qualified_name,
+            symbol_type=SymbolType.CLASS,
+            module=module,
+            lineno=1 + index,
+        )
+        for index, (qualified_name, module) in enumerate(entries)
+    ]
+    indexed: dict[str, Module] = {}
+    for module in (MULTI_ANCHOR_MODULE, MULTI_SECOND_MODULE, MULTI_PROMOTED_MODULE):
+        indexed[module] = Module(
+            path=module,
+            symbols=[s for s in symbols if s.module == module],
+            source=source,
+        )
+    return RepositoryIndex(
+        modules=indexed,
+        _symbols=symbols,
+        _relationships=[],
+        _statistics=RepositoryStatistics(
+            module_count=len(indexed),
+            class_count=len(symbols),
+            function_count=0,
+            method_count=0,
+            symbol_count=len(symbols),
+        ),
+    )
+
+
+def _build_multi(
+    index: RepositoryIndex,
+    changed: frozenset[str] = frozenset(),
+    text: str = MULTI_QUERY,
+) -> ContextResult:
+    """Build the multi-candidate fixture with a preview budget that cannot be shared.
+
+    Sixty tokens is one preview: the second candidate is served and the third is
+    not, so an ordering assertion about source text can be made here rather than
+    being argued from the position the ranking left the candidates in.
+    """
+    builder = ContextBuilder(index, changed_modules=changed, supporting_symbol_max_tokens=64)
+    return builder.build(
+        ContextQuery(
+            text=text,
+            max_symbols=10,
+            max_modules=10,
+            max_tokens=8000,
+            relationship_expansion=False,
+        )
+    )

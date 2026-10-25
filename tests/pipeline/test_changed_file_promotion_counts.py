@@ -25,6 +25,7 @@ import pytest
 from packages.context.context_package import ContextPackage
 from packages.context.delta import SentSymbolTracker
 from packages.context.models import ContextCandidate
+from packages.context.ranking import RankingEngine
 from packages.context.scoring import RankingReason
 from packages.pipeline.context import PipelineContext
 from packages.pipeline.stages import repository_context as stage_module
@@ -729,6 +730,122 @@ async def test_budget_trimming_removes_the_promotion_from_the_counts() -> None:
     assert on.data["changed_symbols_selected"] == 1
     assert on.data["changed_symbols_promoted"] == len(_sent(on) - _sent(off)) == 1
     assert off.data["changed_symbols_promoted"] == 0
+
+
+#: The promotion guard's own fixture at the stage level: a query that names every
+#: module in the index, so two clean symbols lead on content, and a dirty file
+#: whose three symbols take both content-bearing slots once the bonus is added.
+GUARD_MULTI_QUERY = "widget alpha beta gamma"
+GUARD_MULTI_ANCHOR_MODULE = "modules/alpha/beta"
+GUARD_MULTI_SECOND_MODULE = "modules/beta/alpha"
+GUARD_MULTI_PROMOTED_MODULE = "modules/beta/gamma"
+GUARD_MULTI_ANCHOR = "modules.alpha.beta.WidgetStore"
+GUARD_MULTI_SECOND = "modules.beta.alpha.WidgetDepot"
+GUARD_MULTI_PROMOTED = (
+    "modules.beta.gamma.WidgetOne",
+    "modules.beta.gamma.WidgetTwo",
+    "modules.beta.gamma.WidgetThree",
+)
+
+
+def _guard_multi_index() -> RepositoryIndex:
+    """An index in which the bonus takes a content slot from a clean symbol."""
+    entries = (
+        (GUARD_MULTI_ANCHOR, GUARD_MULTI_ANCHOR_MODULE),
+        (GUARD_MULTI_SECOND, GUARD_MULTI_SECOND_MODULE),
+        *((name, GUARD_MULTI_PROMOTED_MODULE) for name in GUARD_MULTI_PROMOTED),
+    )
+    symbols = [
+        Symbol(
+            id=qualified_name,
+            name=qualified_name.rsplit(".", 1)[-1],
+            qualified_name=qualified_name,
+            symbol_type=SymbolType.CLASS,
+            module=module,
+            lineno=3 + index,
+        )
+        for index, (qualified_name, module) in enumerate(entries)
+    ]
+    modules = {
+        module: Module(path=module, symbols=[s for s in symbols if s.module == module])
+        for module in (
+            GUARD_MULTI_ANCHOR_MODULE,
+            GUARD_MULTI_SECOND_MODULE,
+            GUARD_MULTI_PROMOTED_MODULE,
+        )
+    }
+    return RepositoryIndex(
+        modules=modules,
+        _symbols=symbols,
+        _relationships=[],
+        _statistics=RepositoryStatistics(
+            module_count=len(modules),
+            class_count=len(symbols),
+            function_count=0,
+            method_count=0,
+            symbol_count=len(symbols),
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_guard_decides_which_symbols_the_budget_admits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Where the package cannot hold everything, the guard changes the count.
+
+    A restore that only reorders a package big enough for all five symbols is
+    invisible to these counts, which compare membership.  This budget is the
+    other case: it holds two symbols, so the slot the guard gives back decides
+    what the model reads, and the number the gateway logs is the guard's doing -
+    one where it holds, two where it does not.  It is the same rule as
+    ``test_promotion_guard_returns_the_slot`` in the context suite, measured from
+    the stage instead of the ranking, and it is why the guard is applied to the
+    order the builder finally assembles rather than only to the ranking pass.
+    """
+    index = _guard_multi_index()
+    messages = {"role": "user", "content": GUARD_MULTI_QUERY}
+    # The stage's fixture signal names a different module, so the dirty file here
+    # is spelled out: it is the module the promoted symbols live in.
+    dirty = _StubSource(frozenset({GUARD_MULTI_PROMOTED_MODULE}))
+    off = await _stage(source=None, index=index, max_context_tokens=32).execute(
+        _context(messages)
+    )
+    on = await _stage(source=dirty, index=index, max_context_tokens=32).execute(
+        _context(messages)
+    )
+
+    assert off.data is not None and on.data is not None
+    # Without the signal the package is the two clean symbols the query pointed at.
+    assert _sent(off) == {GUARD_MULTI_ANCHOR}
+    # With it, the strongest symbol of the dirty file leads and the guard pulls
+    # the anchor back into the one remaining content slot.
+    assert _sent(on) == {GUARD_MULTI_ANCHOR, GUARD_MULTI_PROMOTED[0]}
+    assert on.data["changed_files_count"] == 1
+    assert on.data["changed_primary_promoted"] is True
+    assert on.data["changed_context_differs"] is True
+    assert on.data["changed_symbols_selected"] == 1
+    assert on.data["changed_symbols_promoted"] == len(_sent(on) - _sent(off)) == 1
+
+    monkeypatch.setattr(
+        RankingEngine,
+        "_protect_promotion_anchor",
+        lambda self, ranked: ranked,
+    )
+    unguarded = await _stage(source=dirty, index=index, max_context_tokens=32).execute(
+        _context(messages)
+    )
+
+    assert unguarded.data is not None
+    # The same request, the same dirty index, the guard turned off: two dirty
+    # symbols are sent and neither clean one survives.
+    assert _sent(unguarded) == {GUARD_MULTI_PROMOTED[0], GUARD_MULTI_PROMOTED[2]}
+    assert unguarded.data["changed_symbols_selected"] == 2
+    assert (
+        unguarded.data["changed_symbols_promoted"]
+        == len(_sent(unguarded) - _sent(off))
+        == 2
+    )
 
 
 @pytest.mark.asyncio

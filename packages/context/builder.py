@@ -235,6 +235,13 @@ class ContextBuilder:
         candidates = self._promote_shared_helper_imports(candidates, query.text)
         candidates = self._promote_history_cap_symbols(candidates, query.text)
 
+        # Every pass above reorders the ranked list, and a reorder can undo the
+        # working-tree guard: hoisting a named file to the front shifts everything
+        # behind it down, which puts the symbol the guard restored back outside the
+        # prefix that source text is rendered from.  The guard is given the final
+        # order so the rule holds for the context that is actually assembled.
+        candidates = engine.restore_promotion_anchor(candidates)
+
         # Apply max_symbols limit (0 means no candidates).
         if query.max_symbols > 0:
             candidates = candidates[: query.max_symbols]

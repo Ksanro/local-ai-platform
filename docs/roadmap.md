@@ -132,18 +132,28 @@ them.
    that the guard holds - so the live eviction run becomes a check that the rule
    survives serialization, and `gains_the_changed_file` /
    `explain_changed_files_history_cap` stays the discriminating pair.
-2. **B2 - pin the selected invariant.** Add focused regression coverage in
-   `tests/context/test_changed_file_ranking.py` and
-   `tests/observability/test_quality_harness.py`, which already exercise both
-   arms of the registered pairs. B1 added the rule's own unit cases and updated
-   the three A/B assertions that pinned the pre-rule eviction loss, and review
-   added the scan case the first cut missed, which is B1 correctness and already
-   pinned by `test_promotion_guard_scans_past_the_candidate_it_did_not_promote`;
-   what remains
-   is broader coverage of the guard's edges - more than one untouched
-   query-matching module competing for the same slot, the guard's interaction with
-   the builder's query-specific promotions, and the counterfactual baseline the
-   stage builds without `changed_modules` (which the guard must not move).
+2. **B2 - pin the selected invariant - DONE (2026-10-25).** The edges B1 left
+   open are pinned in `tests/context/test_changed_file_ranking.py` and
+   `tests/pipeline/test_changed_file_promotion_counts.py`. More than one untouched
+   query-matching module competing for the same slot: the `MULTI_*` fixtures rank
+   two anchors ahead of the dirty file, the second is still selected and must keep
+   its position, and the restore protects one symbol rather than one module. The
+   guard against the builder's own promotions: `ContextBuilder.build` now calls
+   `RankingEngine.restore_promotion_anchor` after its query-specific hoists,
+   because a hoist shifts everything behind it down by one and can move the symbol
+   the guard restored back outside the prefix that source text is rendered from -
+   `test_builder_promotion_that_names_a_file_does_not_undo_the_guard` measures the
+   order, `test_builder_keeps_the_restored_symbol_inside_the_source_preview_budget`
+   measures the text that reaches the prompt. The counterfactual baseline the stage
+   builds without `changed_modules` is untouched by construction: the second
+   application is a no-op whenever the ranking pass gave the bonus to nothing,
+   which `test_promotion_guard_is_inert_when_the_slot_is_already_restored` pins for
+   an already-restored order and for a clean tree. And
+   `test_the_guard_decides_which_symbols_the_budget_admits` runs a whole stage
+   request twice at a budget that holds two symbols, where the guard is what
+   decides what the working tree brought in - one symbol promoted with it, two
+   without. B3 remains the live validation; the registered
+   `evicts_the_asked_about_file` pair has not been re-run against a model.
 3. **B3 - validate live.** Re-run the eviction, gain, and negative-control pairs
    with three repeats per arm in a controlled isolated worktree, with the B1 rule
    in the build being measured. Directional
@@ -407,7 +417,9 @@ and `RankingEngine` adds one flat `+25` bonus
 already carry a query-match or relationship reason. Since Phase B1 that bonus is
 bounded by a promotion guard, which keeps a promoted dirty file from pushing the
 best un-promoted symbol of a query-matching module out of the positions the
-context renders with source text. No new Git command, no new pipeline stage, no
+context renders with source text, and since Phase B2 that guard is given the order
+the builder finally assembles, not only the ranking pass, because the builder's own
+promotions are reorders too. No new Git command, no new pipeline stage, no
 new persisted artifact.
 Enable with `APP_REPOSITORY_CONTEXT_CHANGED_FILES_ENABLED=true`;
 `APP_REPOSITORY_CONTEXT_CHANGED_FILES_TTL_SECONDS` (default `0`) is the only

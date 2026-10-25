@@ -436,6 +436,26 @@ class RankingEngine:
 
         return ranked
 
+    def restore_promotion_anchor(
+        self,
+        candidates: list[_ContextCandidate],
+    ) -> list[_ContextCandidate]:
+        """Apply the promotion guard once more to a reordered candidate list.
+
+        ``ContextBuilder`` runs its own promotion passes after ``rank()`` - a query
+        that names a file path hoists that file's symbol to the front - and each of
+        them is a reorder of the same candidates.  A hoist shifts everything behind
+        it down by one position, which can move the symbol the guard had just
+        restored back outside the content-bearing prefix, so the same rule is given
+        one more look at the order the prompt is finally built from.  This is that
+        look: the same method, not a second copy of the condition, and it never runs
+        where the working tree changed nothing, so a disabled feature and a clean
+        tree keep passing straight through.
+        """
+        if not self._changed_file_bonus_count:
+            return candidates
+        return self._protect_promotion_anchor(candidates)
+
     def _protect_promotion_anchor(
         self,
         ranked: list[_ContextCandidate],
@@ -467,6 +487,14 @@ class RankingEngine:
           pass one another, the positions it lost are positions a promoted
           candidate took - the displacement is the bonus's, not someone else's.
 
+        The restore needs somewhere to put it, so it is also required that the
+        last content-bearing slot is one a promoted candidate is holding.  When an
+        unpromoted candidate still occupies it, the promotion displaced a weaker
+        symbol than the one already in the prefix, and moving anything in would
+        push the stronger one out: the guard would become the reason a module the
+        question pointed at stops contributing source text, which is the opposite
+        of what it is for.  In that shape the order the bonus produced stands.
+
         Of the candidates that qualify, the strongest is protected.  The scan
         follows the ranked order, and the ranked order of the candidates that did
         not receive the bonus is the order their pre-bonus scores put them in, so
@@ -484,6 +512,15 @@ class RankingEngine:
             The same list, with the anchor restored when the rule fires.
         """
         slots = RankingConfig.PROMOTION_ANCHOR_SLOTS
+        if len(ranked) < slots:
+            return ranked
+        if RankingReason.CHANGED_FILE not in ranked[slots - 1].reasons:
+            # The last content slot belongs to a candidate the promotion left
+            # where it was, so no slot is available to give back: inserting here
+            # would push that candidate out and trade the stronger of two matched
+            # modules for the weaker.  The displacement the rule speaks to is one
+            # a promoted symbol caused, and it is a promoted symbol's place.
+            return ranked
         anchor_at = next(
             (
                 index
