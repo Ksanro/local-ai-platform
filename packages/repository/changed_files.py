@@ -40,7 +40,10 @@ symlink, a junction, a ``subst`` drive or an 8.3 short name. Without resolving
 those, every path would look outside the root and the signal would switch
 itself off in silence - so the count of such paths is exposed as a diagnostic.
 Non-Python paths cannot influence ranking because the index holds Python
-modules only.
+modules only.  The suffix rule itself - which path counts as a module and what
+its key is - is not restated here: it belongs to
+:func:`packages.repository.module_paths.path_to_module_key`, the single
+conversion shared with the conversation-scoped file-activity counters.
 
 Changes that do not name a file an agent can still be editing are dropped:
 
@@ -74,6 +77,7 @@ from packages.repository.git_changes import (
     GitFileChange,
     capture_change_snapshot,
 )
+from packages.repository.module_paths import path_to_module_key
 
 __all__ = [
     "MAX_CHANGED_PATHS",
@@ -240,9 +244,12 @@ def _module_key(
         return None, True
     if relative == "." or relative.startswith("../"):
         return None, True
-    if not relative.lower().endswith(".py"):
+    # The suffix rule lives in exactly one place, so the signal and everything
+    # that later compares against it cannot disagree about what a module key is.
+    key = path_to_module_key(relative)
+    if key is None:
         return None, False
-    return relative[:-3] or None, False
+    return key, False
 
 
 def _promotable_changes(snapshot: GitChangeSnapshot) -> list[GitFileChange]:

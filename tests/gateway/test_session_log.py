@@ -435,6 +435,115 @@ def test_concurrent_writes(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Test: the file_activity section of a record
+# ---------------------------------------------------------------------------
+
+
+def _run_one_turn(scope_data: dict[str, Any]) -> None:
+    """Drive the session logger middleware over one synthetic chat request."""
+
+    async def mock_receive():
+        return {"type": "http.request", "body": b"{}"}
+
+    async def mock_send(message: dict) -> None:
+        pass
+
+    async def inner_app(scope, receive, send):
+        if scope["type"] == "http":
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            body = b'{"choices":[{"message":{"role":"assistant","content":"ok"}}]}'
+            await send({"type": "http.response.body", "body": body})
+
+    middleware = SessionLoggerMiddleware(inner_app)
+    asyncio.run(middleware(scope_data, mock_receive, mock_send))
+
+
+def test_record_carries_file_activity_as_counts_and_nothing_else(
+    tmp_path: Path,
+) -> None:
+    """What a session record holds of a conversation's file activity is the documented
+    keys at integer values, and no file path - not in the section, not in the line.  A
+    request that never reached the tracker is written with every key present and the
+    state that says so, rather than as a record missing a section."""
+    from packages.pipeline.file_activity import (
+        INERT_FILE_ACTIVITY,
+        sanitize_file_activity,
+    )
+
+    log_file = str(tmp_path / "sessions.jsonl")
+
+    # The stage's payload plus what a client could smuggle in: file names under known
+    # keys and whole extra keys.  The endpoint maps it with the one function that owns
+    # the boundary, which is what the middleware then writes.
+    leaked = {
+        "state": "measured",
+        "correlation": "measured",
+        "files_read": 3,
+        "files_modified": 1,
+        "files_touched": 4,
+        "read_attempts": 4,
+        "modification_attempts": 2,
+        "context_files_touched": 2,
+        "touched_without_context": 2,
+        "changed_files_touched": 1,
+        "paths_rejected": 0,
+        "other_events": 2,
+        "events_beyond_bound": 0,
+        "files": ["packages/pipeline/chat_service.py", "apps/gateway/api/chat.py"],
+        "last_file": "packages/pipeline/secret.py",
+    }
+
+    def scope_for(request_id: str, **extra: Any) -> dict[str, Any]:
+        scope: dict[str, Any] = {
+            "type": "http",
+            "path": "/v1/chat/completions",
+            "request_id": request_id,
+            "request_data": {
+                "model": "qwen36",
+                "stream": False,
+                "messages": [{"role": "user", "content": "Hello"}],
+            },
+            "session_context_status": "assembled",
+            "session_conversation_key": "__new__",
+        }
+        scope.update(extra)
+        return scope
+
+    with patch("apps.gateway.session_log.get_settings") as mock_settings:
+        mock_settings.return_value = _make_settings(enabled=True, path=log_file)
+        _run_one_turn(
+            scope_for(
+                "test-req-activity",
+                session_file_activity=sanitize_file_activity(leaked),
+            )
+        )
+        _run_one_turn(scope_for("test-req-inert"))
+
+    lines = Path(log_file).read_text(encoding="utf-8").strip().splitlines()
+    assert len(lines) == 2
+    measured, inert = (json.loads(line)["context"]["file_activity"] for line in lines)
+
+    assert sorted(measured) == sorted(INERT_FILE_ACTIVITY)
+    assert measured["state"] == "measured"
+    assert measured["correlation"] == "measured"
+    assert measured["files_read"] == 3
+    assert measured["context_files_touched"] == 2
+    assert measured["changed_files_touched"] == 1
+    # Every counter is an integer, and the only strings are the two state tokens.
+    assert all(
+        isinstance(value, int)
+        for key, value in measured.items()
+        if key not in ("state", "correlation")
+    )
+    assert "files" not in measured
+    assert "last_file" not in measured
+    # The strongest statement: the written line itself never mentions a file.
+    assert "chat_service.py" not in lines[0]
+    assert "secret.py" not in lines[0]
+    assert inert == INERT_FILE_ACTIVITY
+
+
+# ---------------------------------------------------------------------------
 # Test: analyzer produces correct counts
 # ---------------------------------------------------------------------------
 

@@ -3,8 +3,33 @@
 This file is the current runtime snapshot. It intentionally describes only
 what matters for the live gateway path and calls out dormant code explicitly.
 
-Last reviewed: 2026-10-25 (roadmap item B4 removed the mandatory per-request
-counterfactual cost from change-aware ranking: the no-bonus comparison build now
+Last reviewed: 2026-10-25 (roadmap item C1 now measures what a conversation's agent
+touches, on the live path: `RepositoryContextStage` reads the Cline tool-result
+envelopes already in the request, normalizes every target against the repository root,
+and records count-only activity in a bounded per-conversation store, which the chat
+endpoint maps through `sanitize_file_activity` and the session logger writes as
+`context.file_activity` - fifteen counters and two state tokens, `unavailable` being
+the shape that says nothing was looked at rather than that nothing was touched, and
+`partial` the one that says an envelope was seen and a bound refused to read it. Every
+number describing what the client reported is a snapshot recomputed from the transcript
+of the request being answered rather than a tally carried across turns, because a Cline
+client resends its whole conversation every turn and there is nothing to accumulate;
+what that replaced was a counter that read a file touched on turn one as fifteen by turn
+fifteen and explained the drift with a `replay_suppressed` field, which no longer exists.
+What a header attempted is likewise kept apart from what the client's own result line
+said happened: `files_modified` counts files whose write was confirmed, and an attempt
+that confirmed nothing is reported in `modification_attempts`,
+`modifications_not_modified` and `modifications_unknown` instead, by per-file precedence
+rather than by whichever envelope arrived first. Aligning its tests with the running code
+settled two claims that read the wrong way round - a target that does not exist is still
+measurable, containment being resolved with `realpath(strict=False)`, and a file dropped
+by the per-conversation bound is counted as beyond-bound rather than rejected - and
+exposed one real bug: a Windows drive-absolute target was treated as relative and joined
+onto the root, landing outside it, and is now recognized as absolute first. None of this
+has been validated against a restarted live gateway; the mechanics, and that
+qualification, are in `docs/live-gateway-runbook.md`. Before that, B4
+removed the mandatory per-request counterfactual cost from change-aware ranking: the
+no-bonus comparison build now
 sits behind `APP_REPOSITORY_CONTEXT_CHANGED_FILES_COMPARISON_ENABLED`, off by
 default, so an ordinary enabled request that fires the changed-file bonus builds
 and sends its context once and records `changed_baseline_status=not_sampled` - a
@@ -429,6 +454,49 @@ records out of the counterfactual counts and their rate, which divide by the
 records whose comparison was made or proved unnecessary, and separates records
 that predate them from every rate - see the
 runbook.
+
+Roadmap C1 adds a second, unrelated measurement to the same record:
+`context.file_activity`, seventeen keys of nothing but integers and two state tokens.
+`RepositoryContextStage` reads the Cline tool-result envelopes already present in the
+request's messages (`packages/pipeline/cline_activity.py`), normalizes every target
+against the repository root and refuses the ones that do not live inside it
+(`paths_rejected` counts refusals and never paths), and reports which files this
+conversation's agent read and wrote and how many of them it had already been shown as
+context (`packages/pipeline/file_activity.py`, an LRU-bounded per-conversation store
+sized with `APP_CONTEXT_DELTA_CACHE_SIZE`). Those numbers are a **snapshot recomputed
+from the transcript of the request being answered**, not a tally: the same transcript and
+the same supplied-context state produce the same dict, which is the right model precisely
+because a Cline client re-sends its whole conversation every turn, so there is nothing to
+accumulate and nothing left to suppress on a replay. Attempts are kept apart from
+outcomes - `read_attempts`/`reads_failed`/`reads_unknown` and
+`modification_attempts`/`modifications_not_modified`/`modifications_unknown` partition
+unique files, a file's outcome being decided by precedence (confirmed, then
+failed/not-modified, then unknown) rather than by whichever envelope arrived first - and
+the one genuinely temporal quantity, `context_files_touched`, is credited **before** this
+request's supplied files are recorded, so a file an earlier turn touched is never
+re-attributed to context that arrived later. `state` says whether the transcript was read
+at all (`measured`, `none`, `partial`, `unavailable`) and `correlation` says whether the
+gateway was in a position to know what had been supplied (`measured`, `no_prior_context`,
+`tracker_miss`, `unavailable`), a miss being reported as a zero that is not a measurement.
+`unavailable` is the inert shape and a zero is never a substitute for it. No file path
+crosses the stage boundary or reaches the record.
+
+The mechanics - the accepted grammar and its bounds, the outcome precedence, the
+correlation ordering rules, every constant, and what each of the seventeen keys means -
+are in `docs/live-gateway-runbook.md`, section *Conversation File Activity (roadmap C1)*.
+That section also records the thing this one has to be honest about: **C1 has not been
+validated against a restarted live gateway.** Every claim above is a unit-test claim about
+code under test, and no session record produced by a gateway running it has been read.
+
+Three things that look like failures are not. A target that does not exist on disk is
+still measurable - containment resolves both sides with `realpath(strict=False)`, so the
+file a write is about to create measures like one already there, and only a root the
+filesystem refuses to name at all marks the measurement unavailable. A file dropped
+because a conversation already holds `MAX_UNIQUE_FILES_PER_CONVERSATION` distinct files
+is counted in `events_beyond_bound` and not in `paths_rejected`: the path was fine, the
+bound was not. And a Windows drive-absolute target (`C:\Users\dev\repo\x.py`) was the one
+spelling that used to be read as relative and joined onto the root, landing outside it;
+it is now recognized as absolute before any joining is attempted.
 
 For anaphoric multi-turn follow-ups such as "for that capping logic" or
 "given that split", retrieval includes the previous clean user task text so

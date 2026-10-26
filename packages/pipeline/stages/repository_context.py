@@ -151,6 +151,7 @@ import logging
 import math
 import time
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import Any, Final
 
 from packages.context.budget import CHARS_PER_TOKEN
@@ -167,7 +168,19 @@ from packages.context.delta import (
 from packages.context.models import ContextCandidate, ContextQuery
 from packages.context.scoring import RankingReason
 from packages.pipeline.base import PipelineStage
+from packages.pipeline.cline_activity import (
+    RepositoryPathNormalizer,
+    resolve_file_activity_events,
+)
 from packages.pipeline.context import PipelineContext
+from packages.pipeline.file_activity import (
+    INERT_FILE_ACTIVITY,
+    STATE_UNAVAILABLE,
+    FileActivityTracker,
+    module_files_of,
+    supplied_files_of,
+    transcript_fingerprints,
+)
 from packages.pipeline.result import PipelineStageResult
 from packages.pipeline.user_messages import select_context_query_text
 from packages.repository.changed_files import ChangedModuleSource
@@ -273,7 +286,7 @@ def changed_file_promotion_counts(
     baseline_package: ContextPackage | None = None,
     changed_bonus_count: int = 0,
     *,
-    comparison_enabled: bool = True,
+    comparison_enabled: bool,
 ) -> dict[str, Any]:
     """Measure the working-tree bonus, and what it changed, in counts alone.
 
@@ -298,9 +311,12 @@ def changed_file_promotion_counts(
       ``changed_context_differs=True`` with both of them at ``False``/``0``, and
       is still a promotion: the bonus moved text the model reads.
       ``changed_symbols_promoted`` counts every sent symbol that is absent from
-      the no-bonus context, which can include a symbol outside the changed
-      modules that entered through relationship expansion once the primary
-      changed.
+      the no-bonus context.  A symbol outside the changed modules can appear
+      there because the reorder let it fit the token budget - not because
+      relationship expansion seeded from a different primary.  The expansion seed
+      is the ``primary_symbol`` the caller hands ``ContextBuilder.build``, which
+      the bonus never changes, and the stage's own builds pass none, so on the
+      gateway path ranking's expansion pass does not run at all.
     - ``changed_baseline_status`` says whether the comparison was made at all:
       ``"built"`` compared the two packages, ``"skipped_no_bonus"`` means no
       candidate received the bonus so the two arms are provably identical,
@@ -337,9 +353,7 @@ def changed_file_promotion_counts(
     """
     if not changed_modules:
         return {
-            key: value
-            for key, value in INERT_PROMOTION.items()
-            if key != "changed_files_signal"
+            key: value for key, value in INERT_PROMOTION.items() if key != "changed_files_signal"
         }
 
     if baseline_package is not None:
@@ -414,6 +428,8 @@ class RepositoryContextStage(PipelineStage):
         intent_context_budgets: dict[str, int] | None = None,
         changed_files: ChangedModuleSource | None = None,
         changed_files_comparison_enabled: bool = False,
+        file_activity: FileActivityTracker | None = None,
+        repository_root: Path | str | None = None,
     ) -> None:
         """Initialize with an optional repository index.
 
@@ -439,6 +455,14 @@ class RepositoryContextStage(PipelineStage):
                 fields as unmeasured placeholders under
                 ``changed_baseline_status="not_sampled"``.  It never changes the
                 context that is sent, only what is known about it afterwards.
+            file_activity: Optional conversation-scoped store for Cline file
+                activity (roadmap C1).  ``None`` (the default) leaves every request
+                unmeasured, so a session record writes the inert section - which is
+                what a stage built by an older gateway or a test does.
+            repository_root: The root envelope targets are contained against, which
+                must be the root the index was built from.  Only needed with a
+                tracker; without one the measurement is off, and it is stated as
+                unavailable rather than guessed at from the working directory.
         """
         self._index = index
         self._delta_enabled = context_delta_injection
@@ -446,6 +470,14 @@ class RepositoryContextStage(PipelineStage):
         self._max_context_tokens = max_context_tokens if max_context_tokens > 0 else 4096
         self._changed_files = changed_files
         self._changed_files_comparison_enabled = changed_files_comparison_enabled
+        self._file_activity = file_activity
+        # Reading an envelope is free; deciding where its path points is not, so the
+        # normalizer resolves the configured root once, at construction.
+        self._activity_paths = (
+            RepositoryPathNormalizer(repository_root)
+            if file_activity is not None and repository_root is not None
+            else None
+        )
         self._intent_context_budgets = {
             intent.upper(): tokens
             for intent, tokens in (intent_context_budgets or {}).items()
@@ -534,6 +566,15 @@ class RepositoryContextStage(PipelineStage):
                 context.context_package = None
                 _, changed_signal = self._read_changed_signal()
                 context.set_metadata("changed_files_signal", changed_signal)
+                # Nothing was assembled, but the turn still happened: an agent that
+                # read files on a gateway with no index is a conversation worth
+                # counting, and it is counted against an empty supplied set.
+                self._observe_file_activity(
+                    context,
+                    self._get_messages(context),
+                    None,
+                    frozenset(),
+                )
                 return PipelineStageResult(
                     stage_name=self.name,
                     success=True,
@@ -599,7 +640,13 @@ class RepositoryContextStage(PipelineStage):
                 # state, sampled or not.  What the signal saw, and whether it
                 # worked at all, is still stated.
                 promotion = {
-                    **changed_file_promotion_counts(None, (), changed_modules, None),
+                    **changed_file_promotion_counts(
+                        None,
+                        (),
+                        changed_modules,
+                        None,
+                        comparison_enabled=self._changed_files_comparison_enabled,
+                    ),
                     "changed_files_signal": changed_signal,
                 }
 
@@ -615,6 +662,12 @@ class RepositoryContextStage(PipelineStage):
 
                 # Leave context_package as None -- proceed with unmodified messages.
                 context.context_package = None
+                self._observe_file_activity(
+                    context,
+                    self._get_messages(context),
+                    None,
+                    changed_modules,
+                )
 
                 return PipelineStageResult(
                     stage_name=self.name,
@@ -636,11 +689,12 @@ class RepositoryContextStage(PipelineStage):
             symbols_suppressed = 0
             already_sent: set[str] = set()
             conv_key = ""
+            # Read once for the turn: delta injection and the file-activity record
+            # both need the conversation's user messages, and neither should pay for
+            # a second walk over the request.
+            messages = self._get_messages(context)
 
             if self._delta_enabled and candidates:
-                # Retrieve the list of messages for key computation.
-                messages = self._get_messages(context)
-
                 # Conversation key = user-message prefix (excludes assistant turns).
                 conv_key = conversation_key(messages)
 
@@ -717,6 +771,12 @@ class RepositoryContextStage(PipelineStage):
             # Attach the context package to the pipeline context so that
             # downstream stages (and tests) can inspect it directly.
             context.context_package = package
+            self._observe_file_activity(
+                context,
+                messages,
+                package,
+                changed_modules,
+            )
 
             elapsed_ms = (time.perf_counter() - start_time) * 1000
 
@@ -838,6 +898,76 @@ class RepositoryContextStage(PipelineStage):
                 result.error,
             )
         return None
+
+    def _observe_file_activity(
+        self,
+        context: PipelineContext,
+        messages: list[dict[str, str]],
+        package: ContextPackage | None,
+        changed_modules: frozenset[str],
+    ) -> None:
+        """Record what this conversation's agent read and changed, as counts.
+
+        Roadmap C1's measurement point, and the only place the two halves meet: the
+        envelopes the client reports, the modules this request sends, and the modules
+        the working tree reports as modified.  What leaves the stage is
+        ``context`` metadata holding integers and two state tokens.
+
+        The conversation identity is file-activity's own -
+        :func:`~packages.pipeline.file_activity.transcript_fingerprints` fingerprints
+        the whole transcript, assistant turns included - and not the
+        ``packages.context.delta`` key the symbol filter above uses.  Delta asks what
+        this conversation has already been *shown*; C1 asks what its agent already
+        *did*, and a key blind to the assistant's turns cannot tell two conversations
+        apart that differ only there.  A stage configured without a tracker does
+        nothing at all here, and a stage whose root cannot be resolved - or whose
+        measurement raises - records the request as unavailable rather than as a
+        conversation that touched nothing: by the time this runs the context has
+        already been composed, so the measurement can add a state to a request but
+        never take a context away from one.
+
+        Args:
+            context: The pipeline context to annotate.
+            messages: The request's messages, already retrieved for this turn.
+            package: The composed package, or ``None`` on a turn that sent no
+                repository context - which is still a turn whose activity counts.
+            changed_modules: Index module keys of the locally modified files, in the
+                index's own spelling; empty whenever the signal is off or clean.
+        """
+        tracker = self._file_activity
+        if tracker is None:
+            return
+        normalizer = self._activity_paths
+        if normalizer is None or not normalizer.root_ok:
+            context.set_metadata(
+                "file_activity",
+                {**INERT_FILE_ACTIVITY, "state": STATE_UNAVAILABLE},
+            )
+            return
+        try:
+            batch = resolve_file_activity_events(messages, normalizer)
+            lookup_key, store_key = transcript_fingerprints(messages)
+            counts = tracker.observe(
+                lookup_key=lookup_key,
+                store_key=store_key,
+                events=batch.events,
+                beyond_bound=batch.beyond_bound,
+                supplied_files=supplied_files_of(package),
+                changed_files=module_files_of(changed_modules),
+            )
+            payload: dict[str, int | str] = counts.as_dict()
+        except Exception:
+            # The property that makes it safe to run this inside a request path at all:
+            # everything that decides what the turn sends has already happened above, so
+            # an observation that cannot be made is recorded as a state and costs the
+            # request nothing else.  A measurement must never be the reason a context is
+            # missing.
+            logger.exception(
+                "file_activity stage=repository_context request_id=%s failed",
+                context.request_id,
+            )
+            payload = {**INERT_FILE_ACTIVITY, "state": STATE_UNAVAILABLE}
+        context.set_metadata("file_activity", payload)
 
     def _read_changed_signal(self) -> tuple[frozenset[str], str]:
         """Read the locally modified module keys and state whether it worked.

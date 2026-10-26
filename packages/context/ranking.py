@@ -82,10 +82,12 @@ Scoring Factors
 
 The working-tree bonus reorders, and a reorder can cost more than position.
 `ContextBuilder` renders the first candidate with its full source body and spends
-the shared supporting preview budget on the next, so a symbol pushed past
-`RankingConfig.PROMOTION_ANCHOR_SLOTS` loses the source text its implementation
-facts are read from; it is still selected, still counted and still carries its
-signature and docstring. `RankingEngine.rank` therefore restores the strongest
+the shared supporting preview budget below it, so a symbol pushed past
+`RankingConfig.PROMOTION_ANCHOR_SLOTS` is one at risk of losing the source text its
+implementation facts are read from; it is still selected, still counted and still
+carries its signature and docstring. (How far the text actually reaches is a
+budget question, not a fixed count - the guard's rule is about the position the
+candidate was moved out of.) `RankingEngine.rank` therefore restores the strongest
 candidate that did **not** receive the bonus and that the promotion knocked out
 of that prefix - out of it by the bonus, and with a module path that matched the
 query - to the last content-bearing position. The scan covers every unpromoted
@@ -208,13 +210,9 @@ class RankingEngine:
 
         # Determine defaults from environment variables.
         if relationship_enabled is None:
-            relationship_enabled = os.environ.get(
-                "RELATIONSHIP_RANKING_ENABLED", "true"
-            ) != "false"
+            relationship_enabled = os.environ.get("RELATIONSHIP_RANKING_ENABLED", "true") != "false"
         if expansion_enabled is None:
-            expansion_enabled = os.environ.get(
-                "RELATIONSHIP_EXPANSION_ENABLED", "true"
-            ) != "false"
+            expansion_enabled = os.environ.get("RELATIONSHIP_EXPANSION_ENABLED", "true") != "false"
 
         self._symbol_graph_view = symbol_graph_view
         self._primary_symbol = primary_symbol
@@ -223,6 +221,11 @@ class RankingEngine:
         self._token_estimator = token_estimator
         self._changed_modules = frozenset(self._module_key(module) for module in changed_modules)
         self._changed_file_bonus_count = 0
+        # Whether rank() has run to completion on this instance.  The promotion
+        # guard reads only what that pass recorded, so a call before it has nothing
+        # to decide with; this flag is what lets the guard say so instead of
+        # quietly returning a list it never looked at.
+        self._has_ranked = False
 
     @property
     def changed_file_bonus_count(self) -> int:
@@ -321,14 +324,16 @@ class RankingEngine:
         for candidate in candidates:
             s, reasons = score_candidate(candidate, query_tokens)
             # Include symbol_type and lineno for deterministic tie-breaking.
-            scored.append((
-                s,
-                candidate.qualified_name,
-                candidate.symbol_type,
-                0,  # lineno placeholder — not available in ContextCandidate
-                reasons,
-                candidate,
-            ))
+            scored.append(
+                (
+                    s,
+                    candidate.qualified_name,
+                    candidate.symbol_type,
+                    0,  # lineno placeholder — not available in ContextCandidate
+                    reasons,
+                    candidate,
+                )
+            )
 
         # Add relationship signals if enabled.
         if self._relationship_enabled and self._symbol_graph_view is not None:
@@ -380,9 +385,9 @@ class RankingEngine:
         scored.sort(
             key=lambda t: (
                 -t[0],  # score descending
-                t[1],   # qualified_name ascending
+                t[1],  # qualified_name ascending
                 -RankingConfig.SYMBOL_TYPE_RANK.get(t[2].upper(), 0),  # symbol_type descending
-                t[5].module if hasattr(t[5], 'module') else '',  # module ascending
+                t[5].module if hasattr(t[5], "module") else "",  # module ascending
             )
         )
 
@@ -393,9 +398,7 @@ class RankingEngine:
 
         # Filter out candidates below MINIMUM_CANDIDATE_SCORE.
         min_score = RankingConfig.MINIMUM_CANDIDATE_SCORE
-        scored = [
-            entry for entry in scored if entry[0] >= min_score
-        ]
+        scored = [entry for entry in scored if entry[0] >= min_score]
 
         # Deduplicate by qualified_name, keeping the higher score
         # and merging reasons.  This removes symbols reached via
@@ -429,6 +432,11 @@ class RankingEngine:
         # duplicates by qualified_name) and return the final ranked list.
         ranked = self._dedup_candidates(ranked)
 
+        # The pass the promotion guard reasons about is complete here: which
+        # candidates carry the bonus, and how many did, are both recorded, so
+        # ``restore_promotion_anchor`` can now be asked about this list.
+        self._has_ranked = True
+
         # Bound what the working-tree bonus can do to the symbols it did not
         # promote.  Only ever reached when the bonus moved something.
         if self._changed_file_bonus_count:
@@ -448,10 +456,32 @@ class RankingEngine:
         it down by one position, which can move the symbol the guard had just
         restored back outside the content-bearing prefix, so the same rule is given
         one more look at the order the prompt is finally built from.  This is that
-        look: the same method, not a second copy of the condition, and it never runs
-        where the working tree changed nothing, so a disabled feature and a clean
-        tree keep passing straight through.
+        look: the same method, not a second copy of the condition.
+
+        The lifecycle is a precondition, and it is checked rather than assumed: the
+        guard's whole input is the state ``rank()`` left behind - which candidates
+        carry the bonus, and how many did - so this method runs only on the list
+        that same instance ranked, possibly reordered by the caller.  Calling it
+        before ``rank()`` has completed on this engine is a programming error and
+        raises; calling it on an engine whose ``rank()`` found nothing to promote is
+        not, and returns the list untouched, which is how a disabled feature and a
+        clean tree keep passing straight through.
+
+        Args:
+            candidates: The list ``rank()`` returned, in whatever order the caller's
+                own promotion passes left it.
+
+        Returns:
+            The same list, with the anchor restored when the rule fires.
+
+        Raises:
+            RuntimeError: If ``rank()`` has never completed on this instance.
         """
+        if not self._has_ranked:
+            raise RuntimeError(
+                "restore_promotion_anchor() needs the state rank() records; "
+                "call rank() on this RankingEngine first"
+            )
         if not self._changed_file_bonus_count:
             return candidates
         return self._protect_promotion_anchor(candidates)
@@ -464,10 +494,12 @@ class RankingEngine:
 
         The bonus is a reorder, and a reorder can cost more than position:
         ``ContextBuilder`` renders the first candidate with its full source body
-        and spends the shared supporting preview on the next, so a symbol pushed
-        past ``RankingConfig.PROMOTION_ANCHOR_SLOTS`` loses the source text
-        implementation facts are read from.  It is still selected, still counted
-        and still carries its signature and docstring, but its body is gone.  A
+        and spends the shared supporting preview below it, so a symbol pushed past
+        ``RankingConfig.PROMOTION_ANCHOR_SLOTS`` is one at risk of losing the
+        source text implementation facts are read from - how far that text reaches
+        is the budget's doing, not a fixed count.  It is still selected, still
+        counted and still carries its signature and docstring, but its body may be
+        gone.  A
         dirty file may win the primary slot - that is what the signal is for -
         and it may take the first supporting slot, but it may not be the reason a
         module the question pointed at stops contributing source text.
@@ -546,15 +578,19 @@ class RankingEngine:
         ranked: list[_ContextCandidate],
         anchor: _ContextCandidate,
     ) -> bool:
-        """Whether ``anchor`` sat in the content-bearing prefix without the bonus.
+        """Whether ``anchor`` held a content-bearing position before the bonus.
 
-        The anchor itself never received the bonus, and no other unpromoted
-        candidate can pass it, so the order the same query produced on a clean
-        tree is rebuilt by taking the flat working-tree weight back off every
-        candidate that carries it and comparing what is left with the documented
-        tie-break.  A promoted candidate that only cleared
-        ``MINIMUM_CANDIDATE_SCORE`` because of the bonus was not ranked at all on
-        a clean tree, so it is not counted as having held one of its slots.
+        This is an approximation over the candidates that survived into ``ranked``,
+        not a reconstruction of the clean-tree ranking.  The list has already been
+        filtered by ``MINIMUM_CANDIDATE_SCORE``, deduplicated by qualified name and
+        expanded with relationship candidates, so a symbol that existed on a clean
+        tree but is not here at all cannot be counted - and a candidate that only
+        cleared the threshold because of the bonus is skipped, since without the
+        bonus it would not have been ranked.  What is compared is therefore the
+        order among the candidates present once the flat working-tree weight is
+        taken back off, read against the documented tie-break: close enough to say
+        whether the anchor lost a slot to the promotion, which is the question the
+        guard asks, and not a claim to reproduce a ranking that was never built.
 
         Args:
             ranked: The final ranked candidate list.
@@ -562,7 +598,9 @@ class RankingEngine:
 
         Returns:
             ``True`` when fewer than ``PROMOTION_ANCHOR_SLOTS`` of the other
-            candidates outranked the anchor before the bonus was added.
+            candidates still in the list outrank the anchor once their working-tree
+            weight is taken back off - an approximation of where the anchor sat
+            before the bonus, over the candidates that survived into this list.
         """
         weight = RankingConfig.WEIGHT_CHANGED_FILE
         minimum = RankingConfig.MINIMUM_CANDIDATE_SCORE
@@ -587,9 +625,7 @@ class RankingEngine:
         """The documented tie-break, without the score."""
         return (
             candidate.qualified_name,
-            -RankingConfig.SYMBOL_TYPE_RANK.get(
-                str(candidate.symbol_type).upper(), 0
-            ),
+            -RankingConfig.SYMBOL_TYPE_RANK.get(str(candidate.symbol_type).upper(), 0),
             candidate.module,
         )
 
@@ -627,22 +663,26 @@ class RankingEngine:
             callers = self._symbol_graph_view.callers(self._primary_symbol)
             for caller in callers:
                 if caller.qualified_name not in seen_ids:
-                    expansion_candidates.append(ContextCandidate(
-                        symbol_id=caller.qualified_name,
-                        qualified_name=caller.qualified_name,
-                        module=caller.module,
-                    ))
+                    expansion_candidates.append(
+                        ContextCandidate(
+                            symbol_id=caller.qualified_name,
+                            qualified_name=caller.qualified_name,
+                            module=caller.module,
+                        )
+                    )
                     seen_ids.add(caller.qualified_name)
 
             # Direct callees.
             callees = self._symbol_graph_view.callees(self._primary_symbol)
             for callee in callees:
                 if callee.qualified_name not in seen_ids:
-                    expansion_candidates.append(ContextCandidate(
-                        symbol_id=callee.qualified_name,
-                        qualified_name=callee.qualified_name,
-                        module=callee.module,
-                    ))
+                    expansion_candidates.append(
+                        ContextCandidate(
+                            symbol_id=callee.qualified_name,
+                            qualified_name=callee.qualified_name,
+                            module=callee.module,
+                        )
+                    )
                     seen_ids.add(callee.qualified_name)
         except (AttributeError, TypeError):
             # Symbol graph view doesn't have expected methods.
@@ -660,9 +700,7 @@ class RankingEngine:
             candidate.reasons = rel_reasons
 
         # Sort expansion candidates by score descending, qualified_name ascending.
-        expansion_candidates.sort(
-            key=lambda c: (-c.score, c.qualified_name)
-        )
+        expansion_candidates.sort(key=lambda c: (-c.score, c.qualified_name))
 
         # Add expansion candidates within budget.
         result: list[_ContextCandidate] = list(ranked)

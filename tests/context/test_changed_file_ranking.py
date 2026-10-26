@@ -1134,6 +1134,21 @@ def test_promotion_guard_is_inert_when_the_slot_is_already_restored() -> None:
     assert _names(clean_engine.restore_promotion_anchor(shuffled)) == _names(shuffled)
 
 
+def test_the_guard_refuses_to_run_on_an_engine_that_never_ranked() -> None:
+    """The lifecycle is a precondition, and a misuse is an error rather than a no-op.
+
+    The rule reads only what ``rank()`` recorded - which candidates carry the bonus,
+    and how many did.  An engine that has not ranked has no such state, so asking it
+    to protect an anchor cannot mean anything, and quietly returning the list would
+    let a caller believe the guard had looked at it.
+    """
+    fresh = RankingEngine(changed_modules=frozenset({MULTI_PROMOTED_MODULE}))
+
+    with pytest.raises(RuntimeError, match="rank"):
+        fresh.restore_promotion_anchor(_multi_candidates())
+
+
+
 def test_builder_keeps_the_restored_symbol_inside_the_source_preview_budget(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

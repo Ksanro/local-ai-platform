@@ -35,6 +35,7 @@ from typing import Any, Callable
 
 from packages.context.budget import CHARS_PER_TOKEN
 from packages.context.content import content_to_text
+from packages.pipeline.user_messages import CLINE_TOOL_RESULT_PREFIXES
 
 
 def _estimate_tokens(content: str) -> int:
@@ -88,21 +89,18 @@ def _message_token_count(message: dict[str, Any]) -> int:
 
 
 def _looks_like_cline_tool_result_message(message: dict[str, Any]) -> bool:
-    """Return True for Cline tool-result envelopes sent as user text."""
+    """Return True for Cline tool-result envelopes sent as user text.
+
+    The recognition is the pipeline's shared one: ``CLINE_TOOL_RESULT_PREFIXES``
+    from :mod:`packages.pipeline.user_messages`.  A message capping drops here is
+    therefore the same message planning ignores, and the file-activity boundary
+    cannot recognize an envelope that these two do not already know.
+    """
     if message.get("role") != "user":
         return False
 
     content = content_to_text(message.get("content", ""))
-    stripped = content.lstrip()
-    prefixes = (
-        "[read_file for ",
-        "[search_files for ",
-        "[list_files for ",
-        "[execute_command for ",
-        "[attempt_completion]",
-        "[ERROR] You did not use a tool",
-    )
-    return stripped.startswith(prefixes)
+    return content.lstrip().startswith(CLINE_TOOL_RESULT_PREFIXES)
 
 
 def _truncate_message_content(

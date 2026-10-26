@@ -39,15 +39,32 @@ focused tests.
 
 ## What does NOT run
 
-These packages have **zero references** from `apps/` or from any pipeline stage. They are not
-reachable from a request:
+These packages have **zero references** from `apps/`. The gateway pipeline registers only
+`ModelResolutionStage`, `PlanningStage`, `RepositoryContextStage` and `ProviderStage`, so
+nothing here is reachable from a request. The references that do exist inside
+`packages/pipeline` sit in four stage modules no app registers (`stages/workflow_stage.py`,
+`stages/evaluation_stage.py`, `stages/execution_stage.py`, `stages/verification_stage.py`),
+which are dormant in the same sense `workflow_stage.py` is excluded from the mypy gate:
 
 `capabilities`, `tasks`, `workflows`, `advisors`, `autonomous`, `verification`, `patches`,
 `modification`, `session`, `bootstrap`, `controller`, `evaluation`, `platform`, `execution`,
-`observability`, `architecture`, `benchmark`
+`architecture`, `benchmark`
 
-That is roughly 20,000 lines. **Do not extend them, and do not assume documentation describing them
-reflects running behaviour.** See `docs/engineering-controller-flow.mmd`, which is labelled unwired.
+That is roughly 25,800 lines (25,769 exactly), recounted 2026-10-25 with
+`Get-ChildItem -Recurse -Include *.py` plus `Measure-Object -Line` over the sixteen
+directories named above. **Do not extend them, and do not
+assume documentation describing them reflects running behaviour.** See
+`docs/engineering-controller-flow.mmd`, which is labelled unwired.
+
+`observability` was removed from that list because it is no longer true of it:
+`apps/gateway/api/runtime_context.py` imports `packages.observability.quality_history` and
+`packages.observability.session_log_history`, and `create_app()` mounts that router, so
+`GET /debug/runtime-context` executes real code in that package. Only those two modules
+(362 lines of the package's 2,024) are reachable, they are reachable only from that read-only
+debug endpoint and not from the request path, and nothing in `apps/` or any pipeline stage imports
+the rest — `packages/bootstrap` and `packages/controller` reference `packages.observability` too,
+but both are themselves dormant, so those references wake nothing up. Treat the remainder of
+`packages/observability` as unreachable by the same rule.
 
 If you are about to create a new directory under `packages/`, stop — that is almost certainly wrong.
 

@@ -29,6 +29,10 @@ from apps.gateway.core.logging import setup_logging
 from apps.gateway.middleware import RequestMiddleware, TimingMiddleware
 from apps.gateway.session_log import SessionLoggerMiddleware
 from packages.pipeline.engine import PipelineEngine
+from packages.pipeline.file_activity import (
+    MAX_UNIQUE_FILES_PER_CONVERSATION,
+    FileActivityTracker,
+)
 from packages.pipeline.stages import (
     PlanningStage,
     ProviderStage,
@@ -201,6 +205,21 @@ async def lifespan(app: FastAPI):
         "true" if settings.repository_context_changed_files_comparison_enabled else "false",
     )
 
+    # Roadmap C1's observation store: which files a conversation was shown, and which
+    # files its own tool results report it read or changed.  It is wired unconditionally
+    # because it changes nothing a request sends - unlike the change-aware signal above,
+    # it reads no Git, and unlike the comparison, it decides nothing - and the question
+    # it answers ("does the agent open what we sent it?") can only be asked of traffic
+    # that has already happened.  Two bounds keep a long-lived gateway from growing on
+    # it: a fixed number of conversations, and this many files held per conversation.
+    # File paths never leave the process; only the counts reach the session log.
+    file_activity = FileActivityTracker(maxsize=settings.context_delta_cache_size)
+    logger.info(
+        "file_activity enabled=true conversations=%d files_per_conversation=%d",
+        file_activity.maxsize,
+        MAX_UNIQUE_FILES_PER_CONVERSATION,
+    )
+
     if model_router is not None:
         engine = PipelineEngine()
         # ModelResolutionStage runs first — before PlanningStage.
@@ -219,6 +238,8 @@ async def lifespan(app: FastAPI):
                 changed_files_comparison_enabled=(
                     settings.repository_context_changed_files_comparison_enabled
                 ),
+                file_activity=file_activity,
+                repository_root=repo_path,
             )
         )
         # ProviderStage is routing-agnostic — reads from context.resolved_model.

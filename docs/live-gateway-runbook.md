@@ -1276,6 +1276,205 @@ flag stays off,
 `RankingConfig.WEIGHT_CHANGED_FILE` stays `+25`, and the counterfactual build still costs
 about 450 ms of every enabled request, so B4 has to come before any default-on decision.
 
+## Conversation File Activity (roadmap C1)
+
+The second measurement the gateway makes about context, on the same record and for
+the same reason - to answer a question no single request can. The change-aware
+fields above ask *what the working tree changed about what we sent*. These fields
+ask *what the conversation's own agent then did with files*: which files its tool
+results say it read, which it wrote, and whether it opened the ones we had already
+put in front of it.
+
+It is wired unconditionally: `apps/gateway/main.py` builds one
+`FileActivityTracker(maxsize=settings.context_delta_cache_size)` during `lifespan()`
+and hands it to `RepositoryContextStage` with the repository root. There is no
+feature flag for it, because it reads no Git, decides nothing about what is sent, and
+changes no prompt. Startup says so once, in counts:
+
+```text
+file_activity enabled=true conversations=256 files_per_conversation=256
+```
+
+`conversations` is `APP_CONTEXT_DELTA_CACHE_SIZE` - the same bound the symbol-delta
+tracker uses, deliberately, so the two per-conversation caches cannot drift apart.
+
+### The grammar it reads
+
+A Cline conversation endpoint reports every tool result back to the model as a
+user-role message whose first line is an anchored header (`packages.pipeline.cline_activity`):
+
+```text
+[read_file for 'apps/gateway/session_log.py'] Result:
+<the result body - examined for 200 characters and for nothing but a status token>
+```
+
+Nothing else counts as an envelope: the header must start the message after leading
+whitespace, its tool must be a key of `CLINE_ENVELOPE_TOOLS`, and it must close within
+`MAX_ENVELOPE_HEADER_CHARS` (2048) with `"] Result:"` - or with a trailing `"]"`, which
+is the form the gateway's own history cap leaves behind when it truncates the body. A
+header found *inside* a result body is never seen, because the parser stops at the
+terminator; that is what makes a file containing a quoted envelope unable to report an
+operation. `read_file` reads; `write_to_file` and `replace_in_file` modify;
+`search_files`, `list_files` and `execute_command` are recognized as agent activity
+that names no file - their target is a pattern, a directory or a command line, and the
+files inside their output belong to the result body, which is not scanned.
+
+Every target is normalized before it is counted - slashes, `.` segments, relative and
+in-repository-absolute spellings, Windows drive letters, NTFS streams, Unicode
+composition - and then checked for containment against the resolved repository root,
+`realpath` on both sides with `strict=False` so a modification target that does not
+exist yet is still measurable. A refused target yields one token and one counter
+(`paths_rejected`): `empty`, `quoting`, `nul`, `control`, `length`, `drive`, `stream`,
+`outside`, `self`, `root`. Counted per tool and reason, never per path, because
+remembering a path would defeat the boundary.
+
+### Attempts and outcomes are separate numbers
+
+A header says an operation was attempted. The client's own result line says what
+happened, and its wording is client-authored prose, so the read is narrow and closed:
+`successfully saved` is a confirmed write; `tool execution failed` and `no changes
+were made` are a write that did not happen; a read whose head *begins* with `the tool
+execution failed` is a failed read and any other non-empty read body is content, hence
+a confirmed read; anything else is `unknown`. Each file then gets **one** outcome per
+operation kind by precedence over every envelope the transcript holds - confirmed if
+any result for that file confirmed, else not-modified/failed if any did, else unknown -
+so a failure followed by a success is confirmed and a success followed by a failure
+stays confirmed. The precedence decides which counter a file lands in, never how many
+times it is counted:
+
+```text
+read_attempts          == files_read + reads_failed + reads_unknown
+modification_attempts  == files_modified + modifications_not_modified + modifications_unknown
+files_touched          == the union of the confirmed read and write sets
+```
+
+None of it is filesystem truth, and `unknown` is the honest answer rather than a
+failure to measure: a client that words its results differently lands there instead of
+in either claim.
+
+### A snapshot, not a tally
+
+Cline re-sends the whole prior conversation inside every request, so the transcript
+*is* the history and there is nothing for a counter to accumulate. Everything
+describing what the client reported is recomputed from the events of the request being
+answered and nothing else, which gives the property the tests pin:
+
+```text
+same transcript + same supplied-context state = byte-identical output dict
+```
+
+The earlier claim-based model counted on every observation, so a file read on turn one
+was fifteen reads by turn fifteen, and it needed a `replay_suppressed` counter to
+explain the difference. That field is gone, along with `file_events`, because the
+numbers no longer drift and there is nothing left to suppress.
+
+The one question a transcript cannot answer is genuinely temporal - *was this file
+already in front of the agent when it opened it?* - and `context_files_touched` is the
+only quantity that consults remembered state. Three ordering rules are what make it a
+measurement rather than an artifact:
+
+- a file is credited only when the successful operation on it is **new** to this
+  conversation; an operation an earlier transcript already showed the tracker is
+  history being re-sent, not an agent acting on what it was just given;
+- the current request's supplied files join the remembered set **after** correlation,
+  so context that arrives on the same request that reports touching a file proves only
+  that the context arrived;
+- correlation never reconsiders a historical event against context supplied later,
+  which is the retroactive-attribution bug those two rules exist to stop.
+
+`touched_without_context` is `files_touched` minus `context_files_touched`, so the pair
+partitions the touched set and cannot disagree.
+
+Conversation identity is a fingerprint of the complete message prefix, **assistant
+turns included** - not the user-only key `packages.context.delta` uses, because the
+activity being measured is the agent's and a key blind to the assistant's turns merges
+two conversations that differ only there. Each request looks up the state keyed by the
+transcript *before* its newest turn and stores the derived state under what it just
+sent, which is what lets a replay find its own numbers. The honest limitation: the
+fingerprint is content, not identity. Two independent conversations whose transcripts
+are byte-identical are, to this module, one conversation, and nothing in a
+chat-completions request carries a conversation ID that could tell them apart.
+
+### What a record carries
+
+`context.file_activity` is one nested dict, seventeen keys, count-only. The path out is
+`RepositoryContextStage` metadata, then `sanitize_file_activity` in the chat endpoint,
+then the session logger; a file path crosses none of those boundaries.
+
+| field | meaning |
+| --- | --- |
+| `state` | whether the transcript was read: `measured`, `none` (nothing recognizable - what a client that sends no envelopes reports), `partial` (a bound kept something out, so the totals are a floor), `unavailable` (the measurement did not run - no tracker, no root the OS can name, or a stage that failed) |
+| `correlation` | whether the two correlation counters are a measurement: `measured`, `no_prior_context` (the conversation is remembered and nothing was ever supplied - a real zero), `tracker_miss` (an earlier request existed that this tracker cannot reconstruct: eviction, restart, or a rewritten history), `unavailable` |
+| `files_read` | unique files whose read result confirmed |
+| `files_modified` | unique files whose write result confirmed |
+| `files_touched` | the union of the two above |
+| `read_attempts` | unique files a read header named, whatever the result said |
+| `reads_failed` | read-attempted files whose every result said the read failed |
+| `reads_unknown` | read-attempted files whose results could not be classified, including a body the history cap truncated away |
+| `modification_attempts` | unique files a modification header named, whatever the result said |
+| `modifications_not_modified` | attempted writes whose results said nothing was written, with no later confirmation for that file |
+| `modifications_unknown` | attempted writes whose results could not be classified |
+| `context_files_touched` | successfully touched files this conversation had already been *supplied* as context on an earlier request |
+| `touched_without_context` | the rest of the touched set |
+| `changed_files_touched` | touched files the working-tree signal also reports as modified; zero whenever that signal is off or clean |
+| `paths_rejected` | distinct refusals met - per tool and reason, never per path |
+| `other_events` | distinct recognized envelopes naming no file: `search_files`, `list_files`, `execute_command` |
+| `events_beyond_bound` | recognized envelopes a bound kept out of this request's window, plus files a per-conversation bound would not hold |
+
+Two of those states are easy to read wrongly. `state=none` and `state=unavailable` both
+report zeroes, and only one of them means the gateway looked. A tracker miss reports the
+correlation pair as zero, which is why `correlation` exists at all: an evicted
+conversation and a conversation that genuinely never saw context would otherwise differ
+by nothing. `events_beyond_bound` is what separates "this session touched nothing" from
+"this session was not counted", and a file dropped because a bound was reached is counted
+*there* and not in `paths_rejected` - the path was fine, the bound was not.
+
+The bounds, all of them forced by the transcript being client-supplied: 256 conversations
+per tracker (configured, from `APP_CONTEXT_DELTA_CACHE_SIZE`), 256 unique files per
+conversation per set (`MAX_UNIQUE_FILES_PER_CONVERSATION`), 256 envelopes per request
+(`MAX_ENVELOPES_PER_REQUEST`), 2048 header characters (`MAX_ENVELOPE_HEADER_CHARS`), 512
+path characters (`MAX_PATH_CHARS`), a 200-character result head
+(`MAX_RESULT_HEAD_CHARS`), and 2048 fingerprint characters over the newest 256 messages
+(`MAX_FINGERPRINT_CHARS` / `MAX_FINGERPRINT_MESSAGES`). What a bound forces out is
+counted, and it is the *oldest* envelopes that fall out of a bounded parse, so what the
+conversation just did stays visible.
+
+An observation that cannot be made never costs the request anything: everything that
+decides what the turn sends has already happened by the time the stage records activity,
+so a tracker with no root, an unresolvable root, or a measurement that raises writes
+`state=unavailable` and lets the context through unchanged.
+
+### Verification status
+
+Everything above is pinned offline, and only offline: `tests/pipeline/test_file_activity.py`
+(56 tests - grammar, containment, snapshot idempotency, outcome partitioning, the three
+temporal-regression directions, bounds, eviction and restart, sanitization, fingerprint
+identity, stage integration, failure-keeps-request) and
+`tests/gateway/test_session_log.py` for the record's shape.
+
+**C1 has not been validated against a restarted live gateway.** No request has been sent
+to a gateway started from this source and no session record produced by one has been
+read, so the `file_activity enabled=true` startup line, the shape of
+`context.file_activity` in a real record, and the expectation that a normal Cline
+conversation reports `state=measured` alongside a non-`tracker_miss` `correlation` are
+all unverified against production traffic. Offline determinism is not the same claim as
+live determinism, and nothing in `docs/STATUS.md` should be read as a measurement of
+this feature.
+
+A first live check needs nothing but a gateway started from this tree and two requests
+carrying the same transcript prefix:
+
+```powershell
+.\uv.exe run python -m uvicorn apps.gateway.main:create_app --factory --port 8001
+```
+
+Then, from a client that sends Cline-shaped tool-result envelopes, the same prefix twice,
+reading `context.file_activity` from `APP_SESSION_LOG_PATH` for both records. Pass means
+the two records agree on every transcript-derived counter, that the second is not the sum
+of the two, and that the second's `correlation` is `measured` rather than `tracker_miss`.
+A run that shows doubling, or a `tracker_miss` on a conversation that was never evicted,
+is a real finding and should be reported as one.
+
 ## Full Quality Baseline
 
 Run the fixed 11-probe set (30 expected facts) against the current local backend:

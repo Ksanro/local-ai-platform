@@ -343,6 +343,7 @@ def _context(*messages: dict[str, object]) -> PipelineContext:
         },
     )
 
+
 # ---------------------------------------------------------------------------
 # The counter function
 # ---------------------------------------------------------------------------
@@ -358,6 +359,7 @@ def test_counts_are_count_only() -> None:
         ],
         frozenset({CHANGED_MODULE}),
         _package(CHANGED_SYMBOL, UNCHANGED_SYMBOL),
+        comparison_enabled=True,
     )
 
     assert set(counts) == set(COUNT_KEYS)
@@ -372,7 +374,7 @@ def test_counts_are_count_only() -> None:
 
 def test_no_package_reports_safe_inert_counts() -> None:
     """Nothing assembled still states every field, and all of them inert."""
-    assert changed_file_promotion_counts(None, (), frozenset(), None) == {
+    assert changed_file_promotion_counts(None, (), frozenset(), None, comparison_enabled=True) == {
         "changed_files_count": 0,
         "changed_symbols_selected": 0,
         "changed_primary_promoted": False,
@@ -397,7 +399,11 @@ def test_identical_context_is_selected_but_not_promoted() -> None:
     ]
 
     counts = changed_file_promotion_counts(
-        package, candidates, frozenset({CHANGED_MODULE}), package
+        package,
+        candidates,
+        frozenset({CHANGED_MODULE}),
+        package,
+        comparison_enabled=True,
     )
 
     assert counts["changed_symbols_selected"] == 2
@@ -426,6 +432,7 @@ def test_a_reorder_of_the_same_symbols_is_a_change() -> None:
         ],
         frozenset({CHANGED_MODULE}),
         _package(CHANGED_SYMBOL, CHANGED_METHOD, UNCHANGED_SYMBOL),
+        comparison_enabled=True,
     )
 
     assert counts["changed_context_differs"] is True
@@ -446,6 +453,7 @@ def test_primary_flip_without_a_symbol_flip() -> None:
         ],
         frozenset({CHANGED_MODULE}),
         _package(UNCHANGED_SYMBOL, CHANGED_SYMBOL, CHANGED_METHOD),
+        comparison_enabled=True,
     )
 
     assert counts["changed_primary_promoted"] is True
@@ -465,6 +473,7 @@ def test_symbols_the_baseline_never_sent_are_counted() -> None:
         ],
         frozenset({CHANGED_MODULE}),
         _package(UNCHANGED_SYMBOL, CHANGED_SYMBOL),
+        comparison_enabled=True,
     )
 
     assert counts["changed_symbols_promoted"] == 1
@@ -479,6 +488,7 @@ def test_disabled_signal_never_considers_a_baseline() -> None:
         [_candidate(CHANGED_SYMBOL, CHANGED_MODULE, RankingReason.CHANGED_FILE)],
         frozenset(),
         _package(UNCHANGED_SYMBOL),
+        comparison_enabled=True,
     )
 
     assert counts == {
@@ -503,6 +513,7 @@ def test_missing_baseline_does_not_invent_a_promotion() -> None:
         frozenset({CHANGED_MODULE}),
         None,
         1,
+        comparison_enabled=True,
     )
 
     assert counts["changed_symbols_selected"] == 1
@@ -535,7 +546,12 @@ def test_an_unsampled_comparison_is_stated_as_unsampled() -> None:
         comparison_enabled=False,
     )
     attempted = changed_file_promotion_counts(
-        package, candidates, frozenset({CHANGED_MODULE}), None, 1
+        package,
+        candidates,
+        frozenset({CHANGED_MODULE}),
+        None,
+        1,
+        comparison_enabled=True,
     )
 
     assert unsampled["changed_baseline_status"] == "not_sampled"
@@ -564,6 +580,7 @@ def test_no_bonus_candidate_needs_no_comparison() -> None:
         frozenset({CHANGED_MODULE}),
         None,
         0,
+        comparison_enabled=True,
     )
 
     assert counts["changed_files_count"] == 1
@@ -585,6 +602,7 @@ def test_promotion_is_counted_on_the_final_package() -> None:
         ],
         frozenset({CHANGED_MODULE}),
         _package(CHANGED_SYMBOL, UNCHANGED_SYMBOL, CHANGED_METHOD),
+        comparison_enabled=True,
     )
 
     assert counts["changed_files_count"] == 1
@@ -605,6 +623,7 @@ def test_bonus_without_selection_is_not_counted() -> None:
         ],
         frozenset({CHANGED_MODULE}),
         _package(UNCHANGED_SYMBOL),
+        comparison_enabled=True,
     )
 
     assert counts["changed_files_count"] == 1
@@ -622,6 +641,7 @@ def test_reason_free_selection_counts_nothing() -> None:
         ],
         frozenset({CHANGED_MODULE}),
         _package(CHANGED_SYMBOL, CHANGED_METHOD),
+        comparison_enabled=True,
     )
 
     assert counts["changed_symbols_selected"] == 0
@@ -635,6 +655,7 @@ def test_changed_modules_are_counted_even_with_no_symbols() -> None:
         [_candidate(CHANGED_SYMBOL, CHANGED_MODULE, RankingReason.CHANGED_FILE)],
         frozenset({"modules/beta", "modules/gamma", "modules/delta"}),
         _package(CHANGED_SYMBOL),
+        comparison_enabled=True,
     )
 
     assert counts["changed_files_count"] == 3
@@ -648,12 +669,14 @@ def test_suppressed_symbol_is_not_counted() -> None:
         [_candidate(CHANGED_SYMBOL, CHANGED_MODULE, RankingReason.CHANGED_FILE)],
         frozenset({CHANGED_MODULE}),
         _package(CHANGED_SYMBOL),
+        comparison_enabled=True,
     )
     after_suppression = changed_file_promotion_counts(
         _package(""),
         [],
         frozenset({CHANGED_MODULE}),
         _package(CHANGED_SYMBOL),
+        comparison_enabled=True,
     )
 
     assert before["changed_symbols_selected"] == 1
@@ -860,12 +883,8 @@ async def test_the_guard_decides_which_symbols_the_budget_admits(
     # The stage's fixture signal names a different module, so the dirty file here
     # is spelled out: it is the module the promoted symbols live in.
     dirty = _StubSource(frozenset({GUARD_MULTI_PROMOTED_MODULE}))
-    off = await _stage(source=None, index=index, max_context_tokens=32).execute(
-        _context(messages)
-    )
-    on = await _stage(source=dirty, index=index, max_context_tokens=32).execute(
-        _context(messages)
-    )
+    off = await _stage(source=None, index=index, max_context_tokens=32).execute(_context(messages))
+    on = await _stage(source=dirty, index=index, max_context_tokens=32).execute(_context(messages))
 
     assert off.data is not None and on.data is not None
     # Without the signal the package is the two clean symbols the query pointed at.
@@ -893,11 +912,7 @@ async def test_the_guard_decides_which_symbols_the_budget_admits(
     # symbols are sent and neither clean one survives.
     assert _sent(unguarded) == {GUARD_MULTI_PROMOTED[0], GUARD_MULTI_PROMOTED[2]}
     assert unguarded.data["changed_symbols_selected"] == 2
-    assert (
-        unguarded.data["changed_symbols_promoted"]
-        == len(_sent(unguarded) - _sent(off))
-        == 2
-    )
+    assert unguarded.data["changed_symbols_promoted"] == len(_sent(unguarded) - _sent(off)) == 2
 
 
 @pytest.mark.asyncio
@@ -1000,7 +1015,8 @@ async def test_a_reorder_is_a_change_and_not_an_inert_result() -> None:
     assert on.data["package"].primary_symbol == off.data["package"].primary_symbol
     assert _sent(on) == _sent(off)
     assert [on.data["package"].primary_symbol, *on.data["package"].supporting_symbols] != [
-        off.data["package"].primary_symbol, *off.data["package"].supporting_symbols
+        off.data["package"].primary_symbol,
+        *off.data["package"].supporting_symbols,
     ]
 
     assert on.data["changed_files_signal"] == "ok"
@@ -1360,9 +1376,7 @@ async def test_an_unsampled_request_touches_the_delta_tracker_once() -> None:
 @pytest.mark.asyncio
 async def test_signal_is_off_without_a_source() -> None:
     """No source configured is a state of its own, not a clean tree."""
-    result = await _stage(changed=False).execute(
-        _context({"role": "user", "content": FLIP_QUERY})
-    )
+    result = await _stage(changed=False).execute(_context({"role": "user", "content": FLIP_QUERY}))
 
     assert result.data is not None
     assert result.data["changed_files_signal"] == "off"
@@ -1595,11 +1609,3 @@ async def test_the_inert_promotion_carries_no_name() -> None:
     """The shared default is count-only, so no caller can leak through it."""
     assert set(INERT_PROMOTION) == set(PROMOTION_KEYS)
     assert not any(forbidden in repr(INERT_PROMOTION) for forbidden in FORBIDDEN)
-
-
-
-
-
-
-
-

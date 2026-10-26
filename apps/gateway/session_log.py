@@ -61,8 +61,10 @@ repository-context stage assembled for the request:
   The stage re-ranks the same request without the bonus and compares the two
   contexts, so this is a counterfactual, not a presence flag.
 * ``changed_symbols_promoted`` — how many sent symbols are absent from that
-  no-bonus context, including symbols outside the changed modules that entered
-  through relationship expansion once the primary changed.
+  no-bonus context.  The bonus is a reorder inside one ranking pass, so a symbol
+  can enter the sent set by fitting a budget the reorder changed; it is not
+  because relationship expansion seeded from a different primary — the expansion
+  seed is chosen before ranking and the bonus never changes it.
 * ``changed_baseline_status`` — whether that comparison was made at all:
   ``none`` (nothing to compare — signal off, unavailable, or a clean tree),
   ``built`` (compared), ``skipped_no_bonus`` (no candidate received the bonus, so
@@ -87,6 +89,40 @@ counters.  The cost of a build that was made is reported as
 ``changed_baseline_ms`` on the request log line and deliberately never recorded
 here; it is ``0`` on a request that was never compared.
 
+* ``file_activity`` — one nested dict, the count-only companion of the fields above
+  (roadmap C1): what the transcript this request carries says the agent read and
+  changed, beside the files the gateway has been putting in front of it.  Its
+  ``state`` is ``measured`` when the transcript held envelopes and a bound kept none
+  of them out, ``partial`` when a bound kept some out - which makes every total a
+  floor, not a count - ``none`` when the transcript showed the gateway nothing to
+  recognize, which is what a client that sends no envelopes reports, and
+  ``unavailable`` when the measurement could not run.  Its ``correlation`` answers a
+  different question: whether the gateway could know if a touched file had already
+  been supplied.  ``measured``, ``no_prior_context`` (a real zero: nothing was
+  supplied earlier), ``tracker_miss`` (an evicted, restarted or rewritten
+  conversation, where neither half of the correlation pair is claimed) and
+  ``unavailable``.  A Cline client re-sends its whole transcript on every request, so
+  every activity total is recomputed from that transcript each time rather than
+  accumulated per request: the same transcript plus the same remembered context
+  yields exactly the same dictionary, and nothing a repeat can inflate exists any
+  more.  ``files_read`` and ``files_modified`` count only files whose own result
+  line reported the operation succeeding - a failed write or a failed read is in
+  ``modifications_not_modified``/``reads_failed``, never in a total - and
+  ``files_touched`` is the union of those two.  ``read_attempts`` and
+  ``modification_attempts`` count the files those headers named whatever the result
+  said, and with the failed and unknown counters complete a partition of them.  Each
+  outcome is decided per file by precedence, so a failure followed by a success on
+  one file is a modified file and a success followed by a failure stays one.
+  ``context_files_touched`` is how many touched files an *earlier* request had
+  supplied, ``touched_without_context`` the rest, and ``changed_files_touched`` how
+  many were also modified in the working tree.  ``paths_rejected`` counts distinct
+  refusals - per tool and per reason, because a refused string may not be stored -
+  and ``other_events`` and ``events_beyond_bound`` say which non-file tools the
+  transcript exercised and how much of it a bound kept out.  No key of this dict is
+  ever a file path, so the question roadmap C1 asks - how often a supplied file is
+  opened - can be answered from a real log without the log naming a single file it
+  was asked about.
+
 The changed-file fields are counts, two booleans, and two state tokens.  Changed
 file paths, module names derived from them, symbol names, and Git output are
 never recorded.
@@ -104,6 +140,7 @@ from typing import Any
 
 from apps.gateway.core.config import get_settings
 from packages.context.content import content_to_text
+from packages.pipeline.file_activity import INERT_FILE_ACTIVITY
 from packages.pipeline.stages.repository_context import INERT_PROMOTION
 
 logger = logging.getLogger(__name__)
@@ -404,6 +441,11 @@ class SessionLoggerMiddleware:
                 key: scope.get(f"session_{key}", default)
                 for key, default in INERT_PROMOTION.items()
             },
+            # The conversation's own file activity, nested in one dict rather than
+            # spread across this section beside the promotion fields (roadmap C1).  The
+            # endpoint already sanitized it, so a request that never reached the tracker
+            # states the unavailable shape rather than lacking keys the analyzer reads.
+            "file_activity": scope.get("session_file_activity", INERT_FILE_ACTIVITY),
         }
 
         # Intent from PlanningStage.

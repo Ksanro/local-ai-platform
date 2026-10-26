@@ -20,6 +20,7 @@ from starlette.responses import StreamingResponse
 from apps.gateway.core.config import get_settings
 from packages.pipeline.engine import PipelineEngine
 from packages.pipeline.exceptions import PipelineError
+from packages.pipeline.file_activity import sanitize_file_activity
 from packages.pipeline.request import PipelineRequest
 from packages.pipeline.stages.repository_context import INERT_PROMOTION
 from packages.providers.exceptions import (
@@ -214,6 +215,13 @@ def _surface_session_metadata(
     degraded_signal = resp_meta.get("changed_files_signal")
     if isinstance(degraded_signal, str) and degraded_signal:
         scope["session_changed_files_signal"] = degraded_signal
+    # Roadmap C1's counts travel as a mapping in the same metadata, exactly as the
+    # degraded signal state does, because a request whose stage never reached the end
+    # of the stage has no stage data to read them from.  A value that got nowhere near
+    # the tracker - a failed stage, or a gateway built without one - coerces to the
+    # inert record rather than being written as a gap or a guess.  Only counts cross
+    # this boundary; the files themselves never reach the session log.
+    scope["session_file_activity"] = sanitize_file_activity(resp_meta.get("file_activity"))
     repo_result = stage_results.get("repository_context")
     if repo_result is not None and repo_result.success:
         pkg = repo_result.data
