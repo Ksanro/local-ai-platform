@@ -3,7 +3,12 @@
 This file is the current runtime snapshot. It intentionally describes only
 what matters for the live gateway path and calls out dormant code explicitly.
 
-Last reviewed: 2026-10-25 (roadmap item C1 now measures what a conversation's agent
+Last reviewed: 2026-10-30 (roadmap Phase B item 5 closed the change-aware ranking decision: no change - the
+feature stays off by default, `RankingConfig.WEIGHT_CHANGED_FILE` stays `+25`, and the `+5` candidate is inert,
+changing no outcome across 528 live requests over four dirty-file layouts. The context side is deterministic;
+one probe carries the answer: `explain_changed_files_history_cap` goes 3/12 to 8-11/12 on the one-file layout
+(arm replayed - same context, same `+2,694` tokens) and 3/12 to 0/12 on the eight-file one. Evidence:
+docs/roadmap.md, Phase B item 5. Before that, 2026-10-25 (roadmap item C1 now measures what a conversation's agent
 touches, on the live path: `RepositoryContextStage` reads the Cline tool-result
 envelopes already in the request, normalizes every target against the repository
 root, and records count-only activity in a bounded store of transcript-prefix
@@ -277,7 +282,8 @@ configured 4096-token budget and reads its own counters back:
   into the changed file, which is what the case is for - and its scored half,
   `explain_changed_files_history_cap`, is the pair the 2026-10-13 live run used.
 
-`+5` came out of this pass as a candidate, not as shipped behavior. The value in
+`+5` came out of this pass as a candidate, not as shipped behavior - a candidate Phase B item
+5 measured live on 2026-10-30 across four dirty-file layouts and closed as inert. The value in
 `RankingConfig.WEIGHT_CHANGED_FILE` is unchanged at `+25`; the live replicated
 comparison ran on 2026-10-12 against the vLLM backend and separated the arms the way
 the offline case predicts - `9/9` expected facts with the flag off over three

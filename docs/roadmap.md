@@ -225,10 +225,60 @@ them.
    changed. This is the last cost question ahead of the decision below, which
    stays open and is unchanged by this item: nothing here authorizes switching
    the feature on.
-5. **Default and weight decision.** Only after B4, run the full fixed probe set
-   with the candidate behavior across more than one controlled dirty-file
-   layout. Decide the shipped weight and default from quality, style, context,
-   token, and latency evidence rather than from the two engineered pairs alone.
+5. **Default and weight decision - DONE (2026-10-30).** The full fixed probe set ran
+   16 times: four controlled dirty-file layouts (A one changed file, B two, C two
+   chosen so the relevance gate admits nothing, D eight), each against the shipped
+   `+25` and each against a scratch tree holding `+5`, each with the flag off and on,
+   three repeats of the 11 probes per arm - 528 requests against the live gateway,
+   33 records in every run plus one arm replayed for 33 more, zero request errors,
+   zero new style findings and an identical index in all sixteen. It measured the
+   build at `35e8b91` and changed no production behaviour:
+   `RankingConfig.WEIGHT_CHANGED_FILE` stays `+25` and
+   change-aware ranking stays off by default. What is deterministic here is the
+   context, not the answers. All eight off-arms scored exactly `75/90` expected facts,
+   every `+5` arm matched its own off-arm probe for probe, and only two cells in the
+   whole matrix move - layout A at `+25`, `75/90` to `80/90`, and layout D at `+25`,
+   `75/90` to `72/90` - both of them the same probe,
+   `explain_changed_files_history_cap`, whose four expected facts over three repeats
+   make twelve slots: `3/12` to `8/12` in the first and `3/12` to `0/12` in the
+   second. That first cell had to be replayed to be quoted at all: the
+   `--compare-context` run below reused its session-log path and truncated it from 33
+   records to 22, so the arm was re-measured on 2026-10-30 into new files, 33 requests
+   again and 561 in all. The replay reproduced the context side exactly - the same
+   `101,328` prompt tokens against the same `98,634`, the same `109,272` estimated
+   context tokens, the same 186 symbols selected, the same `3/33` contexts differing
+   and the same 18 built baselines - and moved on the answer side: `83/90` for the arm
+   and `11/12` for that probe. So the gain and the loss are a layout-dependent effect
+   of `+25` and not noise in retrieval: the bonus lifts that probe when one file is
+   dirty and erases it when eight are, the retrieval going from 60 symbols to 24 while
+   what is sent grows from 8,421 to 10,995 estimated tokens. How far a lifted probe
+   reaches inside its twelve slots is answer-side variance, and is quoted as a range
+   (`8/12` to `11/12`) rather than a number. The split is the one B3 recorded on
+   2026-10-25 - context fingerprint identical, answer text varying - and the replay
+   is a second observation of it, on the same arm six runs deep. The weight
+   question resolves the other way, and against `+5`: it changed `0/33` contexts and
+   no token count on the layout where `+25` changes the answer, and where it did
+   change contexts - 6/33 at layout B, 15/33 at layout D - it changed no outcome
+   anywhere. `+5` is recorded as inert on this probe set rather than as a smaller
+   candidate, which closes the candidate the weight sweep left open under *Git
+   Integration*; a default-on at `+5` would be the feature off wearing an `on` label.
+   Where the bonus does fire at `+25` it is cheap and, at layout A, twice measured:
+   `+2,694` prompt tokens across the 90 facts (`98,634` to `101,328`, identical in
+   both passes), `+864` at B, `-156` at D, and `+0` at C, the gate-negative control,
+   which pays the machinery on 21 of its 33 requests and changes no context, no token
+   count and no verdict, exactly as designed. Latency is not priceable from this
+   matrix and no claim is made from it: cells whose contexts are provably identical
+   differ by seconds in both directions, and the replayed arm is the clearest case -
+   13,359 ms to 16,198 ms mean on an arm whose context record matches to the token -
+   so the cost question stays settled by B4's own measurement. A `--compare-context`
+   confirmation on the candidate cell, 22 requests at layout A `+25`, shows the
+   promoted context still carrying every fact asked of it - all eleven probes gain
+   from having context, 26 facts between them,
+   `explain_changed_files_history_cap` reaching `4/4` - so the layout A gain is a
+   real context effect on that layout and the layout D loss a real context effect on
+   that one. Item 5 is closed with the default and the weight unchanged, and nothing
+   here authorizes switching the feature on: an attempt to ship it on needs a layout
+   set where the benefit is not one probe moving either way.
 
 #### Phase C: Measure Conversation-Scoped File Activity
 
@@ -275,9 +325,8 @@ them.
 - a general autonomous engineering loop
 - wholesale activation of the dormant platform stack
 
-A1, A2, B1-B4 and C1 are complete. The remaining execution order is
-**full-suite default/weight decision (Phase B item 5) -> A3**, with documentation updated
-continuously.
+A1, A2, all of Phase B, and C1 are complete. The remaining execution order is
+**A3**, with documentation updated continuously.
 
 ### 1. Dormant-Code Inventory And Activation — first candidates DONE
 
@@ -631,8 +680,12 @@ configured 4096-token budget:
 
 So the evidence says a smaller bonus is defensible and a large one is not needed,
 but it does not say `+5` is right either: `WEIGHT_CHANGED_FILE` stays at the `+25`
-that shipped, and `+5` is recorded here as a candidate, comparable without a code
-change through `--changed-file-probe --changed-file-weight 5`.
+that shipped, and `+5` was recorded here as a candidate, comparable without a code
+change through `--changed-file-probe --changed-file-weight 5`. Phase B item 5 has
+since measured that candidate live across four dirty-file layouts and closed it: the
+`+5` bonus changed no outcome on any layout and `0/33` contexts on the one layout
+where `+25` changes the answer, so the candidate stands measured as inert rather than
+open, and `+25` remains the only shipped value.
 `tests/context/test_changed_file_ranking.py` pins the arithmetic that both modes
 read - a tie flips at `+1`, a competitor flips at the gap or the gap plus one
 depending on the tie-break, and the gate holds at any weight - and asserts nothing
