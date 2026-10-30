@@ -232,7 +232,7 @@ them.
 
 #### Phase C: Measure Conversation-Scoped File Activity
 
-1. **C1 - touched-file signal and correlation.** Derive recognized file reads
+1. **C1 - touched-file signal and correlation - DONE (2026-10-30).** Derive recognized file reads
    and modifications from Cline tool-result envelopes already identified at the
    planning boundary. Treat envelope content as untrusted, normalize paths,
    reject paths outside the repository, isolate state by conversation, and fall
@@ -241,6 +241,15 @@ them.
    context files later touched, touched files absent from supplied context, and
    changed-signal files later touched. This is a conversation-scoped ranking
    signal and observability slice, not an activation of `packages.capabilities`.
+   Landed in `f74d16d` (initial implementation) and `c0d91bd` (hardening). The
+   hardening commit made `tracker_miss` sticky across a broken lineage, counted
+   rejections per envelope, and kept write/replace results out of the
+   planning/history bookkeeping set so C1 stays observational. Live evidence is a
+   four-request probe against a restarted gateway on 2026-10-26 plus a survey of
+   existing session records (`docs/live-gateway-runbook.md`, *Conversation File
+   Activity (roadmap C1)*). Still unmeasured: C1 under native Cline traffic, and
+   its incremental latency against a feature-off arm. Both are optional follow-ups,
+   not blockers.
 
 #### Phase D: Documentation And Dormant-Code Policy
 
@@ -266,9 +275,9 @@ them.
 - a general autonomous engineering loop
 - wholesale activation of the dormant platform stack
 
-With A2 complete, the remaining execution order is **A1 -> B1 -> B2 -> B3 ->
-B4 -> C1 -> full-suite default/weight decision -> A3**, with documentation
-updated continuously.
+A1, A2, B1-B4 and C1 are complete. The remaining execution order is
+**full-suite default/weight decision (Phase B item 5) -> A3**, with documentation updated
+continuously.
 
 ### 1. Dormant-Code Inventory And Activation — first candidates DONE
 
