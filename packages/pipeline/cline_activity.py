@@ -15,9 +15,9 @@ Grammar accepted
 ----------------
 
 An envelope is recognized only when, after leading whitespace, the message
-begins with ``"[<tool> for "`` where ``<tool>`` is a key of
-:data:`packages.pipeline.user_messages.CLINE_ENVELOPE_TOOLS`, and the header is
-then closed within :data:`MAX_ENVELOPE_HEADER_CHARS` by either ``"] Result:"``
+begins with ``"[<tool> for "`` where ``<tool>`` is a member of
+:data:`packages.pipeline.user_messages.CLINE_FILE_ACTIVITY_TOOLS`, and the header
+is then closed within :data:`MAX_ENVELOPE_HEADER_CHARS` by either ``"] Result:"``
 (the form Cline sends) or a trailing ``"]"`` (the form left behind when the
 gateway's own history cap truncates the body).  The tool table decides the
 activity: ``read_file`` reads, ``write_to_file`` and ``replace_in_file`` modify,
@@ -80,7 +80,10 @@ Envelope text is untrusted input, and path text doubly so.
   ``strict=False``: nothing is created, opened, or tested for existence.  The only
   filesystem call is read-only path resolution.
 - A rejection yields a token and a counter.  No path, target text or tool string
-  is ever raised, logged, or returned in a value a caller could persist.
+  is ever raised, logged, or returned in a value a caller could persist.  The one
+  place a resolved target is kept is a local inside
+  :func:`resolve_file_activity_events`, memoizing that request's own envelopes; it
+  is not reachable from another request and does not outlive this one.
 
 Public API
 ----------
@@ -204,7 +207,12 @@ _RESULT_CONFIRMED_MARKERS: Final = ("successfully saved",)
 #: sanitized samples show the client emit for any failed tool; a failure worded
 #: differently is not recognized and reads as a successful read, which is why the
 #: read total is an upper bound on reads and is stated as such wherever it is
-#: documented.
+#: documented.  Surveyed on this repository's own logged Cline traffic, 315 anchored
+#: read results split 31 recognized failures to 284 that were not, and 72 of those 284
+#: begin ``[DUPLICATE READ] You have already read ... N times``, a notice whose own text
+#: says the content was not sent again.  It is not a failure of the rule above, so it
+#: counts as a read; widening the table to cover it would change what ``files_read``
+#: means, which is why it is recorded here rather than fixed on a survey.
 _READ_FAILURE_PREFIXES: Final = ("the tool execution failed",)
 
 #: The literal that separates a tool name from its target in the header.
@@ -536,8 +544,18 @@ def resolve_file_activity_events(
 
     Returns:
         The :class:`ResolvedEnvelopes` for the request, in message order.
+
+    A target spelling is resolved by the normalizer at most once per call: a Cline
+    transcript re-sends the same envelope text inside every request, so the same
+    handful of targets would otherwise reach ``realpath`` again for every copy of
+    itself.  That cache is a local of this function, not state on the normalizer -
+    it dies with the request, holds nothing a client could have written to poison a
+    later one, and is bounded by :data:`MAX_ENVELOPES_PER_REQUEST` because it can
+    only ever gain one entry per envelope parsed here.  Distinct spellings of the
+    same file are distinct keys, and each still resolves on its own.
     """
     envelopes, beyond = parse_envelopes(messages)
+    resolved_targets: dict[str, tuple[str, str]] = {}
     events: list[ActivityEvent] = []
     for envelope in envelopes:
         if not envelope.names_file:
@@ -554,7 +572,11 @@ def resolve_file_activity_events(
                 )
             )
             continue
-        identity, rejection = normalizer.normalize(envelope.target)
+        cached = resolved_targets.get(envelope.target)
+        if cached is None:
+            cached = normalizer.normalize(envelope.target)
+            resolved_targets[envelope.target] = cached
+        identity, rejection = cached
         events.append(
             ActivityEvent(
                 tool=envelope.tool,

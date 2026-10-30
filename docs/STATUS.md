@@ -5,9 +5,10 @@ what matters for the live gateway path and calls out dormant code explicitly.
 
 Last reviewed: 2026-10-25 (roadmap item C1 now measures what a conversation's agent
 touches, on the live path: `RepositoryContextStage` reads the Cline tool-result
-envelopes already in the request, normalizes every target against the repository root,
-and records count-only activity in a bounded per-conversation store, which the chat
-endpoint maps through `sanitize_file_activity` and the session logger writes as
+envelopes already in the request, normalizes every target against the repository
+root, and records count-only activity in a bounded store of transcript-prefix
+states, which the chat endpoint maps through `sanitize_file_activity` and the session
+logger writes as
 `context.file_activity` - fifteen counters and two state tokens, `unavailable` being
 the shape that says nothing was looked at rather than that nothing was touched, and
 `partial` the one that says an envelope was seen and a bound refused to read it. Every
@@ -23,11 +24,19 @@ that confirmed nothing is reported in `modification_attempts`,
 rather than by whichever envelope arrived first. Aligning its tests with the running code
 settled two claims that read the wrong way round - a target that does not exist is still
 measurable, containment being resolved with `realpath(strict=False)`, and a file dropped
-by the per-conversation bound is counted as beyond-bound rather than rejected - and
+by the per-state bound is counted as beyond-bound rather than rejected - and
 exposed one real bug: a Windows drive-absolute target was treated as relative and joined
-onto the root, landing outside it, and is now recognized as absolute first. None of this
-has been validated against a restarted live gateway; the mechanics, and that
-qualification, are in `docs/live-gateway-runbook.md`. Before that, B4
+onto the root, landing outside it, and is now recognized as absolute first. The C1 path that
+does this is observational, and so is all of it: the two places where widening envelope
+recognition had quietly changed what the model is shown - the history cap truncating write and
+replace results, and planning text selection ignoring them - are reverted to the pre-C1 set,
+which is now a derived view of one registry rather than a second literal list
+(`docs/live-gateway-runbook.md`, section *Conversation File Activity (roadmap C1)*, and the
+corrections recorded under *Verification status*). That section also carries the live evidence:
+four requests through a gateway restarted from `f74d16d` on 2026-10-26, which is a scripted
+transcript rather than native Cline traffic, and a survey of this repository's own session
+records for what a real client sends. C1's incremental latency has not been measured with a
+feature-off arm. Before that, B4
 removed the mandatory per-request counterfactual cost from change-aware ranking: the
 no-bonus comparison build now
 sits behind `APP_REPOSITORY_CONTEXT_CHANGED_FILES_COMPARISON_ENABLED`, off by
@@ -460,10 +469,12 @@ Roadmap C1 adds a second, unrelated measurement to the same record:
 `RepositoryContextStage` reads the Cline tool-result envelopes already present in the
 request's messages (`packages/pipeline/cline_activity.py`), normalizes every target
 against the repository root and refuses the ones that do not live inside it
-(`paths_rejected` counts refusals and never paths), and reports which files this
-conversation's agent read and wrote and how many of them it had already been shown as
-context (`packages/pipeline/file_activity.py`, an LRU-bounded per-conversation store
-sized with `APP_CONTEXT_DELTA_CACHE_SIZE`). Those numbers are a **snapshot recomputed
+(`paths_rejected` counts refused envelopes and never paths), and reports which files
+this conversation's agent read and wrote and how many of them it had already been
+shown as context (`packages/pipeline/file_activity.py`, an LRU-bounded store of
+transcript-prefix states sized with `APP_CONTEXT_DELTA_CACHE_SIZE` - states, not
+conversations: one conversation adds an entry per request that answered one of its
+earlier prefixes, so a long one spends many). Those numbers are a **snapshot recomputed
 from the transcript of the request being answered**, not a tally: the same transcript and
 the same supplied-context state produce the same dict, which is the right model precisely
 because a Cline client re-sends its whole conversation every turn, so there is nothing to
@@ -477,22 +488,54 @@ request's supplied files are recorded, so a file an earlier turn touched is neve
 re-attributed to context that arrived later. `state` says whether the transcript was read
 at all (`measured`, `none`, `partial`, `unavailable`) and `correlation` says whether the
 gateway was in a position to know what had been supplied (`measured`, `no_prior_context`,
-`tracker_miss`, `unavailable`), a miss being reported as a zero that is not a measurement.
-`unavailable` is the inert shape and a zero is never a substitute for it. No file path
-crosses the stage boundary or reaches the record.
+`tracker_miss`, `unavailable`), a miss being reported as a zero that is not a measurement
+and being **sticky**: the request that finds its remembered prefix missing marks that
+lineage discontinuous, so every later request in the conversation keeps reporting the miss
+instead of resuming `measured` over a partition it cannot reconstruct. `unavailable` is the
+inert shape and a zero is never a substitute for it. No file path crosses the stage boundary
+or reaches the record, and resolution of the paths in it is memoized only for the duration of
+one request.
 
 The mechanics - the accepted grammar and its bounds, the outcome precedence, the
 correlation ordering rules, every constant, and what each of the seventeen keys means -
 are in `docs/live-gateway-runbook.md`, section *Conversation File Activity (roadmap C1)*.
-That section also records the thing this one has to be honest about: **C1 has not been
-validated against a restarted live gateway.** Every claim above is a unit-test claim about
-code under test, and no session record produced by a gateway running it has been read.
+That section also carries the evidence: **C1 received its first restarted-gateway live
+validation on 2026-10-26** - vLLM `qwen3.8-flash-next` behind the gateway alias
+`qwen38-27b`, four requests, one session record each. The shape moved from
+`state=none`/`correlation=no_prior_context` on a request carrying no envelope to
+`state=measured`/`correlation=measured` with `context_files_touched=1` on the request that
+reported reading a file request one had already been given, and an unchanged replay returned
+the identical dictionary. **Those four requests were scripted by the probe, not produced by a
+Cline client** - they validate the gateway's read of a transcript, not the grammar against the
+client. What the client does send is settled from this repository's own session records instead
+(same section): 515 records carry an anchored Cline envelope, among them 315 `read_file`, 108
+`search_files`, 49 `list_files`, 29 `execute_command`, 5 `replace_in_file` and 2 `write_to_file`.
+Every writer result begins `The content was successfully saved to ...` and classifies as a
+confirmed modification - seven for seven - reads split 284 confirmed against 31 failed on the
+anchored failure prefix, and every envelope arrived under `role="user"`. 72 of those 284 are
+Cline's `[DUPLICATE READ] You have already read ...` notice, which says the content was not sent
+again and which the anchored rule does not treat as a failure; that is recorded, not fixed,
+because changing it changes what `files_read` means. Six
+`[ask_followup_question for ...]` headers are real Cline traffic the gateway does not recognize,
+which is correct for a grammar it has not verified. No native Cline task was run through a
+restarted gateway for this pass, and nothing was added to the grammar on the strength of the
+records alone. What the run and the survey do not show is any quality, ranking or performance
+effect: C1 decides nothing about what is sent, and no feature-off arm ran beside it, so its
+latency cost is unmeasured and it remains unvalidated as an input to context quality.
+
+The one place C1 reached past observation has been pulled back. Its first version widened
+`CLINE_TOOL_RESULT_PREFIXES` - what the history cap truncates and what planning text selection
+ignores - by deriving it from the file-activity tool set, which made write and replace results
+into truncation targets and dropped them from query text. `packages/pipeline/user_messages.py`
+now holds one envelope registry and derives two views from it: recognition, which includes
+`write_to_file` and `replace_in_file`, and the planning/history compatibility set, which is
+byte-for-byte the pre-C1 tuple. A writer's result is counted and reaches the model whole.
 
 Three things that look like failures are not. A target that does not exist on disk is
 still measurable - containment resolves both sides with `realpath(strict=False)`, so the
 file a write is about to create measures like one already there, and only a root the
 filesystem refuses to name at all marks the measurement unavailable. A file dropped
-because a conversation already holds `MAX_UNIQUE_FILES_PER_CONVERSATION` distinct files
+because a stored state already holds `MAX_UNIQUE_FILES_PER_STATE` distinct files
 is counted in `events_beyond_bound` and not in `paths_rejected`: the path was fine, the
 bound was not. And a Windows drive-absolute target (`C:\Users\dev\repo\x.py`) was the one
 spelling that used to be read as relative and joined onto the root, landing outside it;

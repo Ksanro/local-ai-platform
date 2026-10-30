@@ -12,6 +12,7 @@ mean "nothing was touched".
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -206,6 +207,52 @@ def test_modification_header_yields_a_confirmed_modification(tmp_path: Path) -> 
 
     assert batch.events[0].activity == "modified"
     assert batch.events[0].outcome == OUTCOME_CONFIRMED
+
+
+@pytest.mark.parametrize("tool", ("write_to_file", "replace_in_file"))
+def test_both_writers_are_still_recognized_by_the_activity_boundary(
+    tmp_path: Path, tool: str
+) -> None:
+    """Restoring the history-cap behavior restored nothing here - it never left.
+
+    Recognizing a writer's envelope is the whole point of roadmap C1, and the
+    registry view that decides it stays wide even though the planning/history view
+    was pulled back to its pre-C1 set.
+
+    Args:
+        tmp_path: The pytest temporary directory to build a repository in.
+        tool: The Cline writing tool under test.
+    """
+    root = _repo(tmp_path)
+
+    batch = _events([_saved(WIDGET, tool=tool)], root)
+
+    assert batch.events[0].tool == tool
+    assert batch.events[0].activity == "modified"
+    assert batch.events[0].file == WIDGET
+
+
+@pytest.mark.parametrize("tool", ("write_to_file", "replace_in_file"))
+def test_a_writer_result_reaches_the_record_as_numbers_only(tmp_path: Path, tool: str) -> None:
+    """The write is measured and named by nothing: a modified file and no prose.
+
+    Args:
+        tmp_path: The pytest temporary directory to build a repository in.
+        tool: The Cline writing tool under test.
+    """
+    root = _repo(tmp_path)
+
+    counts = _observe(FileActivityTracker(), [_saved(WIDGET, tool=tool)], root)
+    record = counts.as_dict()
+
+    assert counts.files_modified == 1
+    assert counts.modification_attempts == 1
+    assert counts.state == STATE_MEASURED
+    # The record is already exactly the shape a session log may write: two closed
+    # tokens and fifteen integers, so sanitizing it cannot change a byte of it and
+    # there is nowhere in it for a tool name to live.
+    assert sanitize_file_activity(record) == record
+    assert tool not in json.dumps(record)
 
 
 def test_a_failed_read_is_a_failed_read(tmp_path: Path) -> None:
@@ -605,12 +652,13 @@ def test_a_rejected_path_is_counted_and_names_no_file(tmp_path: Path) -> None:
     assert counts.state == STATE_MEASURED
 
 
-def test_a_repeated_shape_of_refusal_is_one_refusal(tmp_path: Path) -> None:
-    """Refusals are counted per shape, because counting them per path keeps a path.
+def test_a_repeated_shape_of_refusal_is_two_refusals(tmp_path: Path) -> None:
+    """Two refused targets are two events, even of the same shape.
 
-    Two refused targets of the same kind are one entry here: the number of distinct
-    paths refused is not recoverable without storing a path, and it is deliberately
-    not recovered.  A replay of the transcript returns the same one.
+    What stays unrecoverable is *which* paths were refused: the counter names no
+    file, and a replay of the transcript returns the same two.  This replaces the
+    per-shape count, which reported a conversation refused fifty times as having met
+    one refusal.
     """
     root = _repo(tmp_path)
     tracker = FileActivityTracker()
@@ -619,7 +667,7 @@ def test_a_repeated_shape_of_refusal_is_one_refusal(tmp_path: Path) -> None:
     counts = _observe(tracker, messages, root)
     again = _observe(tracker, messages, root)
 
-    assert counts.paths_rejected == 1 == again.paths_rejected
+    assert counts.paths_rejected == 2 == again.paths_rejected
     assert counts.files_touched == 0
 
 
@@ -768,6 +816,152 @@ def test_a_rewritten_history_reports_a_tracker_miss(tmp_path: Path) -> None:
     assert rewritten.context_files_touched == 0
 
 
+def test_a_tracker_miss_is_sticky_for_every_descendant(tmp_path: Path) -> None:
+    """The request that finds a gap is not the only one that should say so.
+
+    Without a continuity flag a miss lasts exactly one record: the state rebuilt
+    after the gap is stored as though nothing were missing, so the request that
+    extends it finds that state and reports ``correlation=measured`` while
+    partitioning a touched set whose supplied half it cannot see.  Turn 1 supplies
+    ``WIDGET``; the tracker is restarted; turn 2 reports the miss; turn 3 extends
+    turn 2 and must still report it.  Replaying turn 3 must not move a field.
+
+    Args:
+        tmp_path: The pytest temporary directory to build a repository in.
+    """
+    root = _repo(tmp_path)
+    turn1 = [{"role": "user", "content": "explain the widget"}]
+    _observe(FileActivityTracker(), turn1, root, supplied=[WIDGET])
+
+    restarted = FileActivityTracker()
+    turn2 = turn1 + [REPLY, _envelope(WIDGET)]
+    second = _observe(restarted, turn2, root)
+    turn3 = turn2 + [REPLY, _saved(DELTA)]
+    third = _observe(restarted, turn3, root, supplied=[DELTA])
+    replay = _observe(restarted, turn3, root, supplied=[DELTA])
+
+    assert second.correlation == CORRELATION_TRACKER_MISS
+    assert third.correlation == CORRELATION_TRACKER_MISS
+    assert third.files_touched == 2
+    assert third.state == STATE_MEASURED
+    # What turn 1 was shown is unknown from here on, so neither half of the
+    # partition is claimed - and in particular ``WIDGET`` is not reported as a file
+    # touched without context, which is the claim a healed-over miss would make.
+    assert third.context_files_touched == 0
+    assert third.touched_without_context == 0
+    assert replay.as_dict() == third.as_dict()
+
+
+def test_a_miss_found_by_eviction_stays_missed_after_the_gap(tmp_path: Path) -> None:
+    """An eviction and a restart break a lineage the same way.
+
+    Args:
+        tmp_path: The pytest temporary directory to build a repository in.
+    """
+    root = _repo(tmp_path)
+    tracker = FileActivityTracker(maxsize=1)
+    turn1 = [{"role": "user", "content": "explain the widget"}]
+
+    _observe(tracker, turn1, root, supplied=[WIDGET])
+    _observe(tracker, [{"role": "user", "content": "an unrelated task"}], root, supplied=[DELTA])
+    turn2 = turn1 + [REPLY, _envelope(WIDGET)]
+    second = _observe(tracker, turn2, root, supplied=[DELTA])
+
+    assert second.correlation == CORRELATION_TRACKER_MISS
+
+    turn3 = turn2 + [REPLY, _saved(DELTA)]
+    third = _observe(tracker, turn3, root, supplied=[DELTA])
+
+    assert third.correlation == CORRELATION_TRACKER_MISS
+    assert third.context_files_touched == 0
+    assert third.touched_without_context == 0
+    assert third.files_modified == 1
+
+
+def test_a_rewritten_history_keeps_its_gap_forward(tmp_path: Path) -> None:
+    """A history the client rewrote is unknown forever, not unknown for one turn."""
+    root = _repo(tmp_path)
+    tracker = FileActivityTracker()
+    turn1 = [{"role": "user", "content": "explain the widget"}]
+
+    _observe(tracker, turn1, root, supplied=[WIDGET])
+    rewritten = [{"role": "user", "content": "explain the widget again"}]
+    second = _observe(tracker, rewritten + [REPLY, _envelope(WIDGET)], root)
+    third_turn = rewritten + [REPLY, _envelope(WIDGET), REPLY, _saved(DELTA)]
+    third = _observe(tracker, third_turn, root, supplied=[DELTA])
+
+    assert second.correlation == CORRELATION_TRACKER_MISS
+    assert third.correlation == CORRELATION_TRACKER_MISS
+    assert third.touched_without_context == 0
+
+
+def test_an_unbroken_lineage_is_still_reported_as_measured(tmp_path: Path) -> None:
+    """Stickiness must not cost the honest answer to the conversations it did not lose.
+
+    Args:
+        tmp_path: The pytest temporary directory to build a repository in.
+    """
+    root = _repo(tmp_path)
+    tracker = FileActivityTracker()
+    first = [{"role": "user", "content": "explain the widget"}]
+
+    supplied = _observe(tracker, first, root, supplied=[WIDGET])
+    credited = _observe(tracker, first + [REPLY, _envelope(WIDGET)], root, supplied=[DELTA])
+    later = _observe(
+        tracker, first + [REPLY, _envelope(WIDGET), REPLY, _saved(DELTA)], root, supplied=[DELTA]
+    )
+
+    assert supplied.correlation == CORRELATION_NO_PRIOR_CONTEXT
+    assert credited.correlation == CORRELATION_MEASURED
+    assert credited.context_files_touched == 1
+    assert later.correlation == CORRELATION_MEASURED
+    assert later.files_touched == 2
+
+
+def test_rejected_targets_are_counted_one_per_envelope(tmp_path: Path) -> None:
+    """Fifty refusals are fifty, not one refusal shape.
+
+    The totals are rebuilt from the transcript in hand, so a count of them can be a
+    count of the envelopes themselves: no rejected string has to be remembered, and
+    no conversation that hit the same wall fifty times has to report hitting it once.
+
+    Args:
+        tmp_path: The pytest temporary directory to build a repository in.
+    """
+    root = _repo(tmp_path)
+    tracker = FileActivityTracker()
+    messages = [_refused(f"../../outside{index}.txt") for index in range(50)]
+
+    counts = _observe(tracker, messages, root)
+    again = _observe(tracker, messages, root)
+
+    assert counts.paths_rejected == 50
+    assert again.paths_rejected == 50
+    assert counts.modification_attempts == 0
+    assert counts.files_touched == 0
+    assert counts.events_beyond_bound == 0
+
+
+def test_non_file_envelopes_count_as_events_not_as_tool_kinds(tmp_path: Path) -> None:
+    """Nine searches, listings and commands are nine events, not three tool kinds.
+
+    Args:
+        tmp_path: The pytest temporary directory to build a repository in.
+    """
+    root = _repo(tmp_path)
+    tracker = FileActivityTracker()
+    tools = ("search_files", "list_files", "execute_command")
+    messages = [_envelope(f"pattern-{index}", tool=tools[index % 3]) for index in range(9)]
+
+    counts = _observe(tracker, messages, root)
+    again = _observe(tracker, messages, root)
+
+    assert counts.other_events == 9
+    assert again.other_events == 9
+    assert counts.files_touched == 0
+    assert again.as_dict() == counts.as_dict()
+
+
 def test_changed_files_are_counted_from_the_transcript_alone(tmp_path: Path) -> None:
     """The working-tree overlap needs no memory, so a tracker miss cannot hide it."""
     root = _repo(tmp_path)
@@ -861,6 +1055,140 @@ def test_dropping_a_conversation_changes_nothing_in_a_transcript(tmp_path: Path)
     assert back.files_modified == mine.files_modified == 1
 
 
+def test_one_long_conversation_consumes_many_states(tmp_path: Path) -> None:
+    """The bound counts transcript-prefix states, and one conversation needs many.
+
+    Four requests of one conversation are four entries, not one: every request
+    stores what it derived under the fingerprint of the transcript it saw, which is
+    what lets a retry or a branch find the state that was current when it was sent.
+    A tracker sized for four *conversations* therefore runs out of room after four
+    turns of a single one, and the turn that arrives after its prefix was dropped
+    reports the gap and keeps reporting it.
+
+    Args:
+        tmp_path: The pytest temporary directory to build a repository in.
+    """
+    root = _repo(tmp_path)
+    tracker = FileActivityTracker(maxsize=4)
+    first = [{"role": "user", "content": "explain the widget"}]
+
+    _observe(tracker, first, root, supplied=[WIDGET])
+    second = first + [REPLY, _envelope(WIDGET)]
+    _observe(tracker, second, root, supplied=[DELTA])
+    third = second + [REPLY, _saved(DELTA)]
+    _observe(tracker, third, root, supplied=[DELTA])
+    fourth = third + [REPLY, _envelope(OTHER)]
+    counts = _observe(tracker, fourth, root, supplied=[OTHER])
+
+    assert counts.correlation == CORRELATION_MEASURED
+    assert tracker.state_count() == 4  # one conversation, four entries
+
+    _observe(tracker, fourth + [REPLY, _envelope(WIDGET)], root)
+
+    assert tracker.state_count() == 4  # the bound held; the oldest prefix is gone
+    dropped = _observe(tracker, second, root)
+    assert dropped.correlation == CORRELATION_TRACKER_MISS
+
+
+# ---------------------------------------------------------------------------
+# Path resolution is per request, and never wider than the request
+# ---------------------------------------------------------------------------
+
+
+class _CountingNormalizer(RepositoryPathNormalizer):
+    """A normalizer that records every target it was asked to resolve.
+
+    Attributes:
+        calls: The target text handed to :meth:`normalize`, in order.  A memoized
+            resolve hands one spelling here once per request, which is the whole
+            point: each call below costs a ``realpath``.
+    """
+
+    __slots__ = ("calls",)
+
+    def __init__(self, root: Path | str) -> None:
+        """Bind the normalizer to ``root`` and start an empty call list."""
+        super().__init__(root)
+        self.calls: list[str] = []
+
+    def normalize(self, target: str) -> tuple[str, str]:
+        """Record ``target``, then resolve it exactly as the normalizer would."""
+        self.calls.append(target)
+        return super().normalize(target)
+
+
+def test_a_repeated_target_is_resolved_once_per_request(tmp_path: Path) -> None:
+    """Forty copies of one envelope are forty parses and one resolution.
+
+    Args:
+        tmp_path: The pytest temporary directory to build a repository in.
+    """
+    root = _repo(tmp_path)
+    normalizer = _CountingNormalizer(root)
+    messages = [_envelope(WIDGET) for _ in range(40)]
+
+    batch = resolve_file_activity_events(messages, normalizer)
+
+    assert len(batch.events) == 40
+    assert normalizer.calls == [WIDGET]
+    assert {event.file for event in batch.events} == {WIDGET}
+
+
+def test_distinct_targets_still_resolve_on_their_own(tmp_path: Path) -> None:
+    """Memoizing a spelling must not memoize the file it names.
+
+    Two ways of writing one path are two keys here, and each is resolved; that is
+    the honest limit of a cache that refuses to keep a client's path past the
+    request that sent it.
+
+    Args:
+        tmp_path: The pytest temporary directory to build a repository in.
+    """
+    root = _repo(tmp_path)
+    normalizer = _CountingNormalizer(root)
+    spellings = (WIDGET, f"./{WIDGET}", f"{root.as_posix()}/{WIDGET}")
+
+    batch = resolve_file_activity_events([_envelope(target) for target in spellings], normalizer)
+
+    assert normalizer.calls == list(spellings)
+    assert len({event.file for event in batch.events}) == 1
+
+
+def test_the_request_cache_does_not_survive_into_the_next_request(tmp_path: Path) -> None:
+    """A second request re-resolves, because nothing is cached across requests."""
+    root = _repo(tmp_path)
+    normalizer = _CountingNormalizer(root)
+    messages = [_envelope(WIDGET), _saved(DELTA)]
+
+    first = resolve_file_activity_events(messages, normalizer)
+    second = resolve_file_activity_events(messages, normalizer)
+
+    assert len(first.events) == len(second.events) == 2
+    assert normalizer.calls == [WIDGET, DELTA, WIDGET, DELTA]
+
+
+def test_memoizing_changes_no_answer_and_no_rejection_count(tmp_path: Path) -> None:
+    """The cache may only remove work, never change which file a target named."""
+    root = _repo(tmp_path)
+    messages = [
+        _envelope(WIDGET),
+        _envelope(WIDGET),
+        _envelope("../../outside.txt"),
+        _envelope("../../outside.txt"),
+        _envelope("pattern", tool="search_files"),
+        _saved(DELTA),
+    ]
+
+    plain = resolve_file_activity_events(messages, RepositoryPathNormalizer(root))
+    counter = _CountingNormalizer(root)
+    counted = resolve_file_activity_events(messages, counter)
+
+    assert counted.events == plain.events
+    assert sum(1 for event in plain.events if event.rejection) == 2
+    assert sum(1 for event in counted.events if event.rejection) == 2
+    assert len(counter.calls) == 3  # WIDGET, the escaped target, DELTA - once each
+
+
 # ---------------------------------------------------------------------------
 # The boundary every one of these numbers has to cross
 # ---------------------------------------------------------------------------
@@ -905,6 +1233,30 @@ def test_sanitize_drops_a_leaked_path_or_state() -> None:
         STATE_UNAVAILABLE,
         CORRELATION_UNAVAILABLE,
     ]
+
+
+@pytest.mark.asyncio
+async def test_rejected_targets_reach_the_record_as_a_count(tmp_path: Path) -> None:
+    """Fifty refusals produce fifty of them and no trace of what was refused.
+
+    Args:
+        tmp_path: The pytest temporary directory to build a repository in.
+    """
+    root = _repo(tmp_path)
+    stage = RepositoryContextStage(
+        index=None, file_activity=FileActivityTracker(), repository_root=root
+    )
+    messages = [_refused(f"../../outside{index}.txt") for index in range(50)]
+    context = _context(messages, request_id="refusals")
+
+    await stage.execute(context)
+
+    record = context.get_metadata("file_activity")
+
+    assert record["paths_rejected"] == 50
+    assert record["files_touched"] == 0
+    assert sanitize_file_activity(record) == record
+    assert "outside" not in json.dumps(record)
 
 
 def test_the_record_carries_no_field_a_replay_could_inflate() -> None:

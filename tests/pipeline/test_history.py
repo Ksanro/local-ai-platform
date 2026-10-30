@@ -534,6 +534,75 @@ class TestCurrentClineToolResultCompression:
         assert dropped == 0
         assert capped[-1]["content"] == current
 
+    @pytest.mark.parametrize("tool", ("write_to_file", "replace_in_file"))
+    def test_current_writer_result_is_not_truncated(self, tool: str) -> None:
+        """Roadmap C1 measures a writer's result; it does not shorten what the model sees.
+
+        A Cline write or replace result carries the file's whole new content, and the
+        activity path needs nothing from it but one status token out of the first line.
+        Capping it would change the prompt, which is outside C1's observability scope,
+        so it stays byte-identical even though the envelope is now recognized.
+        """
+        current = (
+            f"[{tool} for 'packages/demo/widget.py'] Result:\n"
+            "The file was successfully saved.\n" + ("X" * 1000)
+        )
+        msgs = [
+            _msg("system", "System."),
+            _msg("user", "Original task"),
+            _msg("user", current),
+        ]
+
+        capped, dropped = cap_history(
+            msgs,
+            max_history_tokens=1000,
+            estimate=_estimate,
+            max_current_tool_result_tokens=20,
+        )
+
+        assert dropped == 0
+        assert capped[-1]["content"] == current
+        assert "truncated by gateway history cap" not in capped[-1]["content"]
+
+    @pytest.mark.parametrize(
+        "tool", ("read_file", "search_files", "list_files", "execute_command")
+    )
+    def test_pre_c1_tool_results_are_capped_exactly_as_before(self, tool: str) -> None:
+        """The four envelopes the gateway has always capped are still capped.
+
+        Args:
+            tool: A Cline tool whose result was bookkeeping before roadmap C1 and is
+                bookkeeping after it - the derived compatibility view must not have
+                narrowed while it was being prevented from widening.
+        """
+        current = f"[{tool} for 'packages/demo/widget.py'] Result:\n" + ("X" * 1000)
+        msgs = [
+            _msg("system", "System."),
+            _msg("user", "Original task"),
+            _msg("user", current),
+        ]
+
+        capped, dropped = cap_history(
+            msgs,
+            max_history_tokens=1000,
+            estimate=_estimate,
+            max_current_tool_result_tokens=20,
+        )
+
+        assert dropped == 0
+        assert len(capped[-1]["content"]) <= 80
+        assert "truncated by gateway history cap" in capped[-1]["content"]
+
+    def test_capping_reads_the_shared_table_instead_of_its_own_copy(self) -> None:
+        """One prefix table, two consumers: this module holds no literal list any more."""
+        from packages.pipeline import history as history_module
+        from packages.pipeline import user_messages
+
+        assert (
+            history_module.CLINE_TOOL_RESULT_PREFIXES
+            is user_messages.CLINE_TOOL_RESULT_PREFIXES
+        )
+
 
 # ---------------------------------------------------------------------------
 # Fix 1: Engine integration - resolved_model typed field drives budget

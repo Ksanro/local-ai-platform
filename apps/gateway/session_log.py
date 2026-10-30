@@ -100,7 +100,9 @@ here; it is ``0`` on a request that was never compared.
   different question: whether the gateway could know if a touched file had already
   been supplied.  ``measured``, ``no_prior_context`` (a real zero: nothing was
   supplied earlier), ``tracker_miss`` (an evicted, restarted or rewritten
-  conversation, where neither half of the correlation pair is claimed) and
+  conversation, where neither half of the correlation pair is claimed - and the mark
+  is inherited by every later request in that conversation, so a gap does not heal
+  into a measurement on the turn after it) and
   ``unavailable``.  A Cline client re-sends its whole transcript on every request, so
   every activity total is recomputed from that transcript each time rather than
   accumulated per request: the same transcript plus the same remembered context
@@ -115,13 +117,14 @@ here; it is ``0`` on a request that was never compared.
   one file is a modified file and a success followed by a failure stays one.
   ``context_files_touched`` is how many touched files an *earlier* request had
   supplied, ``touched_without_context`` the rest, and ``changed_files_touched`` how
-  many were also modified in the working tree.  ``paths_rejected`` counts distinct
-  refusals - per tool and per reason, because a refused string may not be stored -
-  and ``other_events`` and ``events_beyond_bound`` say which non-file tools the
-  transcript exercised and how much of it a bound kept out.  No key of this dict is
-  ever a file path, so the question roadmap C1 asks - how often a supplied file is
-  opened - can be answered from a real log without the log naming a single file it
-  was asked about.
+  many were also modified in the working tree.  ``paths_rejected`` counts the
+  file-naming envelopes whose target the repository refused - one per envelope,
+  never one per path, because a refused string may not be stored - and
+  ``other_events`` counts the recognized envelopes that name no file.
+  ``events_beyond_bound`` says how much of the transcript a bound kept out.  No key
+  of this dict is ever a file path, so the question roadmap C1 asks - how often a
+  supplied file is opened - can be answered from a real log without the log naming a
+  single file it was asked about.
 
 The changed-file fields are counts, two booleans, and two state tokens.  Changed
 file paths, module names derived from them, symbol names, and Git output are

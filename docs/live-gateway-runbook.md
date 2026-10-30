@@ -31,7 +31,7 @@ as unavailable.
 From the repo root, in a terminal that will stay open:
 
 ```powershell
-$env:UV_CACHE_DIR='C:\Users\ovidi\local-ai-platform\.uv-cache'
+$env:UV_CACHE_DIR="$env:TEMP\local-ai-platform-uv-cache"
 $env:APP_SESSION_LOG_ENABLED='true'
 $env:APP_SESSION_LOG_PATH='logs\sessions.jsonl'
 $env:APP_CONTEXT_DELTA_INJECTION='true'
@@ -42,11 +42,22 @@ New-Item -ItemType File -Force logs\sessions.jsonl | Out-Null
 
 Leave this terminal running.
 
+`UV_CACHE_DIR` points outside the repository on purpose. A cache directory inside the
+checkout - `.uv-cache` at the workspace root is what an earlier version of this command
+created - unpacks thousands of third-party `.py` and `.pyi` files next to the source, which
+the repository scanner then walks: slow scans, and other projects' stubs reported as this
+repository's code. `packages/repository/filters.py` now ignores a `.uv-cache` directory
+wherever it appears and the scanner tests pin that, but keeping the cache in `$env:TEMP` is
+what keeps the tree clean in the first place.
+
 If the agent shell is Bash/Git Bash, start the same gateway with:
 
 ```bash
-powershell.exe -NoProfile -Command "Set-Location 'C:\Users\ovidi\local-ai-platform'; `$env:UV_CACHE_DIR='C:\Users\ovidi\local-ai-platform\.uv-cache'; `$env:APP_SESSION_LOG_ENABLED='true'; `$env:APP_SESSION_LOG_PATH='logs\sessions.jsonl'; `$env:APP_CONTEXT_DELTA_INJECTION='true'; New-Item -ItemType Directory -Force logs | Out-Null; New-Item -ItemType File -Force logs\sessions.jsonl | Out-Null; .\uv.exe run python -m uvicorn apps.gateway.main:create_app --factory --port 8001"
+powershell.exe -NoProfile -Command "Set-Location 'C:\Users\ovidi\local-ai-platform'; `$env:UV_CACHE_DIR='C:\Users\ovidi\AppData\Local\Temp\local-ai-platform-uv-cache'; `$env:APP_SESSION_LOG_ENABLED='true'; `$env:APP_SESSION_LOG_PATH='logs\sessions.jsonl'; `$env:APP_CONTEXT_DELTA_INJECTION='true'; New-Item -ItemType Directory -Force logs | Out-Null; New-Item -ItemType File -Force logs\sessions.jsonl | Out-Null; .\uv.exe run python -m uvicorn apps.gateway.main:create_app --factory --port 8001"
 ```
+
+That is the same command with `$env:TEMP` written out as its resolved path: a `$` inside a
+string handed across two shells is a quoting trap the plain block above does not have.
 
 ## Check Gateway
 
@@ -1292,11 +1303,17 @@ feature flag for it, because it reads no Git, decides nothing about what is sent
 changes no prompt. Startup says so once, in counts:
 
 ```text
-file_activity enabled=true conversations=256 files_per_conversation=256
+file_activity enabled=true transcript_states=256 files_per_state=256
 ```
 
-`conversations` is `APP_CONTEXT_DELTA_CACHE_SIZE` - the same bound the symbol-delta
-tracker uses, deliberately, so the two per-conversation caches cannot drift apart.
+`transcript_states` is `APP_CONTEXT_DELTA_CACHE_SIZE` - the same number the symbol-delta
+tracker is sized with, deliberately, so the two caches that hold client-supplied history
+cannot drift apart. It is a count of stored transcript-prefix states, **not** of
+conversations: one conversation adds a state per request that answered one of its earlier
+prefixes, so a long conversation spends many of them and an older prefix can be evicted
+while the conversation is still running. `files_per_state` is the cap on each file set
+inside one state. An earlier wording of this line said `conversations=256`, which promised
+a bound the store does not have.
 
 ### The grammar it reads
 
@@ -1309,9 +1326,9 @@ user-role message whose first line is an anchored header (`packages.pipeline.cli
 ```
 
 Nothing else counts as an envelope: the header must start the message after leading
-whitespace, its tool must be a key of `CLINE_ENVELOPE_TOOLS`, and it must close within
-`MAX_ENVELOPE_HEADER_CHARS` (2048) with `"] Result:"` - or with a trailing `"]"`, which
-is the form the gateway's own history cap leaves behind when it truncates the body. A
+whitespace, its tool must be a member of `CLINE_FILE_ACTIVITY_TOOLS`, and it must close
+within `MAX_ENVELOPE_HEADER_CHARS` (2048) with `"] Result:"` - or with a trailing `"]"`,
+which is the form the gateway's own history cap leaves behind when it truncates the body. A
 header found *inside* a result body is never seen, because the parser stops at the
 terminator; that is what makes a file containing a quoted envelope unable to report an
 operation. `read_file` reads; `write_to_file` and `replace_in_file` modify;
@@ -1319,14 +1336,54 @@ operation. `read_file` reads; `write_to_file` and `replace_in_file` modify;
 that names no file - their target is a pattern, a directory or a command line, and the
 files inside their output belong to the result body, which is not scanned.
 
+That recognition set is deliberately wider than the set the rest of the pipeline *reacts*
+to, and the difference is one table with two views of it.
+`packages/pipeline/user_messages.py` holds the registry - `CLINE_ENVELOPE_SPECS`, one entry
+per tool, each carrying the activity it names and a `bookkeeping` flag - and derives both
+views from it: `CLINE_FILE_ACTIVITY_TOOLS` for measurement, and
+`CLINE_TOOL_RESULT_PREFIXES` for the two older consumers, task-text selection in planning
+and the current-tool-result cap in `packages/pipeline/history`. The flag is set for exactly
+the four tools those consumers recognized before C1 (`read_file`, `search_files`,
+`list_files`, `execute_command`) plus the `[attempt_completion]` and `[ERROR] You did not
+use a tool` bodies, so a `[write_to_file for x.py]` or `[replace_in_file for x.py]` result
+is counted here and forwarded whole, byte-identical, exactly as it was before the
+measurement existed. C1 widened what the gateway can see; it changed nothing about what the
+gateway sends, and this is the boundary where that had to be proved.
+
 Every target is normalized before it is counted - slashes, `.` segments, relative and
 in-repository-absolute spellings, Windows drive letters, NTFS streams, Unicode
 composition - and then checked for containment against the resolved repository root,
 `realpath` on both sides with `strict=False` so a modification target that does not
 exist yet is still measurable. A refused target yields one token and one counter
 (`paths_rejected`): `empty`, `quoting`, `nul`, `control`, `length`, `drive`, `stream`,
-`outside`, `self`, `root`. Counted per tool and reason, never per path, because
+`outside`, `self`, `root`. The counter is one per envelope, never one per path, because
 remembering a path would defeat the boundary.
+
+Resolution is memoized within a request only: `resolve_file_activity_events` keeps a
+local map from target spelling to resolved identity for the duration of one call, so the
+forty copies of one envelope a re-sending transcript carries cost one `realpath` rather
+than forty. The map is a function-local, never state on the normalizer or the tracker -
+no client path is held past the request that named it, nothing can go stale between
+requests, and its size is bounded by `MAX_ENVELOPES_PER_REQUEST` because it gains at most
+one entry per envelope parsed. Distinct spellings of one file are distinct keys and each
+still resolves on its own, which is the honest limit of a cache that refuses to outlive a
+request; the containment rules, the rejections and the counts are untouched by it.
+
+Measured on this machine (one throwaway script, 25 repetitions per shape, median of a
+`resolve_file_activity_events()` call over a temporary repository, before and after the change;
+not a test, and no timing assertion belongs in the suite):
+
+| transcript shape | envelopes | distinct target spellings | before | after |
+| --- | --- | --- | --- | --- |
+| three writers over eight files, one spelling each | 256 | 8 | 43.2 ms | 2.9-3.2 ms |
+| absolute in-repository reads of 32 files, each repeated eight times | 256 | 32 | 51.8 ms | 7.9-9.1 ms |
+| reads and searches, short transcript | 64 | 9 | 5.8 ms | 1.0-1.2 ms |
+
+The gain is `realpath` calls avoided - 256 to 8, 256 to 32 and 64 to 9 respectively - so it
+grows with how much of a transcript repeats itself, which is exactly what a re-sending client
+produces. It is a claim about this function on this filesystem, not about request latency: C1's
+end-to-end cost is still unmeasured, and measuring it needs a feature-off arm (see *Verification
+status*).
 
 ### Attempts and outcomes are separate numbers
 
@@ -1370,8 +1427,8 @@ numbers no longer drift and there is nothing left to suppress.
 
 The one question a transcript cannot answer is genuinely temporal - *was this file
 already in front of the agent when it opened it?* - and `context_files_touched` is the
-only quantity that consults remembered state. Three ordering rules are what make it a
-measurement rather than an artifact:
+only quantity that consults remembered state. Four rules are what make it a measurement
+rather than an artifact:
 
 - a file is credited only when the successful operation on it is **new** to this
   conversation; an operation an earlier transcript already showed the tracker is
@@ -1380,10 +1437,16 @@ measurement rather than an artifact:
   so context that arrives on the same request that reports touching a file proves only
   that the context arrived;
 - correlation never reconsiders a historical event against context supplied later,
-  which is the retroactive-attribution bug those two rules exist to stop.
+  which is the retroactive-attribution bug those two rules exist to stop;
+- **a gap in a lineage is sticky.** The request that finds its prefix missing marks the
+  state it stores discontinuous, and every descendant inherits that mark, so the
+  conversation keeps reporting `tracker_miss` instead of resuming `measured` on the turn
+  after the eviction, restart or rewritten history. What was supplied before the gap is
+  permanently unknown here, and a partition of the touched set would have been a guess.
 
 `touched_without_context` is `files_touched` minus `context_files_touched`, so the pair
-partitions the touched set and cannot disagree.
+partitions the touched set and cannot disagree - and both are zero while the lineage is
+discontinuous, which is what `correlation` is there to say.
 
 Conversation identity is a fingerprint of the complete message prefix, **assistant
 turns included** - not the user-only key `packages.context.delta` uses, because the
@@ -1395,6 +1458,14 @@ fingerprint is content, not identity. Two independent conversations whose transc
 are byte-identical are, to this module, one conversation, and nothing in a
 chat-completions request carries a conversation ID that could tell them apart.
 
+What that keying costs is worth stating plainly, because the bound is written as a
+count of entries: the store holds **transcript-prefix states, not conversations**. One
+conversation contributes one entry per request that answered one of its earlier
+prefixes, so a five-turn session occupies five slots, and a tracker sized to 256 is a
+tracker that holds about 256 requests' worth of lineage across all conversations - not
+256 long conversations. That is deliberate: keeping a state per prefix is what lets a
+retry or a branch of an older turn find the lineage that was current when it was sent.
+
 ### What a record carries
 
 `context.file_activity` is one nested dict, seventeen keys, count-only. The path out is
@@ -1404,7 +1475,7 @@ then the session logger; a file path crosses none of those boundaries.
 | field | meaning |
 | --- | --- |
 | `state` | whether the transcript was read: `measured`, `none` (nothing recognizable - what a client that sends no envelopes reports), `partial` (a bound kept something out, so the totals are a floor), `unavailable` (the measurement did not run - no tracker, no root the OS can name, or a stage that failed) |
-| `correlation` | whether the two correlation counters are a measurement: `measured`, `no_prior_context` (the conversation is remembered and nothing was ever supplied - a real zero), `tracker_miss` (an earlier request existed that this tracker cannot reconstruct: eviction, restart, or a rewritten history), `unavailable` |
+| `correlation` | whether the two correlation counters are a measurement: `measured`, `no_prior_context` (the conversation is remembered and nothing was ever supplied - a real zero), `tracker_miss` (an earlier request existed that this tracker cannot reconstruct: eviction, restart, or a rewritten history - and every later request in that conversation reports it too, because the gap does not close), `unavailable` |
 | `files_read` | unique files whose read result confirmed |
 | `files_modified` | unique files whose write result confirmed |
 | `files_touched` | the union of the two above |
@@ -1417,21 +1488,30 @@ then the session logger; a file path crosses none of those boundaries.
 | `context_files_touched` | successfully touched files this conversation had already been *supplied* as context on an earlier request |
 | `touched_without_context` | the rest of the touched set |
 | `changed_files_touched` | touched files the working-tree signal also reports as modified; zero whenever that signal is off or clean |
-| `paths_rejected` | distinct refusals met - per tool and reason, never per path |
-| `other_events` | distinct recognized envelopes naming no file: `search_files`, `list_files`, `execute_command` |
-| `events_beyond_bound` | recognized envelopes a bound kept out of this request's window, plus files a per-conversation bound would not hold |
+| `paths_rejected` | file-naming envelopes in the retained window whose target the repository refused - one per envelope, never one per path |
+| `other_events` | recognized envelopes in that window naming no file: `search_files`, `list_files`, `execute_command` - counted as events, not as tool kinds |
+| `events_beyond_bound` | recognized envelopes a bound kept out of this request's window, plus files a per-state bound would not hold |
 
 Two of those states are easy to read wrongly. `state=none` and `state=unavailable` both
 report zeroes, and only one of them means the gateway looked. A tracker miss reports the
 correlation pair as zero, which is why `correlation` exists at all: an evicted
 conversation and a conversation that genuinely never saw context would otherwise differ
-by nothing. `events_beyond_bound` is what separates "this session touched nothing" from
-"this session was not counted", and a file dropped because a bound was reached is counted
-*there* and not in `paths_rejected` - the path was fine, the bound was not.
+by nothing - and a miss now stays reported for the whole rest of that conversation rather
+than for the single request that happened to notice it. `events_beyond_bound` is what
+separates "this session touched nothing" from "this session was not counted", and a file
+dropped because a bound was reached is counted *there* and not in `paths_rejected` - the
+path was fine, the bound was not.
 
-The bounds, all of them forced by the transcript being client-supplied: 256 conversations
-per tracker (configured, from `APP_CONTEXT_DELTA_CACHE_SIZE`), 256 unique files per
-conversation per set (`MAX_UNIQUE_FILES_PER_CONVERSATION`), 256 envelopes per request
+Because the totals are rebuilt from the transcript on every request, both of those
+counters count envelopes, not the shapes of envelopes: fifty refusals of the same kind are
+`paths_rejected=50`, and nine searches, listings and commands are `other_events=9`. That
+was not true before this pass, when each was the size of a set of tool-and-reason pairs,
+and the only reason it can be true now is that nothing has to be remembered to make it
+so - the transcript is the tally, and no refused string is kept anywhere.
+
+The bounds, all of them forced by the transcript being client-supplied: 256 transcript-prefix
+states per tracker (configured, from `APP_CONTEXT_DELTA_CACHE_SIZE`), 256 unique files per
+set within a state (`MAX_UNIQUE_FILES_PER_STATE`), 256 envelopes per request
 (`MAX_ENVELOPES_PER_REQUEST`), 2048 header characters (`MAX_ENVELOPE_HEADER_CHARS`), 512
 path characters (`MAX_PATH_CHARS`), a 200-character result head
 (`MAX_RESULT_HEAD_CHARS`), and 2048 fingerprint characters over the newest 256 messages
@@ -1447,33 +1527,250 @@ so a tracker with no root, an unresolvable root, or a measurement that raises wr
 ### Verification status
 
 Everything above is pinned offline, and only offline: `tests/pipeline/test_file_activity.py`
-(56 tests - grammar, containment, snapshot idempotency, outcome partitioning, the three
-temporal-regression directions, bounds, eviction and restart, sanitization, fingerprint
-identity, stage integration, failure-keeps-request) and
-`tests/gateway/test_session_log.py` for the record's shape.
+(grammar, containment, snapshot idempotency, outcome partitioning, the four temporal
+regression directions, sticky lineage, bounds, eviction and restart, sanitization,
+fingerprint identity, stage integration, failure-keeps-request),
+`tests/pipeline/test_user_messages.py` (the registry's two derived views, and the
+pre-C1 behavior of task-text and query selection) and the envelope-capping cases in
+`tests/pipeline/test_history.py`, plus `tests/gateway/test_session_log.py` for the record's
+shape.
 
-**C1 has not been validated against a restarted live gateway.** No request has been sent
-to a gateway started from this source and no session record produced by one has been
-read, so the `file_activity enabled=true` startup line, the shape of
-`context.file_activity` in a real record, and the expectation that a normal Cline
-conversation reports `state=measured` alongside a non-`tracker_miss` `correlation` are
-all unverified against production traffic. Offline determinism is not the same claim as
-live determinism, and nothing in `docs/STATUS.md` should be read as a measurement of
-this feature.
+**What C1 does not change, and where that was almost lost.** The activity path is
+observational: it decides nothing about what a request sends, and by the time the stage
+records activity the composed context has already been chosen. That was not true of the
+first version of C1. `CLINE_TOOL_RESULT_PREFIXES` - the set the history cap truncates and
+planning text selection ignores - had been derived from the widened envelope table, which
+quietly made a `write_to_file` or `replace_in_file` result a truncation target and removed
+it from query-text selection. Both were behavior changes outside C1's scope, and both are
+now reverted: the registry keeps one entry per tool with a `bookkeeping` flag, and the
+flag is set for exactly the four tools the pipeline treated that way before C1. A writer's
+result is measured and reaches the model whole; `tests/pipeline/test_history.py` and
+`tests/pipeline/test_user_messages.py` assert both halves of that sentence, and
+`test_the_compatibility_prefixes_are_exactly_the_pre_c1_set` fails the moment the derived
+set drifts.
 
-A first live check needs nothing but a gateway started from this tree and two requests
-carrying the same transcript prefix:
+**C1 received its first restarted-gateway live validation on 2026-10-26, and it passed.** A
+gateway started from `f74d16d` wrote four session records, and every live criterion held:
+the `file_activity enabled=true` startup line appeared, `context.file_activity` carried
+exactly the seventeen documented keys in a real record, a request with no envelope reported
+`state=none`, the request after it reported `state=measured` with
+`correlation=measured` (not `tracker_miss`), and the replay reported the identical
+dictionary rather than a doubled one. What this does *not* validate is any quality, ranking or
+performance effect: C1 decides nothing about what a request sends and no ranker reads it, and
+the run carried no feature-off arm beside it, so it says nothing about what the measurement
+costs.
 
-```powershell
-.\uv.exe run python -m uvicorn apps.gateway.main:create_app --factory --port 8001
+**Those four requests were hand-scripted, not native Cline traffic.** They were composed by a
+probe and `POST`ed to the gateway, so they prove the pipeline parses, correlates and records
+the envelopes it was given. They do not prove that a real Cline client sends that shape. That
+gap is what the log survey below is for.
+
+### Real Cline traffic in the existing records
+
+Before extending the grammar to any new wording, the repository's own session records were
+searched - counts and envelope headers only, no path and no body text reported - for
+anchored Cline tool-result envelopes:
+
+Counted once per record and header, deduplicated across the fields of a record so that an
+envelope mirrored from `last_user_message` into `planning` is one envelope and not two: 515
+records carry at least one.
+
+| envelope | occurrences | what the gateway makes of it |
+| --- | --- | --- |
+| `[read_file for ...]` | 315 | 284 `confirmed`, 31 `failed` by the anchored read-failure prefix |
+| `[search_files for ...]` | 108 | recognized, names no file |
+| `[list_files for ...]` | 49 | recognized, names no file |
+| `[execute_command for ...]` | 29 | recognized, names no file |
+| `[replace_in_file for ...]` | 5 | `modified` / `confirmed` |
+| `[write_to_file for ...]` | 2 | `modified` / `confirmed` |
+| `[ask_followup_question for ...]` | 6 | **not** recognized: no grammar is claimed for it, so it yields no event |
+| a header that never closed in the window | 1 | not an envelope: `execute_command`, parsed to nothing |
+
+Every one of them sits in a user-role message: the corpus stores the turn in the gateway's
+`last_user_message` field, and no record carries an envelope under a `tool` role. That is the
+assumption C1's grammar rests on, and it is as far as these records can speak to it - they hold
+no message list with roles, so a client that delivered results as `role="tool"` would leave no
+trace here to search for.
+
+The writer rows are the load-bearing ones: every writer result found begins
+`The content was successfully saved to <path>.`, which contains this gateway's one
+confirmed-write marker, `successfully saved`. Seven for seven, real Cline write results
+classify as confirmed modifications under the closed grammar, and the header form is the
+`'<target>'] Result:` the parser expects. Reader results split the way the documentation
+already says they must - a successful read's body is the file's own text, so only a head
+*beginning* with the failure prefix is a failed read, and the read total is an upper bound.
+Envelope headers that appear only *inside* another message's body - the shape a quoted
+envelope in a file or an answer produces - were found too (9 of them) and parsed as nothing,
+which is the injection rule working as documented.
+
+Two findings are recorded and deliberately not acted on. **72 of the 315 real `read_file`
+results begin `[DUPLICATE READ] You have already read '<path>' N times in this conversation`,
+whose own wording says the content was not sent again.** Under the anchored read rule that head
+is not a failure prefix, so each of those counts as a confirmed read, and `files_read` is
+correspondingly a count of successful read *attempts* rather than of files whose text reached
+the model on that turn. That is a change to what a counter means, so it is not made on the
+strength of a survey - it is recorded here for the next pass, which has a number attached to it.
+And `[ask_followup_question for ...]` (6 occurrences) is a Cline tool the gateway sees in its own
+traffic and does not recognize, which is the correct behavior for an unverified grammar and a
+reminder that the registry is a closed set by choice. Nothing else was added: no "the user denied
+this operation" wording (0 occurrences in these records), no save-after-user-edit wording, and no
+`role="tool"` handling.
+
+The corpus spans 2026-07-28 to 2026-10-26 and is dominated by records from late July and
+August 2026; the October tail is the synthetic probe below. A short live task run through the
+restarted gateway with the currently installed Cline was **not** possible at the time of
+writing: the gateway was not running, nothing was connected to it as a client, and the newest
+task in the installed Cline's own history predates this work by two months. Driving the
+extension means driving a VS Code UI, which is not available here, so the check stopped at the
+log survey rather than being answered with another synthetic request relabelled as real
+traffic.
+
+### The procedure, as it was run
+
+Start a gateway from the committed tree. `apps/gateway/main.py` loads `.env` at import with
+`override=True` and `get_settings()` is `lru_cache`d, so a shell variable set before startup
+loses to the `APP_SESSION_LOG_PATH` on disk - which also means the `$env:APP_SESSION_LOG_PATH`
+line in *Start Gateway* above only wins when the tree has no `.env` file. To keep this probe's
+records apart from ordinary traffic without editing `.env`, the run served the real app out of a
+scratch launcher kept outside the repository: `%TEMP%\c1_live\launch_gateway.py`, a file that
+was deleted when the probe ended and has never existed in the tree. Everything it needs to
+contain is this:
+
+```python
+"""Serve the real gateway app against one dedicated session-log file."""
+import os
+
+import uvicorn
+
+import apps.gateway.main as gateway_main  # the import resolves .env, override=True included
+
+os.environ["APP_SESSION_LOG_PATH"] = os.path.join("logs", "c1_live_validation_20261025.jsonl")
+gateway_main.get_settings.cache_clear()  # drop the Settings instance built from .env
+uvicorn.run(gateway_main.create_app(), host="127.0.0.1", port=8001, log_level="info")
 ```
 
-Then, from a client that sends Cline-shaped tool-result envelopes, the same prefix twice,
-reading `context.file_activity` from `APP_SESSION_LOG_PATH` for both records. Pass means
-the two records agree on every transcript-derived counter, that the second is not the sum
-of the two, and that the second's `correlation` is `measured` rather than `tracker_miss`.
-A run that shows doubling, or a `tracker_miss` on a conversation that was never evicted,
-is a real finding and should be reported as one.
+`create_app()` is the same factory the documented
+`python -m uvicorn apps.gateway.main:create_app --factory --port 8001` serves, so nothing about
+the request path was specific to this probe - only the destination of the session records was.
+The launcher that ran additionally printed the resolved path, which is where the
+`session_log_path` line below came from. It was started from the repository root, hidden, with
+its streams redirected to diagnostics files:
+
+```powershell
+$env:UV_CACHE_DIR="$env:TEMP\local-ai-platform-uv-cache"
+.\uv.exe run python $env:TEMP\c1_live\launch_gateway.py
+```
+
+The probe as run set that variable to `C:\Users\ovidi\local-ai-platform\.uv-cache` instead,
+and the cost of that showed up afterwards in `tests/repository/test_scanner.py`: the cache
+holds real `.py` and `.pyi` files, the scanner walked them, and two of its tests failed on
+them. The command above is the corrected form, and `.uv-cache` is now ignored by the scanner
+wherever it grows.
+
+The supported alternative, with no scratch file involved, is to point `APP_SESSION_LOG_PATH` in
+`.env` itself at a dedicated file, start the gateway with the plain `uvicorn` command from
+*Start Gateway*, and restore `.env` when the probe is over.
+
+Before sending anything, confirm health, and that startup said the tracker is wired - in
+counts:
+
+```powershell
+curl http://127.0.0.1:8001/health
+```
+
+```text
+{"status":"ok","repository_context_enabled":true}
+file_activity enabled=true transcript_states=256 files_per_state=256
+```
+
+The record of the run below shows that line in its older wording,
+`conversations=256 files_per_conversation=256`, which is what the `f74d16d` binary printed:
+the tracker is an LRU of transcript-prefix *states*, not of conversations, and the startup
+line now says so.
+
+Then four `POST /v1/chat/completions` requests to model `qwen38-27b` (`temperature=0.0`,
+`max_tokens=1024`, `stream=false`), each carrying an explicit `X-Request-ID` so its record can
+be found by name:
+
+| step | `X-Request-ID` | transcript |
+| --- | --- | --- |
+| 1 | `c1live20261025b-r1` | one user question naming `packages/pipeline/file_activity.py` and `FileActivityTracker.observe`; no envelope |
+| 2 | `c1live20261025b-r2` | request 1's user turn, request 1's real assistant reply, then one user-role `[read_file for 'packages/pipeline/file_activity.py'] Result:` envelope whose body is plain content |
+| 3 | `c1live20261025b-r3` | request 2 unchanged, under a third ID - the replay |
+| 4 | `c1live20261025b-control` | a fresh one-request conversation that supplies the file *and* reports reading it on the same request |
+
+Then read the records back from `APP_SESSION_LOG_PATH`:
+
+```powershell
+Get-Content logs\c1_live_validation_20261025.jsonl |
+  ForEach-Object { $r = $_ | ConvertFrom-Json; '{0}: {1}' -f $r.request_id, ($r.context.file_activity | ConvertTo-Json -Compress) }
+```
+
+### What the four records said
+
+| request | `state` | `correlation` | `read_attempts` | `files_read` | `files_touched` | `context_files_touched` | `touched_without_context` |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `c1live20261025b-r1` | `none` | `no_prior_context` | 0 | 0 | 0 | 0 | 0 |
+| `c1live20261025b-r2` | `measured` | `measured` | 1 | 1 | 1 | 1 | 0 |
+| `c1live20261025b-r3` | `measured` | `measured` | 1 | 1 | 1 | 1 | 0 |
+| `c1live20261025b-control` | `measured` | `no_prior_context` | 1 | 1 | 1 | 0 | 1 |
+
+Every other key was `0` in all four records. Each record carried exactly the seventeen keys
+in the documented order, every value was a non-negative integer or one of the six closed
+tokens, and no path, filename, module name, result body or envelope text appeared anywhere
+inside `context.file_activity`. `changed_files_signal` was `off` and `changed_files_touched`
+was `0`, so nothing from the working tree entered the correlation either.
+
+The same four objects exactly as the read-back prints them, so the table above can be checked
+against the bytes on disk:
+
+```text
+c1live20261025b-r1: {"state":"none","correlation":"no_prior_context","files_read":0,"files_modified":0,"files_touched":0,"read_attempts":0,"reads_failed":0,"reads_unknown":0,"modification_attempts":0,"modifications_not_modified":0,"modifications_unknown":0,"context_files_touched":0,"touched_without_context":0,"changed_files_touched":0,"paths_rejected":0,"other_events":0,"events_beyond_bound":0}
+c1live20261025b-r2: {"state":"measured","correlation":"measured","files_read":1,"files_modified":0,"files_touched":1,"read_attempts":1,"reads_failed":0,"reads_unknown":0,"modification_attempts":0,"modifications_not_modified":0,"modifications_unknown":0,"context_files_touched":1,"touched_without_context":0,"changed_files_touched":0,"paths_rejected":0,"other_events":0,"events_beyond_bound":0}
+c1live20261025b-r3: {"state":"measured","correlation":"measured","files_read":1,"files_modified":0,"files_touched":1,"read_attempts":1,"reads_failed":0,"reads_unknown":0,"modification_attempts":0,"modifications_not_modified":0,"modifications_unknown":0,"context_files_touched":1,"touched_without_context":0,"changed_files_touched":0,"paths_rejected":0,"other_events":0,"events_beyond_bound":0}
+c1live20261025b-control: {"state":"measured","correlation":"no_prior_context","files_read":1,"files_modified":0,"files_touched":1,"read_attempts":1,"reads_failed":0,"reads_unknown":0,"modification_attempts":0,"modifications_not_modified":0,"modifications_unknown":0,"context_files_touched":0,"touched_without_context":1,"changed_files_touched":0,"paths_rejected":0,"other_events":0,"events_beyond_bound":0}
+```
+
+The timings as each record wrote them, verbatim from `logs/c1_live_validation_20261025.jsonl`:
+
+| request | `total_ms` | `pipeline_ms` | `provider_wait_ms` | `repository_context_ms` |
+| --- | --- | --- | --- | --- |
+| `c1live20261025b-r1` | 6905.3 | 691.9 | 6206.5 | 689.5 |
+| `c1live20261025b-r2` | 3066.0 | 677.4 | 2385.5 | 675.5 |
+| `c1live20261025b-r3` | 3104.0 | 710.3 | 2391.1 | 708.3 |
+| `c1live20261025b-control` | 3793.6 | 897.4 | 2893.5 | 895.3 |
+
+All four requests completed: HTTP 200, `status=ok`, a real assistant answer, and no
+`file_activity` failure anywhere in the gateway log. That is where the performance evidence
+ends. There was no feature-off arm and no with-C1/without-C1 pair, so this probe did not
+isolate or measure the incremental latency C1 adds; the numbers above describe stage and
+provider work on four individual requests - the `repository_context` stage spanning
+675.5-895.3 ms, which is 689.5, 675.5 and 708.3 ms on the three conversation requests and
+895.3 ms on the control, against provider waits of 2385.5-6206.5 ms - and they are recorded so
+that a later run can compare against them, not as evidence that measuring is cheap.
+**C1's performance overhead remains unmeasured**; the supported claim is only that measuring
+did not stop any of the four requests from completing.
+
+`primary_symbol` was `packages/pipeline/file_activity.FileActivityTracker.observe` in every
+record, so request 1 demonstrably supplied the file request 2 later reported reading - the
+`context_files_touched=1` credit is temporal and not self-serving. The control row shows the
+other half of the ordering rule: supplied and touched on one and the same request credits
+nothing, and lands in `touched_without_context` instead.
+
+The replay's dictionary was identical to request 2's by value, by key order and as serialized
+JSON. Nothing doubled, and no `tracker_miss` appeared on a conversation that was never
+evicted.
+
+Evidence: `logs/c1_live_validation_20261025.jsonl` - four lines, one per request ID above, in
+gitignored diagnostics. One earlier start of the same gateway resolved `.env`'s path before
+the override above was written, so a single prior record - `c1live20261025a-r1`, identical in
+shape to `c1live20261025b-r1` - sits at the end of
+`logs/implement_budget_A_4096_20260801.jsonl`. It was left in place rather than edited out.
+
+Still offline-only after this pass: `state=partial`, `state=unavailable` and
+`correlation=tracker_miss`, eviction once a 257th conversation arrives, and the failure paths
+that mark a record unavailable - all constructs a single healthy restart cannot produce.
+
 
 ## Full Quality Baseline
 

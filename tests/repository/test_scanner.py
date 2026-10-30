@@ -107,6 +107,43 @@ class TestScanIgnoredDirectories:
         for d in index.directories:
             assert d.relative_path.name != ".git"
 
+    def test_uv_cache_skipped_even_with_python_inside(self, tmp_path: Path) -> None:
+        """A uv cache pointed at the tree contributes neither file nor directory.
+
+        ``UV_CACHE_DIR`` inside the workspace unpacks third-party wheels there, and
+        those hold ``.py`` and ``.pyi`` files indistinguishable from this project's
+        own by extension alone.  The scanner must not read one of them - not as a
+        source file, not as Python, and not as a directory it reports - because a
+        cache that got indexed turns every gate that scans the tree into a scan of
+        somebody else's project.
+
+        Args:
+            tmp_path: The pytest temporary directory to build a repository in.
+        """
+        source = tmp_path / "packages" / "demo"
+        source.mkdir(parents=True)
+        (source / "widget.py").write_text("VALUE = 1\n", encoding="utf-8")
+        cache = tmp_path / ".uv-cache" / "archive-v0" / "0HzNOif3v" / "ast_serialize"
+        cache.mkdir(parents=True)
+        (cache / "__init__.py").write_text("def serialize(node): ...\n", encoding="utf-8")
+        (cache / "nodes.pyi").write_text("class Argument:\n    ...\n", encoding="utf-8")
+        wheels = tmp_path / ".uv-cache" / "wheels"
+        wheels.mkdir(parents=True)
+        (wheels / "installed.py").write_text("VALUE = 2\n", encoding="utf-8")
+
+        index = scan(tmp_path)
+
+        assert {file.relative_path.as_posix() for file in index.files} == {
+            "packages/demo/widget.py"
+        }
+        cached_dirs = [
+            directory
+            for directory in index.directories
+            if ".uv-cache" in directory.relative_path.parts
+        ]
+        assert cached_dirs == []
+        assert index.statistics.source_files == 1
+
 
 class TestScanLanguageDetection:
     """Tests for language detection during scanning."""

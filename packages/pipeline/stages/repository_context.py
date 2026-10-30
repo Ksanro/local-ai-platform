@@ -455,8 +455,10 @@ class RepositoryContextStage(PipelineStage):
                 fields as unmeasured placeholders under
                 ``changed_baseline_status="not_sampled"``.  It never changes the
                 context that is sent, only what is known about it afterwards.
-            file_activity: Optional conversation-scoped store for Cline file
-                activity (roadmap C1).  ``None`` (the default) leaves every request
+            file_activity: Optional store of transcript-prefix states for Cline
+                file activity (roadmap C1) - which files this conversation was
+                already shown, keyed by the history it had when they were sent.
+                ``None`` (the default) leaves every request
                 unmeasured, so a session record writes the inert section - which is
                 what a stage built by an older gateway or a test does.
             repository_root: The root envelope targets are contained against, which

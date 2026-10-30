@@ -91,10 +91,14 @@ def _message_token_count(message: dict[str, Any]) -> int:
 def _looks_like_cline_tool_result_message(message: dict[str, Any]) -> bool:
     """Return True for Cline tool-result envelopes sent as user text.
 
-    The recognition is the pipeline's shared one: ``CLINE_TOOL_RESULT_PREFIXES``
-    from :mod:`packages.pipeline.user_messages`.  A message capping drops here is
-    therefore the same message planning ignores, and the file-activity boundary
-    cannot recognize an envelope that these two do not already know.
+    The recognition is the pipeline's planning/history compatibility view,
+    ``CLINE_TOOL_RESULT_PREFIXES`` from :mod:`packages.pipeline.user_messages`,
+    which is derived from the one Cline envelope registry - so this module and
+    task-text selection cannot drift apart.  It is deliberately *not* the set the
+    file-activity boundary reads: roadmap C1 taught the gateway to measure
+    ``write_to_file`` and ``replace_in_file`` results, and capping their text here
+    would have changed what the model receives, which is outside C1's scope.  A
+    writer's result is therefore still forwarded whole and is never truncated.
     """
     if message.get("role") != "user":
         return False
@@ -128,7 +132,15 @@ def _cap_current_tool_result(
     messages: list[dict[str, Any]],
     max_current_tool_result_tokens: int | None,
 ) -> list[dict[str, Any]]:
-    """Cap the current Cline tool-result message without dropping it."""
+    """Cap the current Cline tool-result message without dropping it.
+
+    Only the messages :func:`_looks_like_cline_tool_result_message` recognizes are
+    candidates, which is the planning/history compatibility set - the four tools
+    the gateway treated as Cline bookkeeping before roadmap C1, plus the two
+    reminder bodies.  A ``write_to_file`` or ``replace_in_file`` result is not
+    truncated here: it carries the file's whole new content, and shortening it
+    would be a change to what the model is shown.
+    """
     if max_current_tool_result_tokens is None or max_current_tool_result_tokens <= 0:
         return messages
 

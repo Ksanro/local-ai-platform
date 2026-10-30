@@ -220,3 +220,35 @@ class TestPythonAstExtractorExcludedCount:
             extractor.extract(p, exclude_tests=True)
 
             assert extractor.excluded_test_count == 1
+
+
+class TestGeneratedCacheIsNotIndexed:
+    """A tool cache under the workspace contributes no module to the index."""
+
+    def test_uv_cache_module_not_indexed(self):
+        """A ``.uv-cache`` holding real ``.py`` files still yields nothing.
+
+        The live AST index was already blind to it - a path component beginning with
+        a dot is skipped before any file is read - and the scanner's ignored-directory
+        set now says so out loud.  This test pins the indexer half of that, so a
+        change to either rule is noticed here rather than in a session record.
+        """
+        with TemporaryDirectory() as tmp:
+            p = Path(tmp)
+            _write_py_file(p, "main.py", '"""Main module."""\n\n\ndef main():\n    pass\n')
+            _write_py_file(
+                p,
+                ".uv-cache/archive-v0/0HzNOif3v/ast_serialize/__init__.py",
+                "def serialize(node):\n    pass\n",
+            )
+            _write_py_file(
+                p,
+                ".uv-cache/wheels/dependency/module.py",
+                "VALUE = 2\n",
+            )
+
+            index = RepositoryIndexBuilder(exclude_tests=False).build(p)
+
+            assert any("main" in module for module in index.modules)
+            assert not any(".uv-cache" in module for module in index.modules)
+            assert not any("ast_serialize" in module for module in index.modules)

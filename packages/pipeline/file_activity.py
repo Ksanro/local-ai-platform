@@ -46,13 +46,16 @@ process-global and nothing crosses between conversations otherwise, and the
 tracker never mutates the state it looked up - it derives a new one and stores
 that - so a request whose transcript is empty cannot bleed into a conversation.
 
-The cache is an LRU of ``maxsize`` conversations, and each conversation holds at
-most ``max_unique_files`` files per set.  Both bounds exist because history is
-client-supplied: a hostile client must not be able to turn a request into
-unbounded work or memory.  What a bound forces out is counted
-(``events_beyond_bound``) rather than silently lost, and it is the *oldest*
-envelopes that fall out of a bounded parse, so what the conversation just did
-remains visible.
+The cache is an LRU of ``maxsize`` *transcript-prefix states*, and each state
+holds at most ``max_unique_files`` files per set.  An entry is not a conversation:
+a conversation contributes one new state per request that answers an earlier
+prefix, so a five-turn Cline session occupies five entries and a conversation that
+has fallen out of the window comes back as a lineage gap rather than as a
+reconstruction.  Both bounds exist because history is client-supplied: a hostile
+client must not be able to turn a request into unbounded work or memory.  What a
+bound forces out is counted (``events_beyond_bound``) rather than silently lost,
+and it is the *oldest* envelopes that fall out of a bounded parse, so what the
+conversation just did remains visible.
 
 Correlation and ordering
 ------------------------
@@ -69,10 +72,18 @@ keep it honest are temporal ones:
   correlation, so a context package that introduces a file on the same request
   that reports touching it proves only that the context arrived;
 * correlation never reconsiders a historical event against context supplied
-  later, which is the retroactive-attribution bug this ordering exists to stop.
+  later, which is the retroactive-attribution bug this ordering exists to stop;
+* a lineage that broke stays broken.  A request whose prefix the tracker cannot
+  find - an eviction, a restart, a rewritten history - marks the state it stores
+  discontinuous, and every descendant of that state inherits the mark, so the
+  correlation pair is reported as ``tracker_miss`` from then on rather than
+  quietly resuming as ``measured`` on the turn after the gap.  What was supplied
+  before the gap is permanently unknown here, and a number that forgot that would
+  be the most misleading thing this module could print.
 
 ``touched_without_context`` is ``files_touched`` minus ``context_files_touched``,
-so the two partition the touched set and cannot disagree.
+so the two partition the touched set and cannot disagree - and both are zero, with
+``correlation`` saying so, while a lineage is discontinuous.
 
 Outcome is not attempt
 ----------------------
@@ -163,7 +174,8 @@ __all__ = [
     "CORRELATION_UNAVAILABLE",
     "FILE_ACTIVITY_CORRELATION_STATES",
     "FILE_ACTIVITY_STATES",
-    "MAX_UNIQUE_FILES_PER_CONVERSATION",
+    "MAX_ACTIVITY_STATES",
+    "MAX_UNIQUE_FILES_PER_STATE",
     "NEW_CONVERSATION_KEY",
     "FileActivityCounts",
     "FileActivityTracker",
@@ -195,7 +207,10 @@ STATE_UNAVAILABLE: Final = "unavailable"
 #: touched file had been supplied earlier.  A tracker miss is not a zero: an
 #: evicted conversation, a rewritten history and a conversation the gateway has
 #: only just met all produce ``context_files_touched == 0``, and only the token
-#: says that the zero is not a measurement.
+#: says that the zero is not a measurement.  A miss is also sticky: the request
+#: that notices the gap marks the whole lineage discontinuous, so each of its
+#: descendants keeps reporting ``tracker_miss`` instead of resuming a claim to
+#: know what was supplied before a prefix nothing remembered.
 CORRELATION_MEASURED: Final = "measured"
 CORRELATION_NO_PRIOR_CONTEXT: Final = "no_prior_context"
 CORRELATION_TRACKER_MISS: Final = "tracker_miss"
@@ -207,16 +222,17 @@ CORRELATION_UNAVAILABLE: Final = "unavailable"
 #: digest and so cannot collide with the sentinel.
 NEW_CONVERSATION_KEY: Final = "__new__"
 
-#: Unique files held per conversation.  A real session reads tens of files; a
-#: client that sends ten thousand envelopes must not be able to grow the tracker
-#: past this.  Overflow is counted, not hidden.
-MAX_UNIQUE_FILES_PER_CONVERSATION: Final = 256
+#: Unique files held per set within one stored state.  A real session reads tens of
+#: files; a client that sends ten thousand envelopes must not be able to grow the
+#: tracker past this.  Overflow is counted, not hidden.
+MAX_UNIQUE_FILES_PER_STATE: Final = 256
 
-#: Conversations held by a tracker built without a configured size.  The gateway
-#: passes its ``context_delta_cache_size`` instead, so the two per-conversation
-#: caches cannot drift apart; this bound is what keeps a standalone tracker bounded
-#: all the same.
-MAX_ACTIVITY_CONVERSATIONS: Final = 256
+#: Transcript-prefix states held by a tracker built without a configured size -
+#: entries, not conversations, because one conversation stores a state per request
+#: that answered an earlier prefix.  The gateway passes its
+#: ``context_delta_cache_size`` instead, so the two caches cannot drift apart in
+#: size; this bound is what keeps a standalone tracker bounded all the same.
+MAX_ACTIVITY_STATES: Final = 256
 
 #: How much of each message takes part in the fingerprint.  A transcript that
 #: repeats a tool result verbatim beyond this window still fingerprints the same,
@@ -367,7 +383,9 @@ class FileActivityCounts:
             the gateway rewrote - and ``"unavailable"`` when the measurement did
             not run.  The two correlation counters are reported as zero under the
             last two tokens, so a lost history never reads as a confident zero
-            correlation.
+            correlation.  A miss is sticky: once a conversation's lineage has a
+            gap in it, every later request in that conversation reports the miss,
+            because what was supplied before the gap stays unknown forever.
         files_read: Unique files whose read result reported a successful read.
             A read whose result begins with a recognized failure is in
             ``reads_failed`` instead, and one that reported nothing the gateway
@@ -399,13 +417,16 @@ class FileActivityCounts:
             it instead of double-counting it.
         changed_files_touched: Touched files the cached working-tree signal reports
             as modified too.  Zero whenever the signal is off or unavailable.
-        paths_rejected: Distinct refusals the transcript met - a target outside the
-            repository, malformed, or unresolvable.  Counted per tool and reason,
-            because counting them per path would mean remembering a path.
-        other_events: Distinct recognized envelopes that name no file:
-            ``search_files``, ``list_files``, ``execute_command``.
+        paths_rejected: File-naming envelopes in the retained transcript window
+            whose target the repository refused - outside it, malformed, or
+            unresolvable.  One per envelope, not one per distinct refusal shape:
+            counting shapes would understate a conversation that hit the same wall
+            fifty times, and counting paths is impossible without keeping one.
+        other_events: Recognized envelopes in that window that name no file -
+            ``search_files``, ``list_files``, ``execute_command`` - counted once
+            each.
         events_beyond_bound: Recognized envelopes a bound kept out of this
-            request's window, plus files a per-conversation bound would not hold.
+            request's window, plus files a per-state bound would not hold.
             It is what separates "this session touched nothing" from "this session
             was not counted".
     """
@@ -460,9 +481,15 @@ class _Transcript:
         modifications_unknown: Files modification was attempted on with neither.
         succeeded: How many successful operations each file appears in, so a later
             request can tell an operation it has already examined from a new one.
-        rejections: The distinct ``tool:reason`` refusal shapes met.  Distinct
-            because counting them per path would mean remembering a path.
-        other_tools: The distinct tools whose envelopes name no file.
+        rejection_events: How many file-naming envelopes in this window named a
+            target the repository refused.  Envelopes, not refusal shapes: the
+            totals are rebuilt from the transcript every request, so a count of
+            them can be a count of the events themselves, and no refused text needs
+            to be remembered to produce one.
+        other_envelopes: How many recognized envelopes that name no file -
+            ``search_files``, ``list_files``, ``execute_command`` - this window
+            holds.  Again events rather than the distinct tools among them, which
+            is what makes the number comparable to the others here.
         beyond_bound: Envelopes a bound left out of this transcript's window.
     """
 
@@ -472,13 +499,13 @@ class _Transcript:
         "modifications_confirmed",
         "modifications_failed",
         "modifications_unknown",
-        "other_tools",
+        "other_envelopes",
         "reads_attempted",
         "reads_confirmed",
         "reads_failed",
         "reads_unknown",
         "recognized",
-        "rejections",
+        "rejection_events",
         "succeeded",
     )
 
@@ -507,11 +534,9 @@ class _Transcript:
             self.modifications_failed,
             self.modifications_unknown,
         ) = _partition(rank, ACTIVITY_MODIFIED)
-        self.rejections = frozenset(
-            f"{event.tool}:{event.rejection}" for event in events if event.rejection
-        )
-        self.other_tools = frozenset(
-            event.tool
+        self.rejection_events = sum(1 for event in events if event.rejection)
+        self.other_envelopes = sum(
+            1
             for event in events
             if not event.file and not event.rejection and event.activity == ACTIVITY_NONE
         )
@@ -570,15 +595,21 @@ class _ConversationActivity:
         credited: Files already credited as supplied-then-touched.  Carried forward
             so a later request reports the same correlation the one that earned it
             reported, and a replayed transcript cannot move it.
+        lineage_complete: Whether every request of this conversation's remembered
+            lineage was seen.  ``False`` once any request in the chain arrived on a
+            prefix this tracker could not find - an eviction, a restart, a rewritten
+            history - which means the files supplied before that gap are permanently
+            unknown and stay unknown for every descendant of this state.
     """
 
-    __slots__ = ("credited", "operations", "supplied")
+    __slots__ = ("credited", "lineage_complete", "operations", "supplied")
 
     def __init__(self) -> None:
-        """Start an empty conversation state."""
+        """Start an empty, unbroken conversation state."""
         self.supplied: set[str] = set()
         self.operations: dict[str, int] = {}
         self.credited: set[str] = set()
+        self.lineage_complete = True
 
     def copy(self) -> "_ConversationActivity":
         """Return an independent copy of this state.
@@ -587,12 +618,15 @@ class _ConversationActivity:
             A state with the same contents in fresh containers, so recording a
             request never mutates the object another conversation is still holding
             - which is what keeps a shared bucket from bleeding into a different
-            conversation.
+            conversation.  The continuity flag comes along, because a descendant of
+            a broken lineage is as blind to what preceded the gap as the request
+            that found it.
         """
         clone = _ConversationActivity()
         clone.supplied = set(self.supplied)
         clone.operations = dict(self.operations)
         clone.credited = set(self.credited)
+        clone.lineage_complete = self.lineage_complete
         return clone
 
     def correlate(self, seen: "_Transcript", limit: int) -> int:
@@ -629,7 +663,11 @@ class _ConversationActivity:
         Args:
             seen: The transcript's own file operations.
             correlation: The correlation availability token, decided by the caller
-                because it depends on whether a prior state was found at all.
+                because it depends on whether a prior state was found at all.  A
+                confident token is corrected to ``tracker_miss`` here when this
+                state's own lineage is discontinuous: a partition of what was
+                supplied before a gap nothing remembered is not a measurement, and
+                no caller gets to claim one by forgetting to ask.
             changed: The files the cached working-tree signal reports as modified.
 
         Returns:
@@ -640,6 +678,11 @@ class _ConversationActivity:
         touched = seen.touched
         total = len(touched)
         beyond = seen.beyond_bound
+        if not self.lineage_complete and correlation in (
+            CORRELATION_MEASURED,
+            CORRELATION_NO_PRIOR_CONTEXT,
+        ):
+            correlation = CORRELATION_TRACKER_MISS
         if correlation == CORRELATION_MEASURED:
             credited = len(self.credited & touched)
             without = total - credited
@@ -671,8 +714,8 @@ class _ConversationActivity:
             context_files_touched=credited,
             touched_without_context=without,
             changed_files_touched=len(touched & changed),
-            paths_rejected=len(seen.rejections),
-            other_events=len(seen.other_tools),
+            paths_rejected=seen.rejection_events,
+            other_events=seen.other_envelopes,
             events_beyond_bound=beyond,
         )
 
@@ -687,25 +730,37 @@ class FileActivityTracker:
     request - and nothing else: no paths from a client, no symbols, no envelope
     text.
 
+    An entry is a *transcript-prefix state*, not a conversation.  Each request
+    stores the state it derived under the fingerprint of the transcript it saw, so
+    a conversation that has run five requests occupies five entries and shares one
+    lineage between them; that is what lets a retry or a branch of an older prefix
+    find the state that was current when it was sent.  A long conversation
+    therefore consumes the bound faster than the number of conversations suggests,
+    and the request that arrives after its own prefix has been evicted reports the
+    gap - and every request descended from it keeps reporting it.
+
     Attributes:
-        maxsize: Conversations held before the least recently used one is dropped.
-        max_unique_files: Entries held per set within one conversation.
+        maxsize: Transcript-prefix states held before the least recently used one
+            is dropped.
+        max_unique_files: Files held per set within one stored state.
     """
 
     __slots__ = ("_cache", "max_unique_files", "maxsize")
 
     def __init__(
         self,
-        maxsize: int = MAX_ACTIVITY_CONVERSATIONS,
-        max_unique_files: int = MAX_UNIQUE_FILES_PER_CONVERSATION,
+        maxsize: int = MAX_ACTIVITY_STATES,
+        max_unique_files: int = MAX_UNIQUE_FILES_PER_STATE,
     ) -> None:
         """Create a bounded tracker.
 
         Args:
-            maxsize: Conversations to retain, normally the gateway's
-                ``context_delta_cache_size`` so the two per-conversation caches
-                cannot drift apart in size.  A non-positive value is read as one.
-            max_unique_files: Files retained per set within a conversation.  A
+            maxsize: Transcript-prefix states to retain, normally the gateway's
+                ``context_delta_cache_size`` so the two client-history caches
+                cannot drift apart in size.  One conversation needs several of them,
+                one per request that answered an earlier prefix.  A non-positive
+                value is read as one.
+            max_unique_files: Files retained per set within a stored state.  A
                 non-positive value is read as one.
         """
         self.maxsize = maxsize if maxsize > 0 else 1
@@ -756,8 +811,13 @@ class FileActivityTracker:
 
         # A miss on a transcript that shows earlier turns is a conversation the
         # tracker lost - eviction, a restart, a history someone rewrote - and its
-        # correlation would otherwise read as a confident zero.
+        # correlation would otherwise read as a confident zero.  The mark belongs to
+        # the state, not to this request: it is copied forward into what is stored
+        # under ``store_key``, so the descendant of a broken lineage keeps reporting
+        # the gap instead of resuming a measurement of the half it can see.
         if prior is None and lookup_key != NEW_CONVERSATION_KEY:
+            state.lineage_complete = False
+        if not state.lineage_complete:
             correlation = CORRELATION_TRACKER_MISS
         elif not state.supplied:
             correlation = CORRELATION_NO_PRIOR_CONTEXT
@@ -778,7 +838,7 @@ class FileActivityTracker:
         return counts
 
     def snapshot(self, lookup_key: str) -> FileActivityCounts:
-        """Return what a conversation remembers, having measured no transcript.
+        """Return what one stored prefix remembers, having measured no transcript.
 
         Args:
             lookup_key: The conversation identity to look up.
@@ -788,21 +848,27 @@ class FileActivityTracker:
             nothing about the client's file operations is being claimed - and whose
             ``correlation`` says whether this tracker can reconstruct the
             conversation at all.  A miss is reported as a tracker miss, never as a
-            zero that looks like a measurement.
+            zero that looks like a measurement, and so is a found state whose own
+            lineage carries a gap.
         """
         state = self._cache.get(lookup_key)
         if state is not None:
             self._cache.move_to_end(lookup_key)
-            return state.counts(_Transcript((), 0), CORRELATION_MEASURED, frozenset())
+            correlation = (
+                CORRELATION_MEASURED if state.lineage_complete else CORRELATION_TRACKER_MISS
+            )
+            return state.counts(_Transcript((), 0), correlation, frozenset())
         return _ConversationActivity().counts(
             _Transcript((), 0), CORRELATION_TRACKER_MISS, frozenset()
         )
 
-    def conversation_count(self) -> int:
-        """Return how many conversations the tracker currently holds.
+    def state_count(self) -> int:
+        """Return how many transcript-prefix states the tracker currently holds.
 
         Returns:
-            The live entry count, which tests use to confirm the LRU bound.
+            The live entry count, which tests use to confirm the LRU bound.  It is
+            not a count of conversations: one conversation contributes an entry per
+            request that answered one of its earlier prefixes.
         """
         return len(self._cache)
 

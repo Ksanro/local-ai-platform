@@ -4,6 +4,12 @@ Provides two mechanisms for excluding paths from scan results:
 1. A hardcoded set of directory basenames that are always ignored.
 2. Parsing of a ``.gitignore`` file at the repository root for
    additional exclusion patterns.
+
+The hardcoded set exists for the caches a working checkout grows beside its
+source.  ``.uv-cache`` is in it for a specific reason: pointing ``UV_CACHE_DIR``
+at the repository unpacks thousands of third-party ``.py`` and ``.pyi`` files
+under the workspace, and a scanner that read them would index other projects'
+source as this one's - and slow down every live gate that scans the tree.
 """
 
 from __future__ import annotations
@@ -26,6 +32,7 @@ _DEFAULT_IGNORED_DIRS: frozenset[str] = frozenset(
         ".pytest_cache",
         ".mypy_cache",
         ".ruff_cache",
+        ".uv-cache",
         "__pycache__",
     }
 )

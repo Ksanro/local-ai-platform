@@ -40,6 +40,15 @@ class TestDefaultIgnoredDirs:
         """build should be in the default ignored set."""
         assert "build" in _DEFAULT_IGNORED_DIRS
 
+    def test_uv_cache_is_ignored(self) -> None:
+        """.uv-cache should be in the default ignored set.
+
+        Pointing ``UV_CACHE_DIR`` at the repository unpacks third-party source -
+        real ``.py`` and ``.pyi`` files - under the workspace, where a scanner that
+        did not skip it would index another project's code as this one's.
+        """
+        assert ".uv-cache" in _DEFAULT_IGNORED_DIRS
+
     def test_dist_is_ignored(self) -> None:
         """dist should be in the default ignored set."""
         assert "dist" in _DEFAULT_IGNORED_DIRS
@@ -67,6 +76,23 @@ class TestShouldIgnorePath:
         """Files should not be ignored by the hardcoded set."""
         path = Path("node_modules")
         assert should_ignore_path(path, False, []) is False
+
+    def test_uv_cache_dir_is_ignored_at_any_depth(self) -> None:
+        """.uv-cache is a directory and is skipped wherever it grows."""
+        assert should_ignore_path(Path(".uv-cache"), True, []) is True
+        assert should_ignore_path(Path("apps/.uv-cache"), True, []) is True
+
+    def test_uv_cache_prune_is_a_directory_decision(self) -> None:
+        """The cache is excluded by pruning the directory, not by naming its files.
+
+        A file called ``.uv-cache`` is not a cache and is not ignored, and a file
+        *inside* one is never asked about: the scanner stops at the directory, so
+        the ``.py`` and ``.pyi`` entries the cache holds are never reached.  This
+        pins which of the two is doing the work.
+        """
+        assert should_ignore_path(Path(".uv-cache"), False, []) is False
+        nested = Path(".uv-cache") / "archive-v0" / "ast_serialize" / "__init__.pyi"
+        assert should_ignore_path(nested, False, []) is False
 
 
 class TestGitignoreParsing:
