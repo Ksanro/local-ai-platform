@@ -8,7 +8,9 @@ feature stays off by default, `RankingConfig.WEIGHT_CHANGED_FILE` stays `+25`, a
 changing no outcome across 528 live requests over four dirty-file layouts. The context side is deterministic;
 one probe carries the answer: `explain_changed_files_history_cap` goes 3/12 to 8-11/12 on the one-file layout
 (arm replayed - same context, same `+2,694` tokens) and 3/12 to 0/12 on the eight-file one. Evidence:
-docs/roadmap.md, Phase B item 5. Before that, 2026-10-25 (roadmap item C1 now measures what a conversation's agent
+docs/roadmap.md, Phase B item 5.)
+
+Previous review: 2026-10-25 (roadmap item C1 now measures what a conversation's agent
 touches, on the live path: `RepositoryContextStage` reads the Cline tool-result
 envelopes already in the request, normalizes every target against the repository
 root, and records count-only activity in a bounded store of transcript-prefix

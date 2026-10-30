@@ -244,7 +244,8 @@ them.
    second. That first cell had to be replayed to be quoted at all: the
    `--compare-context` run below reused its session-log path and truncated it from 33
    records to 22, so the arm was re-measured on 2026-10-30 into new files, 33 requests
-   again and 561 in all. The replay reproduced the context side exactly - the same
+   again - 528 matrix requests, 22 confirmation requests, and 33 replay requests:
+   583 live gateway requests in total. The replay reproduced the context side exactly - the same
    `101,328` prompt tokens against the same `98,634`, the same `109,272` estimated
    context tokens, the same 186 symbols selected, the same `3/33` contexts differing
    and the same 18 built baselines - and moved on the answer side: `83/90` for the arm
