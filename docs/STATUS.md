@@ -3,14 +3,27 @@
 This file is the current runtime snapshot. It intentionally describes only
 what matters for the live gateway path and calls out dormant code explicitly.
 
-Last reviewed: 2026-10-30 (roadmap Phase B item 5 closed the change-aware ranking decision: no change - the
+Last reviewed: 2026-10-31 (roadmap Phase A item 3 closed: history capping now estimates message tokens with the
+resolved model's `chars_per_token` (`qwen38-27b`: `3.5`) instead of the global `4.0`, byte-for-byte unchanged for a
+model that overrides nothing - after finding that `cap_history` had accepted an `estimate` callable it never called,
+so the estimator the engine passed every request changed nothing. Measured on vLLM `qwen3.8-flash-next` from two
+detached worktrees: `multiturn_history_cap_budget` `3/3` and style-clean on both arms with nothing dropped on either,
+and one controlled Cline A/B where the same transcript at `APP_HISTORY_CAP_TOKENS=3000` goes from forwarded whole at
+`4.0` to four of seven messages at `3.5` (dropped 0 to 3, -738 prompt tokens) on all three repeats, no candidate-only
+error or timeout. A3 also corrected the derived history-cap budget, which had been reading
+`getattr(resolved_model, "context_window", 8192)` - a default no real `ResolvedModel` ever satisfied,
+because that type keeps its window on `definition` - so it now budgets against the routed model's
+actual `definition.context_window`; that branch is verified offline, the live arms having forced
+`APP_HISTORY_CAP_TOKENS=3000`. Evidence: docs/live-gateway-runbook.md, "Calibrated History-Cap Estimation (roadmap A3)".)
+
+Previous review: 2026-10-30 (roadmap Phase B item 5 closed the change-aware ranking decision: no change - the
 feature stays off by default, `RankingConfig.WEIGHT_CHANGED_FILE` stays `+25`, and the `+5` candidate is inert,
 changing no outcome across 528 live requests over four dirty-file layouts. The context side is deterministic;
 one probe carries the answer: `explain_changed_files_history_cap` goes 3/12 to 8-11/12 on the one-file layout
 (arm replayed - same context, same `+2,694` tokens) and 3/12 to 0/12 on the eight-file one. Evidence:
 docs/roadmap.md, Phase B item 5.)
 
-Previous review: 2026-10-25 (roadmap item C1 now measures what a conversation's agent
+Review before that: 2026-10-25 (roadmap item C1 now measures what a conversation's agent
 touches, on the live path: `RepositoryContextStage` reads the Cline tool-result
 envelopes already in the request, normalizes every target against the repository
 root, and records count-only activity in a bounded store of transcript-prefix
@@ -675,15 +688,26 @@ The inherited `3.5` ratio was revalidated on 2026-10-10 after the gateway alias
 was moved to `qwen3.8-flash-next`: all 8 measured context costs stayed below
 their estimates (measured/estimated ratio `0.82x-0.96x`) with 0 budget
 overages. The same context-on/context-off run scored `20/20` versus `3/20`.
-History capping is not affected and still uses the platform default
-`CHARS_PER_TOKEN = 4.0` estimate. True tokenizer integration remains out of
-scope (deferred).
+That run left history capping on the platform default `CHARS_PER_TOKEN = 4.0`
+estimate; roadmap A3 moved the cap onto the same resolved ratio on 2026-10-31,
+measured in `docs/live-gateway-runbook.md`. True tokenizer integration remains out
+of scope (deferred).
 
 ### History Capping
 
 When `APP_HISTORY_CAP_ENABLED=true`, `PipelineEngine` caps non-system
 conversation history to `APP_HISTORY_CAP_TOKENS`, or derives a budget from
-the resolved model when the explicit value is `0`.
+the resolved model when the explicit value is `0`. Since roadmap A3 it estimates
+what that text is worth with the resolved model's `chars_per_token` rather than
+the global `4.0` - the same calibration repository context has used since
+2026-09-09 - so `qwen38-27b`'s `3.5` decides which messages fit the budget and
+how `history.tokens_after` is measured, while a model that overrides nothing is
+capped exactly as before. The derived budget reads that model's real window,
+`ResolvedModel.definition.context_window`, less the generation, repository-context
+and safety reserves; `8192` stands only when neither the definition nor the resolved
+object names a usable window, where before it stood for every request because the
+read looked for `context_window` on the resolved object, which that type does not
+have.
 
 Measured result with Cline/vLLM:
 
@@ -1063,5 +1087,9 @@ environment uses whatever Python uv discovers, against `requires-python = ">=3.1
   characters-per-token ratio (`ModelDefinition.chars_per_token`, default
   `4.0`; qwen38-27b `3.5`), live-validated 2026-09-09: measured context-cost
   overages went 5/8 at 4.0 -> 0/8 at 3.5 with no quality or style regression.
-  History capping still uses the platform default estimate. True tokenizer
-  integration is out of scope/deferred.
+  History capping joined it on 2026-10-31 (roadmap A3), measured on the vLLM
+  `qwen3.8-flash-next` deployment: one scripted Cline transcript under
+  `APP_HISTORY_CAP_TOKENS=3000` is forwarded whole at `4.0` and cut from seven
+  messages to four at `3.5`, identically across three repeats, with no quality
+  or style regression and no new error - `docs/live-gateway-runbook.md`. True
+  tokenizer integration is out of scope/deferred.

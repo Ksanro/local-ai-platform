@@ -7,14 +7,16 @@ Orchestrates registered stages in order, executing each stage's
 from __future__ import annotations
 
 import logging
+import math
 import time
 from typing import Any
 
+from packages.context.budget import CHARS_PER_TOKEN
 from packages.context.content import content_to_text
 from packages.pipeline.base import PipelineStage
 from packages.pipeline.context import PipelineContext
 from packages.pipeline.exceptions import PipelineExecutionError
-from packages.pipeline.history import cap_history
+from packages.pipeline.history import RATIO_MAX, RATIO_MIN, cap_history
 from packages.pipeline.normalized import NormalizedRequest
 from packages.pipeline.request import PipelineRequest
 from packages.pipeline.response import PipelineResponse
@@ -226,6 +228,36 @@ class PipelineEngine:
         return response
 
 
+def _resolve_history_chars_per_token(resolved_model: Any) -> float:
+    """Read the calibrated estimation ratio off a resolved model.
+
+    ``ModelResolutionStage`` stores the router's ``ResolvedModel``, which carries
+    its configuration one level down on ``definition`` - the same shape the
+    repository-context stage reads for its own budget.  It is read here
+    independently rather than borrowed from that stage, because history capping
+    and context assembly are two consumers of one number, not one consumer
+    reaching into another's internals.
+
+    A missing model, a missing definition, or a ratio the provider registry
+    would not have accepted all fall back to the platform default, which is what
+    every model that overrides nothing is already calibrated to.
+
+    Args:
+        resolved_model: The ``ResolvedModel`` this request routed to, or ``None``
+            when no resolution stage ran.
+
+    Returns:
+        The characters-per-token ratio to estimate message text with.
+    """
+    definition = getattr(resolved_model, "definition", None)
+    value = getattr(definition, "chars_per_token", CHARS_PER_TOKEN)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return CHARS_PER_TOKEN
+    if not math.isfinite(value) or not RATIO_MIN <= value <= RATIO_MAX:
+        return CHARS_PER_TOKEN
+    return float(value)
+
+
 def _apply_history_cap(
     context: PipelineContext,
     resolved_model: Any,
@@ -241,14 +273,29 @@ def _apply_history_cap(
     with ``max_tokens_override``; that argument is the generation max_tokens
     reserve used only while deriving the history cap from the context window.
 
+    The budget is a token count and the text in front of it is measured in
+    characters, so the conversion needs a ratio. Roadmap A3 takes that ratio
+    from the resolved model's ``chars_per_token`` rather than the global
+    ``CHARS_PER_TOKEN``: a model calibrated to 3.5 is capped at 3.5 characters
+    per token, and a model that overrides nothing is capped exactly as it was
+    before. The ratio changes what a message is worth, never what the budget
+    is - an explicit ``APP_HISTORY_CAP_TOKENS`` still wins for the budget.
+
+    When the budget is not explicit it is derived from the resolved model's own
+    context window, read from ``resolved_model.definition.context_window`` -
+    where a real ``ResolvedModel`` keeps it - falling back to a
+    ``context_window`` attribute on the resolved model itself, and to 8192 when
+    neither supplies a usable window.
+
     Args:
         context: The pipeline context.
-        resolved_model: The resolved model (with context_window).
+        resolved_model: The resolved model - in production the router's
+            ``ResolvedModel``, whose ``definition`` carries both the
+            context_window the derived budget is built from and, since roadmap
+            A3, the calibrated chars-per-token ratio.
         max_tokens_override: Max tokens for generation, not the forced
             history-cap budget.
     """
-    from packages.context.budget import CHARS_PER_TOKEN
-
     nr = context.normalized_request
     if nr is None:
         return
@@ -258,19 +305,35 @@ def _apply_history_cap(
     if history_cap_tokens_override := context.get_metadata("history_cap_tokens", 0):
         max_history_tokens = history_cap_tokens_override
     elif resolved_model is not None:
-        # Derive from context_window minus reserve for generation and repo context.
-        ctx_window = getattr(resolved_model, "context_window", 8192)
-        if ctx_window is None:
-            # Handle ResolvedModel definition attribute.
-            defn = getattr(resolved_model, "definition", None)
-            if defn is not None:
-                ctx_window = getattr(defn, "context_window", 8192)
-        if ctx_window is None:
-            ctx_window = 8192
+        # Derive from the model's context window minus the reserve for
+        # generation and repo context.  A real ``ResolvedModel`` carries its
+        # configuration one level down on ``definition`` - the shape
+        # ``ModelResolutionStage`` stores and logs, and the shape the calibrated
+        # ratio below is read from - so ``definition`` is asked first.  A window
+        # sitting on the resolved object itself is still honoured: that is the
+        # older shape this derivation was written against, and stand-ins for it
+        # exist.  A window that is neither of those, or is not a positive number,
+        # leaves the 8192 default this path used before.
+        definition = getattr(resolved_model, "definition", None)
+        window_candidates = (
+            getattr(definition, "context_window", None),
+            getattr(resolved_model, "context_window", None),
+        )
+        ctx_window = next(
+            (
+                value
+                for value in window_candidates
+                if not isinstance(value, bool)
+                and isinstance(value, (int, float))
+                and math.isfinite(value)
+                and value > 0
+            ),
+            8192,
+        )
         gen_max = max_tokens_override or 2048
         repo_context_reserve = 1024  # estimate for repo-context system message
         safety_margin = 512
-        max_history_tokens = ctx_window - gen_max - repo_context_reserve - safety_margin
+        max_history_tokens = int(ctx_window) - gen_max - repo_context_reserve - safety_margin
         if max_history_tokens <= 0:
             return
     else:
@@ -279,17 +342,22 @@ def _apply_history_cap(
     context.set_metadata("history_cap_applied", True)
     context.set_metadata("history_cap_budget", max_history_tokens)
 
-    # Apply capping.
+    # Apply capping.  The ratio resolved here is the divisor for every estimate
+    # this pass makes - the ones inside cap_history that decide what survives the
+    # budget, and the size recorded afterwards - so the dropped count and the
+    # tokens-after number describe the same reading of the same payload.
+    chars_per_token = _resolve_history_chars_per_token(resolved_model)
     messages = nr.messages
     capped_messages, dropped_count = cap_history(
         messages,
         max_history_tokens,
-        estimate=lambda text: int(len(text) / CHARS_PER_TOKEN) if text else 0,
         max_current_tool_result_tokens=max_history_tokens,
+        chars_per_token=chars_per_token,
     )
 
     total_after = sum(
-        int(len(content_to_text(m.get("content", ""))) / CHARS_PER_TOKEN) for m in capped_messages
+        int(len(content_to_text(m.get("content", ""))) / chars_per_token)
+        for m in capped_messages
     )
     context.set_metadata("history_dropped_count", dropped_count)
     context.set_metadata("history_tokens_after", total_after)

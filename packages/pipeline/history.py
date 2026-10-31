@@ -20,58 +20,83 @@ Public API
 .. code-block:: python
 
     from packages.pipeline.history import cap_history
-    from packages.context.budget import CHARS_PER_TOKEN
 
     capped, dropped = cap_history(
         messages,
         max_history_tokens=16384,
-        estimate=lambda text: int(len(text) / CHARS_PER_TOKEN),
+        chars_per_token=3.5,  # the resolved model's calibration
     )
+
+``chars_per_token`` is optional; left out, or given anything unusable, the
+estimate is the platform's ``CHARS_PER_TOKEN`` (4.0) it has always been.
 """
 
 from __future__ import annotations
 
+import math
 from typing import Any, Callable
 
 from packages.context.budget import CHARS_PER_TOKEN
 from packages.context.content import content_to_text
 from packages.pipeline.user_messages import CLINE_TOOL_RESULT_PREFIXES
 
+#: Bounds a characters-per-token ratio may be used at.  This is the range
+#: ``packages/providers/registry_models.py`` validates ``chars_per_token``
+#: against, restated here because this module is where the ratio is used as a
+#: divisor: a value that arrives by another path is checked before it divides.
+#: Kept as constants rather than a helper function so this file's index symbols -
+#: what the changed-file ranking sees when ``packages/pipeline/history`` is the
+#: dirty module - stay the set every measurement of them recorded.
+RATIO_MIN: float = 0.5
+RATIO_MAX: float = 20.0
 
-def _estimate_tokens(content: str) -> int:
-    """Estimate token count from text using CHARS_PER_TOKEN.
+
+def _estimate_tokens(content: str, chars_per_token: float = CHARS_PER_TOKEN) -> int:
+    """Estimate token count from text at a calibrated characters-per-token ratio.
 
     Args:
         content: The text to estimate tokens for.
+        chars_per_token: The ratio to divide by.  Callers pass one already
+            checked against ``RATIO_MIN``/``RATIO_MAX``, so it is never zero,
+            negative or NaN; the default keeps this the platform estimate it was
+            before roadmap A3.
 
     Returns:
         Estimated token count.
     """
-    return int(len(content) / CHARS_PER_TOKEN) if content else 0
+    return int(len(content) / chars_per_token) if content else 0
 
 
-def _message_token_count(message: dict[str, Any]) -> int:
+def _message_token_count(
+    message: dict[str, Any],
+    chars_per_token: float = CHARS_PER_TOKEN,
+    estimate: Callable[[str], int] | None = None,
+) -> int:
     """Estimate the token count of a single message.
 
     Counts the ``content``, ``name``, and ``reasoning_content`` fields.
     For assistant messages with ``tool_calls``, also counts the tool call
-    JSON representation.
+    name and arguments.
 
     Args:
         message: A single message dict.
+        chars_per_token: The calibrated ratio to divide by when the caller did
+            not supply its own estimator.
+        estimate: A caller's text-to-token estimator, applied to every text
+            field counted.  Before roadmap A3 this parameter existed on
+            ``cap_history`` and was never passed down here at all, so the
+            counting always went through the global constant.
 
     Returns:
         Estimated token count.
     """
-    text = content_to_text(message.get("content", ""))
-    tokens = _estimate_tokens(text)
+    texts: list[str] = [content_to_text(message.get("content", ""))]
 
     if message.get("name"):
-        tokens += _estimate_tokens(message["name"])
+        texts.append(message["name"])
 
     if message.get("reasoning_content"):
-        reasoning = content_to_text(message["reasoning_content"])
-        tokens += _estimate_tokens(reasoning)
+        texts.append(content_to_text(message["reasoning_content"]))
 
     # Count tool_calls content for assistant messages.
     tool_calls = message.get("tool_calls")
@@ -80,12 +105,12 @@ def _message_token_count(message: dict[str, Any]) -> int:
             if isinstance(tc, dict):
                 fn = tc.get("function", {})
                 if isinstance(fn, dict):
-                    name = fn.get("name", "")
-                    args = fn.get("arguments", "")
-                    tokens += _estimate_tokens(name)
-                    tokens += _estimate_tokens(args)
+                    texts.append(fn.get("name", ""))
+                    texts.append(fn.get("arguments", ""))
 
-    return tokens
+    if estimate is not None:
+        return sum(estimate(text) for text in texts)
+    return sum(_estimate_tokens(text, chars_per_token) for text in texts)
 
 
 def _looks_like_cline_tool_result_message(message: dict[str, Any]) -> bool:
@@ -110,12 +135,22 @@ def _looks_like_cline_tool_result_message(message: dict[str, Any]) -> bool:
 def _truncate_message_content(
     message: dict[str, Any],
     max_tokens: int,
+    chars_per_token: float = CHARS_PER_TOKEN,
 ) -> dict[str, Any]:
-    """Return a shallow copy with text content truncated."""
+    """Return a shallow copy with text content truncated.
+
+    Args:
+        message: The message to truncate.
+        max_tokens: The token budget the truncated text has to fit in.
+        chars_per_token: The ratio that converts that budget back into
+            characters - the same calibration the counting of this pass used, so
+            a message kept under the budget is not truncated past it and a
+            message truncated to the budget is not kept past it either.
+    """
     if max_tokens <= 0:
         return message
 
-    max_chars = int(max_tokens * CHARS_PER_TOKEN)
+    max_chars = int(max_tokens * chars_per_token)
     content = message.get("content", "")
     text = content_to_text(content)
     if len(text) <= max_chars:
@@ -131,6 +166,7 @@ def _truncate_message_content(
 def _cap_current_tool_result(
     messages: list[dict[str, Any]],
     max_current_tool_result_tokens: int | None,
+    chars_per_token: float = CHARS_PER_TOKEN,
 ) -> list[dict[str, Any]]:
     """Cap the current Cline tool-result message without dropping it.
 
@@ -140,6 +176,12 @@ def _cap_current_tool_result(
     reminder bodies.  A ``write_to_file`` or ``replace_in_file`` result is not
     truncated here: it carries the file's whole new content, and shortening it
     would be a change to what the model is shown.
+
+    Args:
+        messages: The message list to cap the current envelope in.
+        max_current_tool_result_tokens: The token budget that envelope has to
+            fit in, or ``None`` to leave every message as it arrived.
+        chars_per_token: The ratio converting that budget to characters.
     """
     if max_current_tool_result_tokens is None or max_current_tool_result_tokens <= 0:
         return messages
@@ -160,6 +202,7 @@ def _cap_current_tool_result(
     capped_message = _truncate_message_content(
         message,
         max_tokens=max_current_tool_result_tokens,
+        chars_per_token=chars_per_token,
     )
     if capped_message is message:
         return messages
@@ -260,6 +303,7 @@ def cap_history(
     max_history_tokens: int,
     estimate: Callable[[str], int] | None = None,
     max_current_tool_result_tokens: int | None = None,
+    chars_per_token: float | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
     """Return (capped_messages, dropped_count).
 
@@ -290,19 +334,41 @@ def cap_history(
         messages: Full message list including system messages.
         max_history_tokens: Token budget for non-system messages (excluding
             the last user message).
-        estimate: A callable that estimates token count from text.  If not
-            provided, uses ``int(len(text) / CHARS_PER_TOKEN)``.
+        estimate: A callable that estimates token count from text.  Applied to
+            every text field that is counted.  If not provided, uses
+            ``int(len(text) / chars_per_token)``.
         max_current_tool_result_tokens: Optional cap for the final user
             message when it is a Cline-style tool-result envelope.
+        chars_per_token: Calibrated characters-per-token ratio used wherever
+            this pass converts between characters and tokens - the default
+            estimator and the current-envelope truncation.  ``None`` keeps the
+            platform default.  An unusable value falls back to it rather than
+            reaching the math; an explicit ``estimate`` still wins for the
+            counting it drives.
 
     Returns:
         A tuple of (capped_messages, dropped_count).
     """
+    # A ratio is used here as both a divisor and a multiplier, so an unusable
+    # value is not merely inaccurate: zero raises, a negative one inverts the
+    # size ordering this exists to measure, and NaN compares false against every
+    # budget and so caps nothing at all.  Anything outside the range the provider
+    # registry validates ``chars_per_token`` against falls back to the platform
+    # estimate instead of reaching the math.
+    ratio: float = CHARS_PER_TOKEN
+    if (
+        not isinstance(chars_per_token, bool)
+        and isinstance(chars_per_token, (int, float))
+        and math.isfinite(chars_per_token)
+        and RATIO_MIN <= chars_per_token <= RATIO_MAX
+    ):
+        ratio = float(chars_per_token)
+
     if not messages:
         return messages, 0
 
     # Count tokens for each message.
-    token_counts: list[int] = [_message_token_count(m) for m in messages]
+    token_counts: list[int] = [_message_token_count(m, ratio, estimate) for m in messages]
 
     # Separate system messages (never counted, never dropped).
     system_indices = [i for i, m in enumerate(messages) if m.get("role") == "system"]
@@ -326,7 +392,9 @@ def cap_history(
     # If everything fits, return unchanged.
     if total_non_last_user_tokens <= max_history_tokens:
         return (
-            _cap_current_tool_result(messages, max_current_tool_result_tokens),
+            _cap_current_tool_result(
+                messages, max_current_tool_result_tokens, ratio
+            ),
             0,
         )
 
@@ -352,7 +420,9 @@ def cap_history(
     # If no candidate groups, nothing to cap.
     if not candidate_groups:
         return (
-            _cap_current_tool_result(messages, max_current_tool_result_tokens),
+            _cap_current_tool_result(
+                messages, max_current_tool_result_tokens, ratio
+            ),
             0,
         )
 
@@ -383,7 +453,7 @@ def cap_history(
 
     dropped_count = len(messages) - len(result)
 
-    result = _cap_current_tool_result(result, max_current_tool_result_tokens)
+    result = _cap_current_tool_result(result, max_current_tool_result_tokens, ratio)
     return result, dropped_count
 
 

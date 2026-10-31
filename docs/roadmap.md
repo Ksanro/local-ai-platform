@@ -44,9 +44,11 @@ live-gateway priorities were unchanged since the 2026-09-09 pass).
 - explicit per-request context intent override
 - configurable custom context intent rules
 - live quality harness with context-on/context-off comparison
-- per-model chars-per-token calibration for repository-context accounting
-  (default 4.0; qwen38-27b 3.5, live-validated 2026-09-09: 5/8 -> 0/8 measured
-  context-cost overages, no quality/style regression)
+- per-model chars-per-token calibration for context accounting
+  (`ModelDefinition.chars_per_token`, default `4.0`; qwen38-27b `3.5`), live-
+  validated 2026-09-09 for repository-context budgeting: 5/8 -> 0/8 measured
+  context-cost overages, no quality/style regression; roadmap A3 extended the
+  same resolved ratio to history capping, measured 2026-10-31
 
 ## Immediate Goals
 
@@ -87,11 +89,54 @@ them.
    `quality_harness_compare-20261024T173757728411-2a4297e1`, commands and per-probe
    numbers in `docs/live-gateway-runbook.md`. The older 8-probe `20/20` results stand as
    historical measurements of their own set and were not rewritten.
-3. **A3 - calibrated history-cap estimation.** After the ranking decision below,
-   make history capping use the resolved model's `chars_per_token`, preserving
-   the default behavior for models that do not override it. Re-measure
-   `multiturn_history_cap_budget` and one controlled Cline A/B because this
-   changes what is forwarded to the provider.
+3. **A3 - calibrated history-cap estimation - DONE (2026-10-31).** History
+   capping now estimates message tokens with the resolved model's
+   `chars_per_token` - read off `ResolvedModel.definition`, the shape
+   `ModelResolutionStage` stores - instead of the global `CHARS_PER_TOKEN` of
+   `4.0`, and a model that overrides nothing caps byte-for-byte as it did, since
+   `ModelDefinition.chars_per_token` still defaults to `4.0`. Getting there
+   needed a fix first: `cap_history` has accepted an `estimate` callable since
+   it was written, and the engine handed it one on every request, but nothing
+   ever called it - counting went through the module-level `_estimate_tokens`
+   and the constant, so a calibrated estimator passed through that argument
+   would have changed no bytes on the wire. The callable now reaches every text
+   field that is counted (`content`, `name`, `reasoning_content`, and each tool
+   call's name and arguments), and the same ratio converts the current-envelope
+   budget back into characters, so the truncation marker lands at the
+   calibration the keeping decision used. Budgets are untouched:
+   `APP_HISTORY_CAP_TOKENS` still wins, and the derived budget still subtracts
+   the generation, repository and safety reserves. A3 also corrected where that
+   derived budget reads the window: it takes
+   `ResolvedModel.definition.context_window` now - the production shape, where no
+   top-level `context_window` attribute exists - instead of the
+   `getattr(resolved_model, "context_window", 8192)` that answered `8192` for
+   every model, which is why a request with `max_tokens` at or above that
+   default capped nothing. The live arms forced `APP_HISTORY_CAP_TOKENS=3000` and
+   so never entered that branch; the correction is verified offline, and a test
+   shows that no window value changes what the explicit branch forwards. Measured against
+   `qwen3.8-flash-next` on vLLM through `qwen38-27b` (`chars_per_token=3.5`),
+   two detached worktrees of `c161999` - candidate scratch commit `f0a77df4` -
+   launcher-rendered configuration, `APP_HISTORY_CAP_TOKENS=3000`, 18 requests
+   in 6 min 48 s. The named probe `multiturn_history_cap_budget` holds at `3/3`
+   with style clean on both arms and the cap dropping nothing on either, so the
+   probe does not discriminate the calibration; the controlled Cline A/B does -
+   one transcript and one budget forwarded whole at `4.0` (dropped 0,
+   `history_tokens_after` 6,971) and reduced to four of seven messages at `3.5`
+   (dropped 3, 6,550), identically on all three repeats, 738 fewer prompt
+   tokens, no candidate-only error, timeout or budget violation, all four facts
+   answered with style clean on every scored turn. The seed turn is the parity
+   control: identical forwarded bytes recorded as `2,846` against `3,253`,
+   which is `4.0` against `3.5` over the same characters. No latency claim; the
+   candidate answered longer and three paired samples price nothing. Offline:
+   live-path gate 2,345 passed and full suite on the documented 43-failure
+   baseline with the same composition at measurement, and both re-run clean on
+   the corrected derived-budget tree afterwards - 2,357 and 4,959 passed against
+   the same 43 - with `tests/pipeline/test_history.py` grown from three
+   tautological and formula-copy tests to 79 behavioral ones, four of which fail
+   against the window read that correction replaced.
+   Configuration, commands, tables and artifact paths:
+   `docs/live-gateway-runbook.md`, *Calibrated History-Cap Estimation (roadmap
+   A3)*.
 
 #### Phase B: Settle Change-Aware Ranking
 
@@ -326,8 +371,9 @@ them.
 - a general autonomous engineering loop
 - wholesale activation of the dormant platform stack
 
-A1, A2, all of Phase B, and C1 are complete. The remaining execution order is
-**A3**, with documentation updated continuously.
+A1, A2, all of Phase B, C1 and A3 are complete, which closes Phase A. The
+remaining execution order is the dormant-code and documentation sequence below,
+with documentation updated continuously.
 
 ### 1. Dormant-Code Inventory And Activation — first candidates DONE
 
@@ -473,8 +519,10 @@ repository-context budget estimation, validated live on qwen38-27b/SGLang at
 `3.5` on 2026-09-09: measured context-cost overages went 5/8 at 4.0 -> 0/8 at
 3.5, with no quality/style regression (run files
 `logs\quality_compare_qwen38_token_estimate_20260909.json` and
-`logs\quality_compare_qwen38_chars_per_token_3_5_20260909.json`). History
-capping still uses the platform default estimate.
+`logs\quality_compare_qwen38_chars_per_token_3_5_20260909.json`). Roadmap A3 put
+history capping on the same resolved ratio, so an override now reaches the cap as
+well as the context budget; a model that overrides nothing is still estimated at
+`4.0` in both.
 
 `ModelDefinition.tokenizer` exists as metadata only; the true tokenizer
 registry stays deferred unless future measurements justify it.

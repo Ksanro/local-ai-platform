@@ -99,8 +99,9 @@ Inspect:
 - `routing_mode` - `models_config`, `fallback`, or `none`
 - `models[].base_url` and `models[].backend_model` - where each alias routes
 - `models[].chars_per_token` - the calibrated chars-per-token ratio used for
-  repository-context budgeting (platform default 4.0; in fallback mode the
-  platform default is reported)
+  context-token estimation - the repository-context budget and, since roadmap
+  A3, history capping (platform default 4.0; in fallback mode the platform
+  default is reported)
 - `repository_context_intent_budget_map` - per-intent context budgets
 - `quality_baseline.available` and `quality_baseline.latest_score` - persisted
   quality-harness history (empty until a run is stored)
@@ -1771,6 +1772,247 @@ Still offline-only after this pass: `state=partial`, `state=unavailable` and
 `correlation=tracker_miss`, eviction once a 257th conversation arrives, and the failure paths
 that mark a record unavailable - all constructs a single healthy restart cannot produce.
 
+
+## Calibrated History-Cap Estimation (roadmap A3)
+
+What this run is for, and what the change is. History capping decides what reaches the provider by
+reading conversation text and asking what it is worth, and until A3 that question was answered by one
+global constant - `packages/context/budget.py:CHARS_PER_TOKEN = 4.0` - whatever model the request
+routed to, while the same request's repository-context budget had been answering it per model since
+2026-09-09. A3 makes the cap use the resolved model's `chars_per_token`
+(`packages/providers/models.py:ModelDefinition.chars_per_token`, default `4.0`, `qwen38-27b`
+configured `3.5`). Nothing else about the cap's *sizing* moved: `APP_HISTORY_CAP_TOKENS` still says how many
+tokens to keep and still wins over the derived budget, and the derivation still subtracts the
+generation reserve, the repository reserve and the safety margin - though which window it subtracts
+them from is a separate matter, and it is recorded below. A change that resized the budget
+would be a different change with different consequences; this one only changes what the characters in
+front of the cap are worth.
+
+One fix had to come first. `cap_history` has accepted an `estimate` callable since it was written,
+and `_apply_history_cap` had been handing it one on every request - and nothing ever called it.
+Message counting went through the module-level `_estimate_tokens` and the global constant, so the
+argument was a knob that turned nothing, and this repository's own tests had been passing a real
+estimator to a parameter the production code ignored. Calibrating the cap by passing a calibrated
+lambda through that same argument would therefore have changed no bytes on the wire. The callable is
+now applied to every text field that is counted - `content`, `name`, `reasoning_content`, and each
+tool call's name and arguments - and the same ratio converts the current-envelope token budget back
+into characters, so the truncation marker lands at the calibration the keeping decision used.
+
+The change stayed inside three files, and one of them for a reason worth keeping.
+`packages/pipeline/history.py` gained no new module-level or nested definition, because its index
+symbol set is what
+`tests/observability/test_quality_harness.py::test_changed_file_ab_benefit_case_gains_the_file_the_question_asks_about`
+pins for the changed-file pair that dirties that file: a first cut that added a
+`normalize_chars_per_token` helper failed exactly that test, by displacing `_estimate_tokens` from
+the four definitions a `+25` bonus buys at a 4096-token budget. So the range guard is inline in
+`cap_history`, with `RATIO_MIN`/`RATIO_MAX` as constants, and `packages/pipeline/engine.py` holds
+`_resolve_history_chars_per_token`, which reads the ratio off `ResolvedModel.definition` - the shape
+`ModelResolutionStage` stores - and falls back to `4.0` for a missing model, a missing definition, or
+a value outside the range the provider registry validates.
+
+What A3 also corrected on the way past. The derived budget used to begin with
+`getattr(resolved_model, "context_window", 8192)`, and a real `ResolvedModel` carries its window one
+level down on `definition`, so that read returned `8192` for every routed request rather than this
+alias's `262144`; a request with `max_tokens` at 8192 or more therefore derived a non-positive budget
+and capped nothing at all. A3's acceptance requirement is that budgeting use the resolved model's
+actual context window, so the derivation now reads `resolved_model.definition.context_window` first,
+falls back to a `context_window` attribute on the resolved object itself for the older shape that read
+was written against, and uses `8192` only when neither path supplies a positive finite number. The
+three reserves it subtracts, and the `APP_HISTORY_CAP_TOKENS` precedence, are unchanged.
+This is a behaviour change wherever the budget is derived: at the default 2048-token generation
+reserve the old read budgeted `8192 - 3584 = 4608` history tokens, and the corrected read budgets
+`262144 - 3584 = 258560` for this alias, so with `APP_HISTORY_CAP_TOKENS` at `0` the history cap
+effectively stops trimming routed requests. Every live session record surveyed on 2026-10-31 ran the
+explicit `3000` budget, so the running gateway is unaffected; set `APP_HISTORY_CAP_TOKENS` explicitly
+whenever capping is meant to bite.
+
+The live arms below all ran `APP_HISTORY_CAP_TOKENS=3000`, which selects the explicit branch before any
+window is consulted, so this correction is verified offline and no measurement here had to be repeated:
+`tests/pipeline/test_history.py` derives budgets from a real `ModelDefinition`/`ResolvedModel` pair
+(four of its cases fail against the old read), and one focused case forwards the same calibrated
+transcript under three different windows - `262144`, `8192`, and one too small to derive a budget -
+and requires byte-identical results, which is what licenses reading the explicit-budget A/B below as
+current.
+
+Identity of what was contacted, checked before any measurement was sent. Backend
+`http://100.106.236.88:18300/v1/models` served one model, `qwen3.8-flash-next` (`owned_by: vllm`,
+`max_model_len: 400000`, root
+`/hf/hub/models--nvidia--Qwen3.8-Flash-Next-NVFP4/snapshots/fc694b54fb0174e0913e6adf86691ef85a4ead47-fp8hybrid`),
+the same deployment the 2026-10-24 A1 baseline measured. Both arms' `/debug/runtime-context` reported
+`routing_mode=models_config`, `default_model=qwen38-27b`, `default_provider=openai`,
+`models[0].backend_model=qwen3.8-flash-next`, `context_window=262144`, `chars_per_token=3.5`,
+`repository_context_max_tokens=4096` with `EXPLAIN=4096`, `context_delta_injection=true`,
+`history_cap_enabled=true` and `history_cap_tokens=3000`, each arm on its own port and its own session
+log. Those are the values `scripts/ab_launcher.py` rendered and validated from
+`build/ab_a3/experiment_base.json` and `build/ab_a3/experiment_cand.json`; neither worktree holds a
+`.env`, so nothing else was in reach. The two files' shared blocks differ in exactly one key,
+`APP_REPOSITORY_PATH`, because a code A/B has each gateway index the tree it runs from.
+
+```powershell
+# 1. two detached worktrees of one commit, only one of them carrying A3
+git worktree add --detach ..\lap-ab-a3base-c161999 c161999
+git worktree add --detach ..\lap-ab-a3cand-c161999 c161999
+git -C ..\lap-ab-a3base-c161999 rev-parse --abbrev-ref HEAD   # HEAD, not a branch, for both
+Test-Path ..\lap-ab-a3cand-c161999\.env                       # False, for both
+# candidate: the reviewed A3 source and tests as one clearly named scratch commit - engine.py,
+# history.py and tests/pipeline/test_history.py, nothing else, --no-verify because the pre-commit
+# hook runs the live-path gate and that gate was run here once, on its own, in the main checkout
+git -C ..\lap-ab-a3cand-c161999 commit -q --no-verify -m 'scratch(A3): calibrated history-cap estimation (temporary; not for merge)'
+git -C ..\lap-ab-a3cand-c161999 rev-parse HEAD   # f0a77df4203882695347eda27a487d392d4251f7
+git -C ..\lap-ab-a3cand-c161999 status --short   # empty: the scratch commit is the whole delta
+git -C ..\lap-ab-a3cand-c161999 diff c161999 HEAD > build\a3\20261030\a3_scratch.patch
+
+# 2. one launcher file per tree; the started arm of each is the 'off' arm, so changed-file ranking
+#    is off on both sides and the ports and logs are the only differences the arms were given
+.\uv.exe run python scripts\ab_launcher.py template --name a3_base --worktree ..\lap-ab-a3base-c161999 --out build\ab_a3\experiment_base.json
+.\uv.exe run python scripts\ab_launcher.py template --name a3_cand --worktree ..\lap-ab-a3cand-c161999 --out build\ab_a3\experiment_cand.json
+.\uv.exe run python scripts\ab_launcher.py validate --config build\ab_a3\experiment_base.json
+.\uv.exe run python scripts\ab_launcher.py validate --config build\ab_a3\experiment_cand.json
+.\uv.exe run python scripts\ab_launcher.py show --config build\ab_a3\experiment_base.json --arm off
+.\uv.exe run python scripts\ab_launcher.py show --config build\ab_a3\experiment_cand.json --arm off
+
+# 3. what each tree resolves for the live alias, using that tree's own code
+powershell -NoProfile -ExecutionPolicy Bypass -File build\a3\20261030\check_arms.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File build\a3\20261030\run_boundary_check.ps1
+
+# 4. both gateways, started detached exactly as rendered, then measured one arm at a time
+powershell -NoProfile -ExecutionPolicy Bypass -File build\a3\20261030\start_arms.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File build\a3\20261030\run_phases.ps1   # 18 requests, then teardown
+```
+
+Step 4's runner is a throwaway under the Git-ignored `build\a3\20261030\`. It parses `show --arm off`
+rather than restating it, so no flag entered a live arm by hand; it waits for `/health` on 8011 and
+8012, runs the focused probe and then the scripted transcript against one arm and then the other, so
+the shared backend served one workload at a time, and it ends by stopping every gateway it started -
+matching command lines containing both `uvicorn` and `apps.gateway.main:create_app`, and printing
+`no gateway process left`, `port 8011 free`, `port 8012 free`. Nothing on port 30000 was contacted.
+Neither arm installed anything: both run the main checkout's interpreter and installed packages
+through `UV_PROJECT_ENVIRONMENT` plus `uv run --no-sync`, which is the documented A1 workaround and
+keeps the two arms' dependencies identical (CPython 3.13.14, the version every baseline here used).
+Each gateway's own startup line records the tree it indexed - baseline
+`files=511 modules=511 symbols=8836 relationships=19072`, candidate
+`files=511 modules=511 symbols=8867 relationships=19178`; the 31 extra symbols are A3's own new test
+functions plus `_resolve_history_chars_per_token`, and they are the confound the results section
+below separates rather than hides.
+
+The two measurement workloads, and the transcript they share. Item A is the roadmap's named probe,
+`multiturn_history_cap_budget`, three repeats per arm at the settings the 2026-10-24 baseline
+documents - alias `qwen38-27b`, `--max-tokens 8192`, client timeout 345 s against the arms'
+`REQUEST_TIMEOUT=300`, repository context on with the documented intent budgets, history cap on at
+3000 tokens. Item B is a scripted Cline session, three repeats per arm of two requests each: a seed
+question, then the same session replayed with Cline tool-result envelopes in the user role, which is
+what a Cline client sends every turn. Its shape is the one the C1 procedure documents, and its sizes
+were chosen before it was run, not after: a 63-character system turn, a 90-character user turn, a
+58-character assistant reply, three 3,600-character `[read_file|search_files|list_files for ...]
+Result:` envelopes, and a 214-character final question. That is 10,948 cappable characters, which
+4.0 characters per token reads as 2,736 tokens and 3.5 reads as 3,125 - one side of the 3,000-token
+budget and the other side of it, from the same bytes.
+
+### Item A: focused probe, `multiturn_history_cap_budget`
+
+| arm | commit | estimate | facts (3 repeats) | style | errors / timeouts | prompt tokens | completion | seconds | cap applied | budget | dropped | `history_tokens_after` | context est. | symbols |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| baseline | `c161999` | fixed `4.0` | `3/3`, `3/3`, `3/3` | ok ×3 | 0 / 0 | 3683, 3683, 3683 | 210 ×3 | 10.8, 9.6, 9.6 | yes | 3000 | **0, 0, 0** | 4453 ×3 | 4046 | 7 |
+| candidate | `f0a77df4` | resolved `3.5` | `3/3`, `3/3`, `3/3` | ok ×3 | 0 / 0 | 3451, 3451, 3451 | 217 ×3 | 11.1, 8.0, 7.8 | yes | 3000 | **0, 0, 0** | 4743 ×3 | 3750 | 6 |
+
+Six requests. Every repeat inside both arms is byte-stable on the deterministic side (prompt tokens,
+estimated context, dropped count and tokens-after, to the unit), and all three expected facts -
+`_apply_history_cap`, `packages/pipeline/engine.py`, `APP_HISTORY_CAP_TOKENS` - arrive in both arms.
+The cap dropped nothing on this probe in either arm: its canned two-turn history is about 550
+characters, worth 137 tokens at 4.0 and 157 at 3.5, nowhere near the 3,000-token budget. Item A
+therefore shows that A3 costs this probe nothing; it does not show the calibration doing anything, and
+this item is not claimed as live-discriminated by the probe. The `4453` against `4743` in the two
+arms' `history_tokens_after` is the same field read through the two ratios, and the 232-token prompt
+gap is the two trees' retrieved context (4046 against 3750 estimated, 7 symbols against 6) - not the
+cap, which fired identically and dropped nothing on both sides.
+
+### Item B: controlled Cline A/B
+
+Twelve requests, six per arm: three repeats of a seed turn, three of the accumulating turn that
+carries the envelopes.
+
+| turn | arm | prompt tokens | dropped | `history_tokens_after` | applied / budget | context est. | primary symbol | seconds | completion | facts / style |
+|---|---|---|---|---|---|---|---|---|---|---|
+| seed | baseline | 2469 ×3 | 0, 0, 0 | 2846 ×3 | yes / 3000 | 2394 | `apps/gateway/api/models.list_models` | 24.0, 24.1, 22.2 | ~1024 (ceiling) | 4/4, style ok |
+| seed | candidate | 2469 ×3 | 0, 0, 0 | 3253 ×3 | yes / 3000 | 2394 | `apps/gateway/api/models.list_models` | 30.9, 36.4, 36.8 | ~1024 (ceiling) | 4/4, style ok |
+| accumulating | baseline | 4905 ×3 | **0, 0, 0** | 6971 ×3 | yes / 3000 | 4046 | `packages/pipeline/engine._apply_history_cap` | 19.5, 20.6, 15.8 | 507, 517, 472 | 4/4, style ok |
+| accumulating | candidate | 4167 ×3 | **3, 3, 3** | 6550 ×3 | yes / 3000 | 3750 | `packages/pipeline/engine._apply_history_cap` | 25.4, 24.4, 27.0 | 696, 696, 742 | 4/4, style ok |
+
+The forwarding difference is exactly the boundary, and it is stable: three repeats of the same turn
+produce the same dropped count in both arms, and the candidate forwarded four of the seven messages
+where the baseline forwarded all seven - the 3,600-character `read_file` envelope and the
+90-character user turn and 58-character assistant reply ahead of it, which is what a newest-first walk
+drops when the same 10,948 characters cross from 2,736 estimated tokens to 3,125. Nothing else moved:
+the budget field says 3000 in both arms, `cap_applied` is true in both, no record errored, no record
+timed out, no request approached the 262,144-token window, and both arms answered all four facts with
+the harness's own style rule clean on all six scored turns.
+
+The seed turn is the parity control. Both arms were sent the same two messages and both forwarded them
+whole - identical `prompt_tokens` (2469), identical repository context (2394 estimated, the same
+primary symbol) - while the size the cap recorded differs by precisely the ratio: `2846 x 4.0 =
+11,384` characters against `3253 x 3.5 = 11,385`, the same forwarded bytes read through two
+calibrations. That is A3's claim about the metadata on its own, with no boundary in the way.
+
+Latency is not claimed in either direction. The candidate's accumulating turn forwarded 738 fewer
+prompt tokens and took 24.4-27.0 s against the baseline's 15.8-20.6 s, but it also answered at length
+- 696-742 completion tokens against 472-517, in a reasoning model whose visible answer is preceded by
+hidden ones - and three paired samples of a model that is not sampling-deterministic does not price a
+saving. What the run establishes is the forwarding difference, which is deterministic, and that it
+costs nothing observable in quality.
+
+### The same boundary without a gateway, a backend, or an index
+
+Because the two arms indexed trees that differ by A3's own files, the boundary was measured again with
+everything that is not the cap taken out: the identical transcript bytes, one 3,000-token budget, a
+model definition carrying `chars_per_token=3.5`, and whichever cap code the tree running the check
+holds. No HTTP, no index, no provider.
+
+| tree | resolver present | ratio used | forwarded | dropped | budget | tokens after |
+|---|---|---|---|---|---|---|
+| `c161999` | no (`tree_has_calibrated_resolver: false`) | 4.0 | 7 of 7 | 0 | 3000 | 2804 |
+| `f0a77df4` | yes | 3.5 | 4 of 7 | 3 | 3000 | 2135 |
+
+Same dropped count, same three messages, same direction as the live pair - and here there is no index
+in either arm to attribute anything to. `build\a3\20261030\boundary_base.json` and `boundary_cand.json`
+carry the forwarded roles and per-message character counts for both sides.
+
+### Verification, artifacts, and what this run does not settle
+
+`tests/pipeline/test_history.py` is 67 tests; the live-path gate
+(`scripts/precommit_test_gate.sh`) reported `2345 passed` and no failure, and the
+full baseline gate (`scripts/precommit_test_gate.sh --full`) reported
+`43 failed, 4947 passed, 3 skipped` with `full suite OK (43 failures, baseline 43)` -
+the same count and the same composition `CLAUDE.md` documents (26 `autonomous`, 12
+`observability`, 4 `integration/test_engineering_flow`, 1
+`modification/test_engine.py`), with nothing new in `tests/pipeline` or
+`tests/gateway`. Both ran from the working tree these measurements came from.
+That state still holds after the derived-budget correction recorded above, and no live request was
+re-sent for it: on the corrected tree `tests/pipeline/test_history.py` is 79 tests, the live-path gate
+reported `2357 passed` with no failure, and the full gate reported `43 failed, 4959 passed, 3 skipped`
+with `full suite OK (43 failures, baseline 43)` - the same 43 failures in the same composition, twelve
+more passing tests, nothing new failing. Re-running the A/B would have measured the same explicit
+branch it already measured, because every arm forced `APP_HISTORY_CAP_TOKENS=3000`, and the case that
+forwards one calibrated transcript under three different windows is what shows the correction cannot
+reach that branch.
+Artifacts, all under the Git-ignored `build\a3\20261030\`:
+`base_probe.json` and `cand_probe.json` (harness repeat envelopes), `cline_base.json` and
+`cline_cand.json` (full transcript answers), `sessions_base.jsonl` and `sessions_cand.jsonl` (the two
+arms' session records), `measured.json` with `compare.out` (the tables above), `calibration_base.log`
+and `calibration_cand.log` (what each tree resolves, from that tree's own code), `phases.log` (the
+timeline - 18 requests in 6 min 48 s), `a3_scratch.patch` (the candidate commit's content, kept so the
+evidence outlives the worktree), `gate_live2.log` and `gate_full.log`, and, from the derived-budget
+correction, `gate_live_fix.log`, `gate_full_fix.log` and the confirming re-run `gate_live_fix2.log`.
+The experiment files are
+`build\ab_a3\experiment_base.json` and `experiment_cand.json`. Neither result was persisted to
+engineering memory.
+
+What it does not settle: the calibration is measured on one alias, at one budget, with one transcript,
+against one model on one backend, and the transcript is scripted - the envelopes are real in shape and
+invented in content, in the sense the C1 section gives that phrase. No number here prices `3.5` in
+latency; the `2736` against `3125` split says what it is worth in tokens, which is the claim the change
+makes. And the derived-budget path - what would run if `APP_HISTORY_CAP_TOKENS` were `0` - is measured
+by none of these arms: every arm forced 3000, and the window read that path depends on is corrected and
+verified offline, as recorded above.
 
 ## Full Quality Baseline
 
