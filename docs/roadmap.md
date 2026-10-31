@@ -462,10 +462,12 @@ Next improvements:
 
 History capping works, but repository context often dominates total prompt
 tokens. `SEARCH`, `TEST`, `DEBUG`, and now `EXPLAIN` have measured
-`APP_REPOSITORY_CONTEXT_INTENT_BUDGETS` overrides (see `docs/STATUS.md`).
+`APP_REPOSITORY_CONTEXT_INTENT_BUDGETS` overrides (see "Intent budget measurements" under
+"Intent Context Budgets" in `docs/live-gateway-runbook.md`).
 `REFACTOR` was measured and reverted to the shared 4096 default after live
 replication showed a real regression, not noise, at both 2048 and 3072 - see
-`docs/STATUS.md` for the measured numbers. Ran planning-first via the
+`docs/live-gateway-runbook.md`, "Intent budget measurements", for the measured
+numbers. Ran planning-first via the
 `context_budget_ranking` task in `scripts/local_agent_coding.py` (Cline
 planned, Claude extension implemented, this pass measured live and iterated):
 
@@ -483,7 +485,8 @@ Done in this pass:
   `EXPLAIN:4096` - 3 EXPLAIN probes x 3 in-process repeats and a post-restart
   re-run reproduced identical prompt_tokens / estimated_tokens / primary
   symbols; remaining run-to-run variance is model-side sampling, so no code
-  change is needed (numbers in `docs/STATUS.md`)
+  change is needed (numbers in `docs/live-gateway-runbook.md`, "Context-selection
+  determinism, 2026-08-22")
 
 Next:
 
@@ -530,8 +533,8 @@ registry stays deferred unless future measurements justify it.
 Investigated 2026-08-10: an apparent 2.17x-3.43x EXPLAIN-intent divergence
 turned out to be a stale-budget comparison artifact (the source data predated
 an EXPLAIN budget retune by two days) rather than a real tokenizer-accuracy
-problem - see `docs/STATUS.md`'s RepositoryContextStage section for the full
-account. No fix implemented; the gate above remains unmet.
+problem - see "Token-estimate investigation, 2026-08-10" in
+`docs/live-gateway-runbook.md` for the full account. No fix implemented; the gate above remains unmet.
 
 ### Engineering Memory
 

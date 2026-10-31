@@ -3,18 +3,16 @@
 This file is the current runtime snapshot. It intentionally describes only
 what matters for the live gateway path and calls out dormant code explicitly.
 
-Last reviewed: 2026-10-31 (roadmap Phase A item 3 closed: history capping now estimates message tokens with the
-resolved model's `chars_per_token` (`qwen38-27b`: `3.5`) instead of the global `4.0`, byte-for-byte unchanged for a
-model that overrides nothing - after finding that `cap_history` had accepted an `estimate` callable it never called,
-so the estimator the engine passed every request changed nothing. Measured on vLLM `qwen3.8-flash-next` from two
-detached worktrees: `multiturn_history_cap_budget` `3/3` and style-clean on both arms with nothing dropped on either,
-and one controlled Cline A/B where the same transcript at `APP_HISTORY_CAP_TOKENS=3000` goes from forwarded whole at
-`4.0` to four of seven messages at `3.5` (dropped 0 to 3, -738 prompt tokens) on all three repeats, no candidate-only
-error or timeout. A3 also corrected the derived history-cap budget, which had been reading
-`getattr(resolved_model, "context_window", 8192)` - a default no real `ResolvedModel` ever satisfied,
-because that type keeps its window on `definition` - so it now budgets against the routed model's
-actual `definition.context_window`; that branch is verified offline, the live arms having forced
-`APP_HISTORY_CAP_TOKENS=3000`. Evidence: docs/live-gateway-runbook.md, "Calibrated History-Cap Estimation (roadmap A3)".)
+Last reviewed: 2026-10-31 (two things, one pass. Roadmap Phase A item 3 is closed: history capping now
+estimates message tokens with the resolved model's `chars_per_token` (`qwen38-27b`: `3.5`) instead of the
+global `4.0`, after finding that `cap_history` had accepted an `estimate` callable it never called, and it
+now budgets against the routed model's `definition.context_window` - a branch verified offline, because
+every live arm forced `APP_HISTORY_CAP_TOKENS=3000`. Measured on vLLM `qwen3.8-flash-next`:
+`multiturn_history_cap_budget` `3/3` and style-clean on both arms, and one controlled Cline A/B where the
+same transcript at the 3000-token cap forwards four of seven messages instead of seven, dropping 0 to 3.
+Second, this snapshot was compacted: the RepositoryContextStage changed-file, B1-B4, C1 and pre-A3
+measurement narrative moved verbatim to docs/live-gateway-runbook.md, leaving a current summary and links.
+Evidence: docs/live-gateway-runbook.md, "Calibrated History-Cap Estimation (roadmap A3)".)
 
 Previous review: 2026-10-30 (roadmap Phase B item 5 closed the change-aware ranking decision: no change - the
 feature stays off by default, `RankingConfig.WEIGHT_CHANGED_FILE` stays `+25`, and the `+5` candidate is inert,
@@ -177,521 +175,50 @@ explicit request override, custom rules, then built-in defaults.
 
 ### RepositoryContextStage
 
-Uses the startup repository index to select ranked symbols and modules, then
-injects repository context into the provider-bound messages. Delta injection
-suppresses symbols already sent in the conversation.
+Selects ranked symbols and modules from the startup repository index and injects the composed context into the
+provider-bound messages. `APP_REPOSITORY_CONTEXT_ENABLED=false` turns the stage off; `APP_REPOSITORY_CONTEXT_MAX_TOKENS`
+(default `4096`) is the budget ranking, relationship expansion and final trimming enforce - the builder keeps the
+primary symbol first, drops lower-ranked support, then trims oversized primary source - and
+`APP_REPOSITORY_CONTEXT_INTENT_BUDGETS`, optional and empty by default, overrides it per planner intent, explicit
+request metadata still winning. Delta injection (`APP_CONTEXT_DELTA_INJECTION=true`,
+`APP_CONTEXT_DELTA_CACHE_SIZE=256`) suppresses symbols already sent; logs record `context.estimated_tokens` and
+`context.max_tokens` so context size is measurable apart from provider prompt tokens. Test files are indexed
+(`APP_REPOSITORY_EXCLUDE_TESTS=false`) for TEST-mode retrieval of the real validation files, penalized for ordinary
+non-test queries, and credited by a test-target signal and descriptive filename tokens for test-seeking queries.
 
-Change-aware ranking is opt-in and off by default. With
-`APP_REPOSITORY_CONTEXT_CHANGED_FILES_ENABLED=true`, startup takes one
-read-only Git change snapshot through `packages.repository.git_changes`
-(no new Git commands, nothing persisted) and reduces it to a bounded set of
-index module keys - at most 200, rename and copy sources counted alongside
-their targets, deletions never. Ranking then adds one flat `+25` bonus
-(`RankingConfig.WEIGHT_CHANGED_FILE`) to candidates from those modules, and
-only to candidates that already carry a query-match or relationship reason.
-Clearing `MINIMUM_CANDIDATE_SCORE` is not enough on its own, because every
-public symbol earns the public-name and symbol-type bonuses whether or not the
-query mentioned it. Edited files therefore break relevance ties in their favour
-without pulling unrelated symbols in; the token budget still decides how many
-symbols fit, so the signal reorders the same candidate pool instead of enlarging
-it.
+Change-aware ranking is opt-in: `APP_REPOSITORY_CONTEXT_CHANGED_FILES_ENABLED=false`. Enabled, startup takes one
+read-only Git snapshot through `packages.repository.git_changes` - no new Git command, nothing persisted - reduced to
+at most `MAX_CHANGED_PATHS` (200) index module keys, and ranking adds one flat `RankingConfig.WEIGHT_CHANGED_FILE`
+(`+25`) only to candidates already carrying a query-match or relationship reason: clearing `MINIMUM_CANDIDATE_SCORE`
+alone is not enough, since public symbols earn name and type bonuses regardless of the query, so the bonus reorders
+the same pool instead of enlarging it. The B1/B2 bound keeps a promotion from costing the best un-promoted symbol of
+a query-matched module one of the `RankingConfig.PROMOTION_ANCHOR_SLOTS` (2) positions that reach the prompt with
+source text; no guard runs when the bonus touched nothing. `APP_REPOSITORY_CONTEXT_CHANGED_FILES_TTL_SECONDS`
+(default `0`) refreshes it off the request path through `packages.repository.changed_files_refresh`; a clean tree, no
+Git metadata or a failed snapshot falls back.
 
-The reorder has a bound since 2026-10-25 (roadmap Phase B1). A promoted symbol may
-not push the best candidate that earned its place without the bonus out of the
-ranked positions that reach the prompt with source text - the primary body and the
-one shared supporting preview `ContextBuilder` spends - because a symbol past
-those positions keeps its signature and docstring but loses the source body or
-preview its implementation facts are read from. `RankingEngine.rank` restores such
-a symbol to the last of those positions
-(`RankingConfig.PROMOTION_ANCHOR_SLOTS`) when its module matched the query, it
-held one of them on a clean tree, and the bonus is what moved it out - the scan
-runs over every candidate the promotion passed over, not only the first, because
-the first may still hold a slot while a later one has lost its only one. The dirty
-file may still win the primary, which is what the signal is for. Nothing else
-about the bonus changed: same gate, same `+25`, same reasons, same counters, and
-no guard pass at all when the bonus touched nothing - a disabled feature and a
-clean tree rank exactly as they did before.
+Counterfactual comparison is a separate opt-in, `APP_REPOSITORY_CONTEXT_CHANGED_FILES_COMPARISON_ENABLED=false`: it
+switches on neither the bonus nor the snapshot and changes nothing sent; without it an ordinary enabled request
+records `changed_baseline_status=not_sampled` and its three difference fields stay inert. Seven path-free telemetry
+fields - state tokens `changed_files_signal`, `changed_baseline_status`; counts `changed_files_count`,
+`changed_symbols_selected`; booleans `changed_context_differs`, `changed_symbols_promoted`,
+`changed_primary_promoted` - ride the log line, the stage result and the session record's `context` block, describe
+the context as finally sent, and never carry paths, module names, symbol names, file contents or Git output.
 
-The counterfactual that makes promotion measurable is opt-in since 2026-10-25
-(roadmap B4). `RepositoryContextStage` builds the no-bonus context only when
-`APP_REPOSITORY_CONTEXT_CHANGED_FILES_COMPARISON_ENABLED=true`, which the gateway
-passes through at startup and which is off by default: an ordinary enabled request
-now composes, serializes and sends its change-aware context once, where it used to
-compose it twice - B3 priced that second build at roughly 450 ms of a live
-request's wall time. What a request can state without a counterfactual is
-unchanged and still exact: `changed_files_signal`, `changed_files_count`,
-`changed_symbols_selected` and the rest of the direct counts. What needs one -
-`changed_context_differs`, `changed_primary_promoted`, `changed_symbols_promoted` -
-keeps its field, name and type and is inert, and
-`changed_baseline_status="not_sampled"` is what says so, so such a record cannot be
-read as a comparison that found no difference. The setting changes nothing about
-what is sent, and on its own it switches on neither the ranking bonus nor the Git
-snapshot: with the feature off the status stays `none`. `scripts/ab_launcher.py`
-declares it `true` in the shared block of every experiment it renders and refuses a
-changed-file A/B that declines it, and the offline probes in
-`scripts/quality_harness.py` build with it on, so a controlled comparison still
-measures what B3 measured.
+The decision stands: changed-file ranking stays off by default, `+25` is the shipped weight, the `+5` candidate
+measured inert on four dirty-file layouts, and no evidence authorizes default-on. Roadmap C1 observation on this same
+path is unconditional - not a ranking input, not a feature flag: `context.file_activity` carries seventeen path-free
+keys, fifteen counters plus `state` (`none`: nothing the transcript held that the gateway recognizes as a supported
+activity envelope; `unavailable`: the measurement could not run; `partial`: a bound excluded events, so the totals
+are floors) and `correlation`, whose `tracker_miss` means incomplete supplied-context lineage, sticks for the rest of
+the conversation, and makes its zero not a measurement. Limits: latency unmeasured against a feature-off arm, live
+validation on a scripted rather than native Cline transcript, unrecognized spellings not counted.
 
-How large that bonus should be is measured, and still open. Two terms have to be
-kept apart, because `EXACT_SYMBOL_NAME` fires when *any* segment of a qualified
-name equals a query token - the module-path segments included. A **name match**
-can therefore come from a file path alone; being **named in the query** means the
-prompt contains the symbol's own name. Measured over this repository's real index
-(508 modules, 8571 symbols on this checkout, dirty modules injected rather than
-read from Git, so the working tree is irrelevant) by `scripts/quality_harness.py
---changed-file-probe`, which runs `RepositoryContextStage` on both arms at the
-configured 4096-token budget and reads its own counters back:
-
-- a query that names `ContextBuilder` holds its primary at `+5` and `+10` and
-  loses it from `+15` to `ContextBudget` in a dirty `packages/context/budget.py`,
-  which sits 15 points behind and sorts first on the tie-break - so the ceiling
-  for that case is the gap itself, not the gap plus one;
-- what that swap costs is nothing, and that is worth recording because it is the
-  claim this feature first tried to make live. The bonus puts the dirty file's two
-  symbols in front of the builder file's three rather than in place of them, so
-  `ContextBuilder`, `_enforce_budget` and `packages/context/builder.py` are all in
-  the text of both arms and a changed-arm answer can be exactly as correct as the
-  baseline one. A moved primary is not a measured effect;
-- a dirty file the query never mentions changes nothing at any weight, and says so
-  with `changed_baseline_status=skipped_no_bonus`;
-- `--changed-file-sweep` reports, for 12 fixed queries, the smallest bonus that
-  would hand the primary to a symbol in another file. Six of the twelve are
-  decided by a tie and flip at `+1`; the other six flip at 10, 15, 21, 30, 30 and
-  70. The size of the bonus therefore buys nothing in the tie case, which is the
-  case the feature exists for, and only decides how far behind a name-matched
-  competitor the working tree can reach.
-- the size is also not what changes most contexts. With
-  `packages/repository/index/models.py` dirty, the query "how does model
-  resolution pick a backend" sends 12 symbols the no-bonus context did not at both
-  `+5` and `+10` (13 at `+25`) while the primary stays put: the token `model` is a
-  segment of that module path and `MODULE_MATCH` counts as query relevance, so the
-  gate admits the whole file. Shrinking the bonus does not undo that.
-- one query did lose something, and what it lost was a file - the case the bound
-  above exists for. "How does the
-  repository index builder construct the index, including its collaborators for
-  files and models?" with `packages/repository/index/models.py` dirty sent 10 symbols
-  instead of 14: the dirty module's symbols took the front of the order, the
-  budget ran out inside `packages/repository/index/models.py`, and
-  `packages/repository/index/builder.py` left the context outright.
-  `PythonAstExtractor`, `RelationshipRegistry`, and `CallExtractor` were available
-  in the arm with the bonus off and unavailable in the arm with it on -
-  `facts_lost` said all three, none could be copied from the question, and no symbol
-  of that file survived to be
-  counted as still-visible. It happened at `+1` exactly as at `+25`
-  (`changed_symbols_promoted=0`, `changed_primary_promoted=1`), so the lever was
-  the gate and the rendered prefix rather than the number. Measured again on
-  2026-10-25 with the guard in place, the same run still sends 10 symbols, still
-  moves the primary into the dirty file, and loses nothing: the builder file's own
-  best symbol is restored to the supporting slot and the three facts stay available
-  on both arms. Keeping *a* symbol of that file was not enough on its own - the
-  form of this rule that only kept one in the list measured `1/3` - and at 6144
-  tokens, where both files' symbols fit either way, the two arms now agree on all
-  three facts as well.
-- one query gains instead, and it is the case the opt-in is offered for. "How does the
-  gateway cap conversation history before sending it to the model?" with
-  `packages/pipeline/history` dirty sends 7 symbols instead of 20, four of them new
-  (`cap_history`, `_build_cap_groups`, `_cap_current_tool_result`, `_estimate_tokens`),
-  and the facts its text can support go `1/4` to `4/4` with `facts_lost` empty: the
-  disabled arm sees the cap's call sites and can say history is capped, and cannot say
-  how. Registered as `gains_the_changed_file`, it reports `MOVE` - the primary moves
-  into the changed file, which is what the case is for - and its scored half,
-  `explain_changed_files_history_cap`, is the pair the 2026-10-13 live run used.
-
-`+5` came out of this pass as a candidate, not as shipped behavior - a candidate Phase B item
-5 measured live on 2026-10-30 across four dirty-file layouts and closed as inert. The value in
-`RankingConfig.WEIGHT_CHANGED_FILE` is unchanged at `+25`; the live replicated
-comparison ran on 2026-10-12 against the vLLM backend and separated the arms the way
-the offline case predicts - `9/9` expected facts with the flag off over three
-repeats, `0/9` with it on, one identical prompt and one
-`APP_REPOSITORY_CONTEXT_MAX_TOKENS=4096`, the enabled arm sending 8 symbols where
-the disabled arm sent 11 and losing `packages/repository/index/builder.py`
-altogether (`prompt_tokens` 3589 against 3342). Two limits on that number are part
-of it: the flag is global, so the enabled arm applied the bonus across the 18
-locally modified indexed modules of this tree rather than the experiment's single
-marker, and two of its three answers ran to the 8192-token completion ceiling
-instead of ending short. The other half of the decision was measured on 2026-10-13 on
-`explain_changed_files_history_cap`, with both gateways started inside one detached
-worktree of this commit so that the marker in `packages/pipeline/history.py` was the
-only dirty indexed module either arm could see: feature off `3/12` (1/4 on every
-repeat), feature on `8/12` (3/4, 3/4, 2/4), with `max_current_tool_result_tokens` named
-in 3/3 of the enabled answers and `_looks_like_cline_tool_result_message` in 2/3, and
-neither named in any disabled answer. Within each arm the context was identical across
-repeats - 20 symbols and `estimated_tokens` 2807 disabled against 7 symbols and 4087
-enabled - and every request sent to either gateway, in every pass, carried the same
-77-character prompt text with the same SHA-256 prefix and no answer near the completion
-ceiling. The enabled records read `changed_files_count=1`, `changed_context_differs=true`,
-`changed_primary_promoted=true`, `changed_symbols_promoted=4`,
-`changed_baseline_status=built` while the disabled records read `off`, `false` and
-zeros. Two details belong to that measurement: three of the nine enabled requests sent
-before that pass were lost to the gateway's own 60-second provider timeout, which
-the isolated launcher had not raised to the harness `--timeout 300`, and the enabled arm
-pays 402-507 ms per request for the counterfactual baseline that produces those
-counters. The fourth fact, the `truncated by gateway history cap` marker, was quoted by
-neither arm, which is the answer side saying it wants a string verbatim - `4/4` offline
-is about the text sent, not about what a model repeats.
-
-All three pairs were measured again live on 2026-10-25, with the guard in the build
-(roadmap B3), from one detached worktree of `57bd045` that held no `.env` and whose only
-difference from a clean checkout was the pair's own comment-only marker - so
-`changed_files_count` read 1 on every enabled record, rather than the 18 locally modified
-indexed modules that confounded the 2026-10-12 pass. Every gate passed: eviction `9/9` off
-against `9/9` on, gain `3/12` off against `8/12` on, negative control `9/9` in both arms, the
-observable context fingerprint identical across the three repeats inside all six arms while the
-answers were not, and no error, timeout, budget overrun or style problem in any of the eighteen
-requests. The fingerprint is what a session record can witness - `primary_symbol`,
-`symbols_selected`, `estimated_tokens`, `prompt_tokens` and the seven `changed_*` fields - and
-not the ordered supporting-symbol list, so the exact live order is not claimed here; ordered
-determinism belongs to the offline probe and to the ranking tests
-(`tests/context/test_ranking_v2.py::TestDeterministicOrdering::test_repeated_runs_produce_same_order`).
-Latency came out 9.7 s higher across the nine enabled requests than across the nine disabled
-ones, about 4.2 s of it the counterfactual build and the rest provider spread that ran the
-other way in the control pair, which is no unexplained or material regression in a sample this
-size rather than no difference. The eviction pair is the one that decides B3: the enabled arm's
-context still differs from its
-own no-bonus baseline on every record (`changed_context_differs=true`,
-`changed_primary_promoted=true`, `changed_symbols_promoted=1`, the primary moved into the
-dirty file, 9 symbols where the disabled arm sent 11) and it now loses none of the three
-`packages/repository/index/builder.py` facts, so the guard survives `ContextBuilder`'s own
-promotions, the serializer and a live request. Its price is measured too: 409-542 ms of
-every enabled request goes into the counterfactual build that produces those counters, which
-is B4's target rather than a B3 change, and a passing B3 does not authorize the default -
-the `+25` weight and the off-by-default flag are untouched. One caveat the run exposed
-without touching: the offline probe's symbol tallies run higher than the live arms' because
-`_stage_arm` builds a bare `PipelineContext` with no resolved model and so budgets at the
-platform's 4.0 chars per token instead of the alias's calibrated 3.5 - the same in both arms,
-so it moves no verdict. It is an offline-probe calibration gap of its own, and not the gap
-item A3 is about: A3 concerns history capping using the resolved model's `chars_per_token`,
-and this run neither advances it nor closes it. Per-repeat tables, launcher
-configuration, promotion counters and the recorded confounds are in
-`docs/live-gateway-runbook.md`,
-"Isolated-worktree promotion-guard A/B, 2026-10-25 (roadmap B3)".
-
-That comparison now has its instrument, and the two halves of it ask one question
-each. The eviction case is registered in the ordinary scored probe set as
-`explain_changed_files_repository_index`, and its three facts -
-`PythonAstExtractor`, `RelationshipRegistry`, and `CallExtractor` - are the three
-implementation collaborators the offline arm reports losing: none appears in the
-prompt to be copied from it, and none survives in the
-context the dirty file replaces the builder with. `CONTEXT_BUILDER_BUDGET_QUERY`,
-`REPOSITORY_INDEX_BUILD_QUERY` and `HISTORY_CAP_QUERY` are the prompts both halves of a
-pair send, and
-`CHANGED_FILE_AB_PAIRS` names the pairs, so an offline case and its live probe
-cannot drift into measuring two retrievals - the flaw in the first version of this
-comparison, which appended its own wording to the scored probe and then attributed
-a retrieval difference to the bonus.
-`explain_changed_files_contextbuilder` stays registered as the negative control of
-the same design: identical prompt on both sides, an arm-to-arm reorder that costs
-no context, and 3/3 expected on both sides. `explain_changed_files_history_cap` is that
-design on the gain side: `HISTORY_CAP_QUERY`, whose dirty `packages/pipeline/history`
-adds the cap's implementation to the context and takes nothing scored out of it, so the
-pair measures an addition rather than a trade.
-`tests/observability/test_quality_harness.py` runs the real
-`RepositoryContextStage` over this checkout's index for both arms of every pair and
-asserts the difference in what the two contexts can support, so the claim is a
-regression test and not a handcrafted pair of answers. The `--changed-file-probe`
-cases stay supporting diagnostics for retrieval, and their verdict rule keeps them
-honest: a case holds only when both arms sent its expected primary, which the gain case
-forced the rule to grow around - it reports `MOVE` when the primary arrives inside the
-changed file, and that counts as the case working. An arm that
-was already wrong before the bonus was switched on reports `BAD_BASELINE` rather
-than passing. Registered here, the probes join the fixed set, which is now 11 probes
-and 30 expected facts - the `20/20` baselines in these docs are the earlier
-denominator. The live runs happened on 2026-10-12 and 2026-10-13 and are recorded in
-`docs/live-gateway-runbook.md`; the weight remains comparable without editing code
-through
-`--changed-file-probe --changed-file-weight 5`.
-`APP_REPOSITORY_CONTEXT_CHANGED_FILES_TTL_SECONDS` (default `0`) optionally
-refreshes the snapshot once per window through
-`packages.repository.changed_files_refresh`, a background task started during
-lifespan startup that calls the signal on a worker thread, so refreshing never
-runs inside a request; with the default
-`0`, "currently being edited" means "dirty when the gateway started", exactly
-like the index itself. A clean tree, a directory without Git metadata, and a
-failed snapshot all fall back to today's behaviour.
-`APP_REPOSITORY_CONTEXT_CHANGED_FILES_COMPARISON_ENABLED` (default `false`,
-roadmap B4) is a third, separate opt-in: it lets the stage build the no-bonus
-context that `changed_context_differs`, `changed_primary_promoted` and
-`changed_symbols_promoted` are measured from, it changes nothing about the
-context that is sent, and on its own it switches on neither the ranking bonus nor
-the Git snapshot - startup states it as
-`changed_files_comparison enabled=true|false` either way. Paths are matched after
-`realpath`, so a repository configured through a symlink, junction, `subst`
-drive or 8.3 short name still works, and the count of paths that resolve
-outside the indexed root is reported. Logs and stage data carry counts only -
-never paths, module names or file contents. Seven count-only fields make the
-promotion itself observable, on the per-request log line, in the stage result,
-and in the session record's `context` block:
-
-- `changed_files_signal` - whether the working-tree source was usable: `off`
-  (none configured), `ok` (it answered, including with a clean tree), or
-  `unavailable` (it raised, or the stage failed before it could be read). A
-  request whose stage assembled nothing still states the state that was read,
-  so a degraded request never records as a disabled feature;
-- `changed_files_count` - how many locally modified files the signal mapped onto
-  indexed modules (`0` with `ok` means a clean tree);
-- `changed_symbols_selected` - how many of the symbols that were actually sent
-  carry the change-aware reason;
-- `changed_context_differs` - whether the context that was sent differs from the
-  same request composed without the bonus. This is the measurement: the whole
-  composed package is compared, so order counts, and a flat bonus - which is a
-  reordering signal - can no longer be mistaken for "nothing happened";
-- `changed_symbols_promoted` - how many of the sent symbols are absent from the
-  same request re-ranked without the bonus, including symbols outside the
-  changed modules that entered through relationship expansion once the primary
-  changed;
-- `changed_primary_promoted` - whether the bonus changed the primary symbol;
-- `changed_baseline_status` - whether that comparison ran: `none` (nothing to
-  compare), `built` (compared), `skipped_no_bonus` (no candidate received the
-  bonus, so the two contexts are identical by construction), `not_sampled` (the
-  bonus fired and the comparison was deliberately not asked for, which is what an
-  ordinary enabled request records since roadmap B4), or `failed` (the comparison
-  was asked for and could not be built - an unmeasurable request, not an inert
-  one). Only `built` and `skipped_no_bonus` make the three `*_promoted` /
-  `*_differs` fields readings; on `not_sampled` and `failed` they are placeholders
-  and the status is what says so.
-
-The counters describe the final context - after budget trimming and delta
-suppression - so a promoted candidate that did not survive the budget is not
-counted, while `changed_files_count` still reports the files that were seen.
-That split is what makes the claim falsifiable:
-`changed_files_signal="ok"`, `changed_files_count >= 1`,
-`changed_baseline_status="built"` and `changed_context_differs=true` proves the
-bonus changed what was sent; a record with `changed_primary_promoted=false` and
-`changed_symbols_promoted=0` inside that proof is the reorder-only case.
-`changed_symbols_selected` above zero with `changed_context_differs=false` and a
-status of `built` or `skipped_no_bonus` proves it was present and changed
-nothing. `not_sampled` and `failed` prove nothing at all: on the first the
-comparison was declined, on the second it was tried and could not be made, and
-neither is the finding that the bonus changed nothing.
-`changed_files_count` above zero
-with `changed_symbols_selected` zero means the tree was dirty and nothing
-qualified, which is a selection-gate result rather than a broken signal.
-Building the comparison context costs a second full context build: measured on
-this repository's real index (328 modules, 8 changed) about 50 ms becomes about
-105 ms per request on a dirty tree, and B3 measured roughly 450 ms of a live
-enabled request. Since roadmap B4 it is paid only when
-`APP_REPOSITORY_CONTEXT_CHANGED_FILES_COMPARISON_ENABLED=true` - off by default,
-so an ordinary request does not pay it at all - and then only when the ranking
-pass gave the bonus to at least one candidate: `changed_modules` reaches nothing
-else in the builder, which makes that second skip exact. The cost of a build that
-was made is reported as `changed_baseline_ms` on the log line only and never
-recorded; a request that skipped the comparison reports `0`.
-`scripts/analyze_sessions.py` aggregates the fields from session JSONL without
-reading any content, tallies `proved` (with a primary-changed,
-membership-changed and reorder-only breakdown) apart from `present but inert` and
-`unmeasured` - which is where a `not_sampled` record lands - keeps the unmeasured
-records out of the counterfactual counts and their rate, which divide by the
-records whose comparison was made or proved unnecessary, and separates records
-that predate them from every rate - see the
-runbook.
-
-Roadmap C1 adds a second, unrelated measurement to the same record:
-`context.file_activity`, seventeen keys of nothing but integers and two state tokens.
-`RepositoryContextStage` reads the Cline tool-result envelopes already present in the
-request's messages (`packages/pipeline/cline_activity.py`), normalizes every target
-against the repository root and refuses the ones that do not live inside it
-(`paths_rejected` counts refused envelopes and never paths), and reports which files
-this conversation's agent read and wrote and how many of them it had already been
-shown as context (`packages/pipeline/file_activity.py`, an LRU-bounded store of
-transcript-prefix states sized with `APP_CONTEXT_DELTA_CACHE_SIZE` - states, not
-conversations: one conversation adds an entry per request that answered one of its
-earlier prefixes, so a long one spends many). Those numbers are a **snapshot recomputed
-from the transcript of the request being answered**, not a tally: the same transcript and
-the same supplied-context state produce the same dict, which is the right model precisely
-because a Cline client re-sends its whole conversation every turn, so there is nothing to
-accumulate and nothing left to suppress on a replay. Attempts are kept apart from
-outcomes - `read_attempts`/`reads_failed`/`reads_unknown` and
-`modification_attempts`/`modifications_not_modified`/`modifications_unknown` partition
-unique files, a file's outcome being decided by precedence (confirmed, then
-failed/not-modified, then unknown) rather than by whichever envelope arrived first - and
-the one genuinely temporal quantity, `context_files_touched`, is credited **before** this
-request's supplied files are recorded, so a file an earlier turn touched is never
-re-attributed to context that arrived later. `state` says whether the transcript was read
-at all (`measured`, `none`, `partial`, `unavailable`) and `correlation` says whether the
-gateway was in a position to know what had been supplied (`measured`, `no_prior_context`,
-`tracker_miss`, `unavailable`), a miss being reported as a zero that is not a measurement
-and being **sticky**: the request that finds its remembered prefix missing marks that
-lineage discontinuous, so every later request in the conversation keeps reporting the miss
-instead of resuming `measured` over a partition it cannot reconstruct. `unavailable` is the
-inert shape and a zero is never a substitute for it. No file path crosses the stage boundary
-or reaches the record, and resolution of the paths in it is memoized only for the duration of
-one request.
-
-The mechanics - the accepted grammar and its bounds, the outcome precedence, the
-correlation ordering rules, every constant, and what each of the seventeen keys means -
-are in `docs/live-gateway-runbook.md`, section *Conversation File Activity (roadmap C1)*.
-That section also carries the evidence: **C1 received its first restarted-gateway live
-validation on 2026-10-26** - vLLM `qwen3.8-flash-next` behind the gateway alias
-`qwen38-27b`, four requests, one session record each. The shape moved from
-`state=none`/`correlation=no_prior_context` on a request carrying no envelope to
-`state=measured`/`correlation=measured` with `context_files_touched=1` on the request that
-reported reading a file request one had already been given, and an unchanged replay returned
-the identical dictionary. **Those four requests were scripted by the probe, not produced by a
-Cline client** - they validate the gateway's read of a transcript, not the grammar against the
-client. What the client does send is settled from this repository's own session records instead
-(same section): 515 records carry an anchored Cline envelope, among them 315 `read_file`, 108
-`search_files`, 49 `list_files`, 29 `execute_command`, 5 `replace_in_file` and 2 `write_to_file`.
-Every writer result begins `The content was successfully saved to ...` and classifies as a
-confirmed modification - seven for seven - reads split 284 confirmed against 31 failed on the
-anchored failure prefix, and every envelope arrived under `role="user"`. 72 of those 284 are
-Cline's `[DUPLICATE READ] You have already read ...` notice, which says the content was not sent
-again and which the anchored rule does not treat as a failure; that is recorded, not fixed,
-because changing it changes what `files_read` means. Six
-`[ask_followup_question for ...]` headers are real Cline traffic the gateway does not recognize,
-which is correct for a grammar it has not verified. No native Cline task was run through a
-restarted gateway for this pass, and nothing was added to the grammar on the strength of the
-records alone. What the run and the survey do not show is any quality, ranking or performance
-effect: C1 decides nothing about what is sent, and no feature-off arm ran beside it, so its
-latency cost is unmeasured and it remains unvalidated as an input to context quality.
-
-The one place C1 reached past observation has been pulled back. Its first version widened
-`CLINE_TOOL_RESULT_PREFIXES` - what the history cap truncates and what planning text selection
-ignores - by deriving it from the file-activity tool set, which made write and replace results
-into truncation targets and dropped them from query text. `packages/pipeline/user_messages.py`
-now holds one envelope registry and derives two views from it: recognition, which includes
-`write_to_file` and `replace_in_file`, and the planning/history compatibility set, which is
-byte-for-byte the pre-C1 tuple. A writer's result is counted and reaches the model whole.
-
-Three things that look like failures are not. A target that does not exist on disk is
-still measurable - containment resolves both sides with `realpath(strict=False)`, so the
-file a write is about to create measures like one already there, and only a root the
-filesystem refuses to name at all marks the measurement unavailable. A file dropped
-because a stored state already holds `MAX_UNIQUE_FILES_PER_STATE` distinct files
-is counted in `events_beyond_bound` and not in `paths_rejected`: the path was fine, the
-bound was not. And a Windows drive-absolute target (`C:\Users\dev\repo\x.py`) was the one
-spelling that used to be read as relative and joined onto the root, landing outside it;
-it is now recognized as absolute before any joining is attempted.
-
-For anaphoric multi-turn follow-ups such as "for that capping logic" or
-"given that split", retrieval includes the previous clean user task text so
-ranking sees the disambiguating prior turn instead of only the short follow-up.
-
-Test files are included in the repository index by default
-(`APP_REPOSITORY_EXCLUDE_TESTS=false`) so TEST-mode prompts can retrieve the
-actual validation files. Ranking still penalizes test files for ordinary
-non-test queries, but explicit test-seeking queries receive a test-target
-signal and additional credit for descriptive module filename tokens.
-
-`APP_REPOSITORY_CONTEXT_MAX_TOKENS` controls the token budget passed to
-repository-context ranking, relationship expansion, and final assembled
-context trimming. The builder preserves the primary symbol first, drops
-lower-ranked supporting symbols, and trims oversized primary source when
-needed. Session logs record both `context.estimated_tokens` and
-`context.max_tokens` so context size can be measured separately from full
-provider prompt tokens.
-
-`APP_REPOSITORY_CONTEXT_INTENT_BUDGETS` can override the default by planner
-intent, for example `SEARCH:2048,TEST:2048,DEBUG:2048,EXPLAIN:4096`. Explicit
-request metadata still wins over intent defaults. The current live tuning
-baseline uses `SEARCH:2048`; in a same-prompt Cline A/B it reduced median
-repository context from about `4013` to `2047` estimated tokens and median
-prompt tokens from about `17,106` to `16,146`. The TEST baseline uses `2048`;
-after enabling test indexing and clean Cline task extraction, a same-prompt
-Cline validation preserved answer quality while reducing direct repository
-context from about `2182` to `2020` estimated tokens and prompt tokens from
-about `15,397` to `15,158` on the assembled turn. The DEBUG baseline uses
-`2048`; after increasing the non-test-query penalty for test files, a
-same-prompt Cline validation preserved answer quality while reducing direct
-repository context from about `4095` to `2047` estimated tokens and median
-prompt tokens from about `17,580` to `15,880`. Latency remained noisy in the
-small samples.
-
-REFACTOR and EXPLAIN were measured on 2026-08-09 with
-`scripts/quality_harness.py --json --max-tokens 900` (the harness has no
-`--budget` flag; a budget A/B means two full `--json` runs at different
-`APP_REPOSITORY_CONTEXT_INTENT_BUDGETS` values, diffed by probe `id`).
-**REFACTOR** was tried at `2048` and `3072`, both reverted: 3 replicate runs at
-`3072` consistently missed the same required fact
-(`select_last_task_text`, replaced with a hallucinated but wrong
-`select_context_query_text`) that the `4096` default answers correctly every
-time - a real, repeatable regression, distinguished from noise by an
-unrelated control probe (budget untouched) that swung by 2 hits across the
-same runs. REFACTOR stays at the `4096` default. **EXPLAIN** moved to `2048`
-(from `8192`): 3 replicate runs averaged 3.67/9 combined hits across the three
-EXPLAIN probes versus a single-run baseline of 2/9 at `8192` - noisy (0 to 6
-across replicates) but net positive, driven by `explain_live_path` going from
-always-broken to passing in 2 of 3 runs; one other EXPLAIN probe
-(`multiturn_config_systems`) got consistently worse. `explain_live_path`
-prompt tokens dropped from `5136` to `1119-1975` across runs.
-
-`multiturn_history_cap_budget` now consistently scores 3/3. The near-zero
-regression was fixed by commit 6fe9283 ("Clarify history cap budget probe
-facts"), which added `APP_HISTORY_CAP_TOKENS` to `_apply_history_cap`'s
-docstring and reworded the probe prompt to ask for the environment variable
-instead of the Python argument name. Verified live: 8/8 replicate runs (qwen27,
---max-tokens 900) with zero misses.
-
-`multiturn_config_systems` had a repeatable 16/17 miss at the `2048` EXPLAIN
-budget: the context trim dropped `apps/gateway/core/config.Settings`, so
-`apps/gateway/core/config.py` never reached the answer. It was resolved on
-2026-08-22 with two fixes - retrieval/promotion support for history-cap/config
-symbols, and the EXPLAIN repository-context intent budget raised from `2048` to
-`4096`. The probe now scores 2/2 consistently; the gateway log records
-`modules_selected=9` and `estimated_tokens=3861` for the scored EXPLAIN turn.
-
-A Tokenizer Registry investigation (2026-08-10) was opened after
-`logs/quality_compare_qwen36_20260807*.json` (three saved `--compare-context`
-runs, filesystem-dated 2026-08-07 16:27-16:44) appeared to show EXPLAIN real
-token cost running 2.17x-3.43x the *current* 2048 nominal budget. That
-comparison was methodologically wrong: those files predate the EXPLAIN
-8192-to-2048 retune documented above (committed 2026-08-09 08:28, `0dcf2bf`),
-so EXPLAIN was still budgeted at 8192 when they were captured. The same real
-costs (4452-7030 tokens) divide to 0.54x-0.86x against 8192 - in line with
-every other intent's normal behavior, not a divergence. Two plan drafts
-(`logs/agent_handoffs/explain_token_estimate_correction_plan.md`, `_v2.md`)
-proposed `CHARS_PER_TOKEN` fixes based on the uncorrected comparison; both
-were rejected on review before implementation - v1's causal claim was
-contradicted by its own data (`implement_health_flag` promotes the same
-`apps/gateway/core/config.Settings` symbol without showing elevated
-divergence), and v2 additionally cited two `packages/context/builder.py`
-promotion functions that do not exist in the file. A fresh live
-`--compare-context` re-measurement on 2026-08-10 against the current 2048
-budget found EXPLAIN in the normal band (0.83x-1.00x, reproduced twice).
-At that point `CHARS_PER_TOKEN = 4.0` was unchanged; no tokenizer-accuracy
-problem was measured. The real, smaller question that remained open was the
-run-to-run
-variance already noted above (`explain_live_path` ranged 1119-1975 tokens
-across 3 replicates at the same 2048 budget on 2026-08-09) - a
-context-selection determinism question, not a token-estimation-accuracy one.
-That question was closed on 2026-08-22 (see the determinism note below).
-
-The context-selection determinism question was closed on 2026-08-22 on the
-stack in use then (qwen38-27b via SGLang, `EXPLAIN:4096`):
-
-- Phase 1 (in-process): 3 EXPLAIN probes x 3 repeats produced byte-identical
-  context fields on every repeat - `explain_live_path` prompt_tokens=4132,
-  estimated_tokens=4036, primary `apps/gateway/main.lifespan`;
-  `multiturn_history_cap_budget` 3997 / 3892, primary
-  `packages/pipeline/engine._apply_history_cap`; `multiturn_config_systems`
-  4443 / 3861, primary `packages/providers/vllm._get_vllm_config`.
-- Phase 2 (across restart): after a full gateway stop/restart on an
-  unchanged repo and `.env`, re-runs of `explain_live_path` and
-  `multiturn_config_systems` matched Phase 1 exactly.
-
-Conclusion for that pass: on the repo and `.env` as they stood on 2026-08-22,
-qwen38/SGLang + `EXPLAIN:4096`
-context selection is deterministic within a gateway process and across
-gateway restarts. Remaining run-to-run variance is model-side sampling
-(answer wording, `completion_tokens`, wall-clock seconds). No code fix was
-warranted.
-
-On 2026-09-09 repository-context token accounting moved from the global
-`CHARS_PER_TOKEN = 4.0` to per-model calibration: `ModelDefinition.chars_per_token`
-(default `4.0`) is resolved from the request's resolved model and drives the
-repository-context budget estimate. `qwen38-27b` is calibrated to `3.5`.
-Live validation on qwen38-27b/SGLang (`--compare-context` with context): the
-`4.0` baseline had 5 of 8 probes with measured context cost over their intent
-budget; with `3.5` it is 0 of 8, with no fact misses and no style regressions.
-Baseline run: `logs\quality_compare_qwen38_token_estimate_20260909.json`;
-calibrated run: `logs\quality_compare_qwen38_chars_per_token_3_5_20260909.json`.
-The inherited `3.5` ratio was revalidated on 2026-10-10 after the gateway alias
-was moved to `qwen3.8-flash-next`: all 8 measured context costs stayed below
-their estimates (measured/estimated ratio `0.82x-0.96x`) with 0 budget
-overages. The same context-on/context-off run scored `20/20` versus `3/20`.
-That run left history capping on the platform default `CHARS_PER_TOKEN = 4.0`
-estimate; roadmap A3 moved the cap onto the same resolved ratio on 2026-10-31,
-measured in `docs/live-gateway-runbook.md`. True tokenizer integration remains out
-of scope (deferred).
+Evidence: `docs/roadmap.md` Phase B items 1-5; in `docs/live-gateway-runbook.md`, *Intent Context Budgets*,
+*Intent budget measurements*, *Token-estimate investigation, 2026-08-10*, *Context-selection determinism,
+2026-08-22*, *Change-Aware Ranking (Optional)*, *The Phase B1 promotion guard*, *Replicated changed-file A/B,
+2026-10-12*, *Isolated-worktree benefit A/B, 2026-10-13*, *Isolated-worktree promotion-guard A/B, 2026-10-25
+(roadmap B3)*, *Conversation File Activity (roadmap C1)*.
 
 ### History Capping
 
@@ -1078,8 +605,8 @@ environment uses whatever Python uv discovers, against `requires-python = ">=3.1
   valid for what they measured and are not comparable to it as written.
   `SEARCH`/`TEST`/`DEBUG`/`EXPLAIN` have measured budget overrides; `REFACTOR`
   was measured and reverted to the shared default after a replicated
-  regression - see `docs/roadmap.md` section 3 and the "RepositoryContextStage"
-  section above for the measured numbers.
+  regression - see `docs/roadmap.md` section 3 and the runbook's "Intent Context Budgets"
+  section for the measured numbers.
 - The model often includes reasoning/preamble despite terse system prompts; the
   quality harness now records deterministic style violations separately from
   required-fact score.

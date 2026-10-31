@@ -198,6 +198,27 @@ Interpreting repeats: with an unchanged repo and `.env`, context fields and
 wording, `completion_tokens`, hits, or seconds between repeats are model-side
 sampling variance, not context-selection drift.
 
+### Context-selection determinism, 2026-08-22
+
+The context-selection determinism question was closed on 2026-08-22 on the
+stack in use then (qwen38-27b via SGLang, `EXPLAIN:4096`):
+
+- Phase 1 (in-process): 3 EXPLAIN probes x 3 repeats produced byte-identical
+  context fields on every repeat - `explain_live_path` prompt_tokens=4132,
+  estimated_tokens=4036, primary `apps/gateway/main.lifespan`;
+  `multiturn_history_cap_budget` 3997 / 3892, primary
+  `packages/pipeline/engine._apply_history_cap`; `multiturn_config_systems`
+  4443 / 3861, primary `packages/providers/vllm._get_vllm_config`.
+- Phase 2 (across restart): after a full gateway stop/restart on an
+  unchanged repo and `.env`, re-runs of `explain_live_path` and
+  `multiturn_config_systems` matched Phase 1 exactly.
+
+Conclusion for that pass: on the repo and `.env` as they stood on 2026-08-22,
+qwen38/SGLang + `EXPLAIN:4096` context selection is deterministic within a
+gateway process and across gateway restarts. Remaining run-to-run variance is
+model-side sampling (answer wording, `completion_tokens`, wall-clock seconds).
+No code fix was warranted.
+
 ```powershell
 .\uv.exe run python scripts\quality_harness.py --probe multiturn_history_cap_budget --repeat 3 --json --max-tokens 900 --model local-model
 ```
@@ -215,6 +236,77 @@ EXPLAIN is `4096`: the `2048` budget dropped
 `apps/gateway/core/config.Settings` from EXPLAIN context assembly and caused a
 repeatable `multiturn_config_systems` miss. Restart the gateway after changing
 `.env` so new budgets apply.
+
+### Intent budget measurements
+
+The measured results behind the budget settings above, kept here as evidence.
+
+The current live tuning baseline uses `SEARCH:2048`; in a same-prompt Cline A/B it
+reduced median repository context from about `4013` to `2047` estimated tokens and median
+prompt tokens from about `17,106` to `16,146`. The TEST baseline uses `2048`;
+after enabling test indexing and clean Cline task extraction, a same-prompt
+Cline validation preserved answer quality while reducing direct repository context from
+about `2182` to `2020` estimated tokens and prompt tokens from about `15,397` to
+`15,158` on the assembled turn. The DEBUG baseline uses
+`2048`; after increasing the non-test-query penalty for test files, a
+same-prompt Cline validation preserved answer quality while reducing direct
+repository context from about `4095` to `2047` estimated tokens and median
+prompt tokens from about `17,580` to `15,880`. Latency remained noisy in the
+small samples.
+
+REFACTOR and EXPLAIN were measured on 2026-08-09 with
+`scripts/quality_harness.py --json --max-tokens 900` (the harness has no
+`--budget` flag; a budget A/B means two full `--json` runs at different
+`APP_REPOSITORY_CONTEXT_INTENT_BUDGETS` values, diffed by probe `id`).
+**REFACTOR** was tried at `2048` and `3072`, both reverted: 3 replicate runs at
+`3072` consistently missed the same required fact
+(`select_last_task_text`, replaced with a hallucinated but wrong
+`select_context_query_text`) that the `4096` default answers correctly every
+time - a real, repeatable regression, distinguished from noise by an
+unrelated control probe (budget untouched) that swung by 2 hits across the
+same runs. REFACTOR stays at the `4096` default. **EXPLAIN** moved to `2048`
+(from `8192`): 3 replicate runs averaged 3.67/9 combined hits across the three
+EXPLAIN probes versus a single-run baseline of 2/9 at `8192` - noisy (0 to 6
+across replicates) but net positive, driven by `explain_live_path` going from
+always-broken to passing in 2 of 3 runs; one other EXPLAIN probe
+(`multiturn_config_systems`) got consistently worse. `explain_live_path`
+prompt tokens dropped from `5136` to `1119-1975` across runs.
+
+`multiturn_config_systems` had a repeatable 16/17 miss at the `2048` EXPLAIN
+budget: the context trim dropped `apps/gateway/core/config.Settings`, so
+`apps/gateway/core/config.py` never reached the answer. It was resolved on
+2026-08-22 with two fixes - retrieval/promotion support for history-cap/config
+symbols, and the EXPLAIN repository-context intent budget raised from `2048` to
+`4096`. The probe now scores 2/2 consistently; the gateway log records
+`modules_selected=9` and `estimated_tokens=3861` for the scored EXPLAIN turn.
+
+### Token-estimate investigation, 2026-08-10
+
+A Tokenizer Registry investigation (2026-08-10) was opened after
+`logs/quality_compare_qwen36_20260807*.json` (three saved `--compare-context`
+runs, filesystem-dated 2026-08-07 16:27-16:44) appeared to show EXPLAIN real
+token cost running 2.17x-3.43x the *current* 2048 nominal budget. That
+comparison was methodologically wrong: those files predate the EXPLAIN
+8192-to-2048 retune documented above (committed 2026-08-09 08:28, `0dcf2bf`),
+so EXPLAIN was still budgeted at 8192 when they were captured. The same real
+costs (4452-7030 tokens) divide to 0.54x-0.86x against 8192 - in line with
+every other intent's normal behavior, not a divergence. Two plan drafts
+(`logs/agent_handoffs/explain_token_estimate_correction_plan.md`, `_v2.md`)
+proposed `CHARS_PER_TOKEN` fixes based on the uncorrected comparison; both
+were rejected on review before implementation - v1's causal claim was
+contradicted by its own data (`implement_health_flag` promotes the same
+`apps/gateway/core/config.Settings` symbol without showing elevated
+divergence), and v2 additionally cited two `packages/context/builder.py`
+promotion functions that do not exist in the file. A fresh live
+`--compare-context` re-measurement on 2026-08-10 against the current 2048
+budget found EXPLAIN in the normal band (0.83x-1.00x, reproduced twice).
+At that point `CHARS_PER_TOKEN = 4.0` was unchanged; no tokenizer-accuracy
+problem was measured. The real, smaller question that remained open was the
+run-to-run variance already noted above (`explain_live_path` ranged 1119-1975 tokens
+across 3 replicates at the same 2048 budget on 2026-08-09) - a
+context-selection determinism question, not a token-estimation-accuracy one.
+That question was closed on 2026-08-22; see "Context-selection determinism,
+2026-08-22" under "Repeated Probe (--repeat)".
 
 ## Change-Aware Ranking (Optional)
 
@@ -239,7 +331,8 @@ Both modes below are offline and deterministic, index this repository once, and
 inject the dirty module rather than asking Git - a clean checkout measures the same
 thing. They print symbol names and module keys, which is fine for a developer tool
 that sends no request and writes no session record; nothing they print comes from
-or goes into the promotion-observability fields.
+or goes into the promotion-observability fields. The index it measures over is this
+repository's real one: 508 modules, 8571 symbols on this checkout.
 
 ```powershell
 .\uv.exe run python scripts\quality_harness.py --changed-file-probe
@@ -279,7 +372,9 @@ cases sit on both sides of it.
   `packages/context/budget`): the primary moves to `ContextBudget` from `+15` up and
   nothing is lost - `ContextBuilder`, `_enforce_budget` and
   `packages/context/builder.py` are in the text of both arms. It is the **negative
-  control**, and both arms of its live pair are expected to score 3/3.
+  control**, and both arms of its live pair are expected to score 3/3. `ContextBudget`
+  sits 15 points behind and sorts first on the tie-break - so the ceiling for that case
+  is the gap itself, not the gap plus one.
 - `evicts_the_asked_about_file` (query `REPOSITORY_INDEX_BUILD_QUERY`, dirty
   `packages/repository/index/models`): 14 symbols become 10 and the primary moves
   into the dirty file. Before the guard described below it also lost the file:
@@ -361,7 +456,10 @@ implemented and measured too: it holds the gain case at `4/4` and brings the
 eviction case only to `1/3`, because the retained symbol sits outside the rendered
 prefix and reaches the prompt with its signature and docstring and without its
 source body, which is where these facts are written. That is why the guard protects
-a slot and not a membership.
+a slot and not a membership. Measured again on 2026-10-25 with the guard in place, the
+same run still sends 10 symbols, still moves the primary into the dirty file, and loses
+nothing; and at 6144 tokens, where both files' symbols fit either way, the two arms now
+agree on all three facts as well.
 
 The guard is inert whenever the promotion is: with
 `APP_REPOSITORY_CONTEXT_CHANGED_FILES_ENABLED=false`, on a clean tree, and on a
@@ -385,7 +483,9 @@ has its scored half in the normal probe set -
 pairs, so the offline table and the live run cannot drift into describing different
 queries: both halves of a pair read the same prompt constant and the same facts
 tuple, and `tests/observability/test_quality_harness.py` asserts equality rather
-than containment.
+than containment. That pairing is the fix for the flaw in the first version of this
+comparison, which appended its own wording to the scored probe and then attributed a
+retrieval difference to the bonus.
 
 Start the gateway with the flag set (`.env` is loaded with `override=True`, so
 put it in `.env` or make sure `.env` does not already define it):
@@ -1319,7 +1419,7 @@ a bound the store does not have.
 ### The grammar it reads
 
 A Cline conversation endpoint reports every tool result back to the model as a
-user-role message whose first line is an anchored header (`packages.pipeline.cline_activity`):
+user-role message whose first line is an anchored header (`packages/pipeline/cline_activity.py`):
 
 ```text
 [read_file for 'apps/gateway/session_log.py'] Result:
@@ -1358,7 +1458,13 @@ composition - and then checked for containment against the resolved repository r
 exist yet is still measurable. A refused target yields one token and one counter
 (`paths_rejected`): `empty`, `quoting`, `nul`, `control`, `length`, `drive`, `stream`,
 `outside`, `self`, `root`. The counter is one per envelope, never one per path, because
-remembering a path would defeat the boundary.
+remembering a path would defeat the boundary. A target that does not exist on disk is still
+measurable by that `realpath(strict=False)` containment - the file a write is about to create
+measures like one already there - and only a root the filesystem refuses to name at all marks
+the measurement unavailable. The one spelling that was ever wrong is fixed: a Windows
+drive-absolute target (`C:\Users\dev\repo\x.py`) was the one spelling that used to be read as
+relative and joined onto the root, landing outside it; it is now recognized as absolute before
+any joining is attempted.
 
 Resolution is memoized within a request only: `resolve_file_activity_events` keeps a
 local map from target spelling to resolved identity for the duration of one call, so the
