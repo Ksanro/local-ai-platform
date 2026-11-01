@@ -386,6 +386,83 @@ def test_streaming_null_usage(tmp_path: Path) -> None:
     assert record["usage"]["completion_tokens"] is None
 
 
+def _record_for_body(tmp_path: Path, body: bytes, *, stream: bool) -> list[dict[str, Any]]:
+    """Run the middleware over one response body and return the records written."""
+    log_file = tmp_path / "sessions.jsonl"
+
+    async def mock_receive() -> dict[str, Any]:
+        return {"type": "http.request", "body": b"{}"}
+
+    async def mock_send(message: dict[str, Any]) -> None:
+        return None
+
+    async def inner_app(scope: dict[str, Any], receive: Any, send: Any) -> None:
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": body})
+
+    scope = {
+        "type": "http",
+        "path": "/v1/chat/completions",
+        "request_id": "test-req-null-usage",
+        "request_data": {
+            "model": "qwen36",
+            "stream": stream,
+            "messages": [{"role": "user", "content": "Hello"}],
+        },
+        "session_intent": "DEFAULT",
+        "session_context_status": "disabled",
+    }
+    with patch("apps.gateway.session_log.get_settings") as mock_settings:
+        mock_settings.return_value = _make_settings(enabled=True, path=str(log_file))
+        asyncio.run(SessionLoggerMiddleware(inner_app)(scope, mock_receive, mock_send))
+
+    if not log_file.exists():
+        return []
+    return [json.loads(line) for line in log_file.read_text(encoding="utf-8").splitlines()]
+
+
+def test_streaming_null_usage_chunks_do_not_drop_the_record(tmp_path: Path) -> None:
+    """``"usage": null`` on intermediate chunks is skipped, not a crash.
+
+    OpenAI-compatible servers asked for usage send ``"usage": null`` on every
+    chunk before the last.  Calling ``.get`` on that null used to raise
+    ``AttributeError``, which the outer handler caught by dropping the whole
+    session record.  The final usage object must still be read, and a null
+    after it must not erase it.
+    """
+    body = (
+        b'data: {"choices":[{"delta":{"content":"a"}}],"usage":null}\n'
+        b'data: {"choices":[],"usage":{"prompt_tokens":11,"completion_tokens":7}}\n'
+        b'data: {"choices":[{"delta":{}}],"usage":null}\n'
+        b"data: [DONE]\n"
+    )
+
+    records = _record_for_body(tmp_path, body, stream=True)
+
+    assert len(records) == 1
+    assert records[0]["usage"] == {"prompt_tokens": 11, "completion_tokens": 7}
+
+
+def test_streaming_only_null_usage_logs_null_counts(tmp_path: Path) -> None:
+    """A stream whose every chunk says ``"usage": null`` still writes its record."""
+    body = b'data: {"choices":[{"delta":{"content":"a"}}],"usage":null}\ndata: [DONE]\n'
+
+    records = _record_for_body(tmp_path, body, stream=True)
+
+    assert len(records) == 1
+    assert records[0]["usage"] == {"prompt_tokens": None, "completion_tokens": None}
+
+
+def test_non_streaming_null_usage_logs_null_counts(tmp_path: Path) -> None:
+    """A non-streaming body with ``"usage": null`` writes a record with null counts."""
+    body = b'{"choices":[{"message":{"content":"hi"}}],"usage":null}'
+
+    records = _record_for_body(tmp_path, body, stream=False)
+
+    assert len(records) == 1
+    assert records[0]["usage"] == {"prompt_tokens": None, "completion_tokens": None}
+
+
 # ---------------------------------------------------------------------------
 # Test: concurrent writes
 # ---------------------------------------------------------------------------

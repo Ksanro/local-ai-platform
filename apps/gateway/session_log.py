@@ -483,10 +483,18 @@ class SessionLoggerMiddleware:
                         if data_str != "[DONE]":
                             try:
                                 chunk = json.loads(data_str)
-                                if "usage" in chunk:
+                                # OpenAI-compatible servers may send
+                                # ``"usage": null`` on every chunk before the
+                                # last; skip it rather than raise, which would
+                                # drop the whole record, and never let it
+                                # overwrite a usage object already read.
+                                chunk_usage = (
+                                    chunk.get("usage") if isinstance(chunk, dict) else None
+                                )
+                                if isinstance(chunk_usage, dict):
                                     usage = {
-                                        "prompt_tokens": chunk["usage"].get("prompt_tokens"),
-                                        "completion_tokens": chunk["usage"].get(
+                                        "prompt_tokens": chunk_usage.get("prompt_tokens"),
+                                        "completion_tokens": chunk_usage.get(
                                             "completion_tokens"
                                         ),
                                     }
@@ -496,10 +504,13 @@ class SessionLoggerMiddleware:
                         # Try parsing as direct JSON (non-streaming).
                         try:
                             parsed = json.loads(line)
-                            if "usage" in parsed:
+                            parsed_usage = (
+                                parsed.get("usage") if isinstance(parsed, dict) else None
+                            )
+                            if isinstance(parsed_usage, dict):
                                 usage = {
-                                    "prompt_tokens": parsed["usage"].get("prompt_tokens"),
-                                    "completion_tokens": parsed["usage"].get("completion_tokens"),
+                                    "prompt_tokens": parsed_usage.get("prompt_tokens"),
+                                    "completion_tokens": parsed_usage.get("completion_tokens"),
                                 }
                                 break
                         except json.JSONDecodeError:
