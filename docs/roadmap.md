@@ -397,7 +397,7 @@ them.
    only the seventeen documented keys, ignores unknown nested keys, and prints no
    path, module, symbol, result body or envelope text.
 
-   Evidence: `tests/scripts/test_analyze_sessions_activity.py` (31 tests), and offline
+   Evidence: `tests/scripts/test_analyze_sessions_activity.py` (36 tests), and offline
    runs of the analyzer over four retained logs - the 2026-10-26 C1 probe
    (`logs/c1_live_validation_20261025.jsonl`, 4 records), both roadmap A3 arms
    (`build/a3/20261030/sessions_base.jsonl` and `sessions_cand.jsonl`, 9 records each,

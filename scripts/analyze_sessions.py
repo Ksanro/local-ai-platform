@@ -400,11 +400,11 @@ def analyze(records: list[dict[str, Any]]) -> None:
         reverse=True,
     )
     for i, r in enumerate(sorted_by_latency[:5], start=1):
-        req_id = r.get("request_id", "unknown")[:12]
+        req_id = _preview_text(r.get("request_id"), fallback="unknown", limit=12)
         latency = r.get("timing", {}).get("total_ms", 0) or 0
         tokens = r.get("usage", {}).get("prompt_tokens") or 0
         completion_tokens = r.get("usage", {}).get("completion_tokens") or 0
-        preview = r.get("last_user_message", "")[:80]
+        preview = _preview_text(r.get("last_user_message"), fallback="", limit=80)
         t = r.get("timing", {})
         pipeline_ms = t.get("pipeline_ms")
         provider_wait = t.get("provider_wait_ms")

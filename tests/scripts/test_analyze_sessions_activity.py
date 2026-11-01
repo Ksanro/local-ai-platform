@@ -764,3 +764,155 @@ def test_rendering_errors_keeps_the_file_activity_section_count_only() -> None:
     assert "/tmp/repo" not in activity
     assert "environment_details" not in activity
     assert "apps/gateway" not in activity
+
+
+# ---------------------------------------------------------------------------
+# The five-slowest list reads the same two fields, one section earlier.
+#
+# `5 SLOWEST REQUESTS` sliced `request_id` and `last_user_message` directly, so a
+# record with either one null aborted the report before the error section was ever
+# reached.  Repairing ERROR REQUESTS therefore did not finish the job for a log
+# whose *slow* records carry the null: the two sections had the same defect, and a
+# record slow enough belongs in the list, so these cases put the tested record in
+# the section rather than parking it out of it.
+# ---------------------------------------------------------------------------
+
+
+def _slow_record(**fields: Any) -> dict[str, Any]:
+    """One request certain to appear first in the five-slowest list.
+
+    The section sorts on ``timing.total_ms`` and every other record these tests
+    build sorts at zero, so this latency ranks the record under test into the list
+    on its own merits instead of behind a screen of faster filler.  Keyword
+    arguments replace top-level record fields, which is what both preview sections
+    read.
+    """
+    record = _record()
+    record["request_id"] = "5e5e5e5e-5e5e-4e5e-8e5e-5e5e5e5e5e5e"
+    record["last_user_message"] = "Which section sorts by total latency?"
+    record["timing"] = {"total_ms": 9000}
+    record.update(fields)
+    return record
+
+
+def _slowest_block(printed: str) -> str:
+    """The 5 SLOWEST REQUESTS section of a completed report.
+
+    The list ends where the error section begins; when no request failed the
+    report's own end bounds it, since that branch prints a sentence and no header.
+    """
+    tail = printed.split("5 SLOWEST REQUESTS", 1)[1]
+    return tail.split("ERROR REQUESTS", 1)[0]
+
+
+def test_a_null_or_absent_request_id_falls_back_in_the_slowest_list_too() -> None:
+    """The slowest list cannot outrank a log's own missing identifier.
+
+    Same absence, same placeholder as the error section: a record whose writer left
+    ``request_id`` out and one that stored null have to print alike, and neither may
+    print the word ``None`` where an identifier belongs.
+    """
+    null_id = _slow_record(request_id=None)
+    absent_id = _slow_record()
+    del absent_id["request_id"]
+
+    first = _slowest_block(_full_report([_record(), null_id]))
+    second = _slowest_block(_full_report([_record(), absent_id]))
+
+    assert "  1. id=unknown  latency=9000ms" in first
+    assert "  1. id=unknown  latency=9000ms" in second
+    assert "id=None" not in first
+    assert "id=None" not in second
+    assert first == second
+
+
+def test_a_null_or_absent_user_message_renders_empty_in_the_slowest_list() -> None:
+    """A slow request that logged no prompt still gets its line, with no text.
+
+    The preview's fallback is the empty string here as it is in the error section,
+    so the row prints and the line after the latency detail holds nothing.
+    """
+    null_message = _slow_record(last_user_message=None)
+    absent_message = _slow_record()
+    del absent_message["last_user_message"]
+
+    first = _slowest_block(_full_report([_record(), null_message]))
+    second = _slowest_block(_full_report([_record(), absent_message]))
+
+    assert "     msg: \n" in first
+    assert "msg: None" not in first
+    assert "msg: unknown" not in first
+    assert first == second
+
+
+def test_non_string_values_are_converted_before_the_slowest_list_truncates() -> None:
+    """Conversion happens first here too, so a typed field prints instead of raising.
+
+    Slicing the number before converting it is the abort this test rules out: the
+    twenty digits below have to become text and then be cut to twelve characters,
+    exactly as a string of the same digits would be.
+    """
+    printed = _full_report(
+        [
+            _record(),
+            _slow_record(
+                request_id=12345678901234567890,
+                last_user_message=["read", "the history capping stage"],
+            ),
+            _slow_record(request_id=True, last_user_message=42.5, timing={"total_ms": 8000}),
+        ]
+    )
+    block = _slowest_block(printed)
+
+    assert "END OF REPORT" in printed
+    assert "  1. id=123456789012" in block
+    assert "  2. id=True" in block
+    assert "12345678901234567890" not in block
+    assert "msg: ['read', 'the history capping stage']" in block
+    assert "msg: 42.5" in block
+
+
+def test_the_slowest_list_keeps_the_shape_and_widths_it_always_had() -> None:
+    """Hardening two fields must not quietly re-width the report's slowest rows.
+
+    Twelve characters of identifier, eighty of message, one detail line and one
+    preview line per record, ranked by latency: a reader comparing two reports of
+    one log should see no difference at all in the ordinary string-valued case.
+    """
+    block = _slowest_block(
+        _full_report([_record(), _slow_record(request_id="a" * 40, last_user_message="m" * 300)])
+    )
+    expected = (
+        "  1. id="
+        + "a" * 12
+        + "  latency=9000ms  "
+        + "prompt_tokens=0  completion_tokens=0  "
+        + "context=assembled"
+    )
+
+    assert expected + "\n" in block
+    assert "     msg: " + "m" * 80 + "\n" in block
+    assert "a" * 13 not in block
+    assert "m" * 81 not in block
+    assert block.count("     msg: ") == 2
+
+
+def test_a_null_preview_record_reaches_the_top_five_and_the_end_of_the_report() -> None:
+    """The report finishes when the record carrying the nulls is a headline one.
+
+    This is the case the fix exists for: the slowest request in a log is the one
+    with no identifier and no prompt, so it is the first line the section prints,
+    and before the repair that line ended the run instead of the report.
+    """
+    records = [_record(), _slow_record(request_id=None, last_user_message=None), _record()]
+
+    printed = _full_report(records)
+    twice = _full_report(records)
+    block = _slowest_block(printed)
+
+    assert "END OF REPORT" in printed
+    assert printed == twice
+    assert "  1. id=unknown  latency=9000ms" in block
+    assert "     msg: \n" in block
+    assert "NoneType" not in printed
+    assert printed.index("5 SLOWEST REQUESTS") < printed.index("END OF REPORT")
