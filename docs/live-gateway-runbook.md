@@ -1631,6 +1631,114 @@ decides what the turn sends has already happened by the time the stage records a
 so a tracker with no root, an unresolvable root, or a measurement that raises writes
 `state=unavailable` and lets the context through unchanged.
 
+### Reading the records offline (roadmap E1)
+
+The section above is what a record carries; this is what to do with a log of them. No
+gateway has to be running, no request has to be made, and nothing on the live path
+changes:
+
+```powershell
+.\uv.exe run python scripts/analyze_sessions.py logs\c1_live_validation_20261025.jsonl
+```
+
+The analyzer prints a `FILE ACTIVITY` section beside its changed-file promotion section.
+It is count-only and reads nothing outside the seventeen documented keys.
+
+**The headline rule: every counter in it is a per-record transcript snapshot, and none
+of them is ever summed across records.** C1 recomputes all fifteen counters from the
+complete transcript the request carried, and a Cline client re-sends its whole
+conversation on every turn, so a file read once on turn one is stated again by every
+later record. A "total files read" would count that read once per later turn - the
+double-counting C1's snapshot model replaced - so the report gives, for each counter,
+how many records can answer (`eligible`), how many answered above zero (`nonzero`), and
+the median and maximum a *single* record reached. There is no cross-record total to
+read, and a session that touched one file across fifty turns has fifty records at `1`,
+not a `50`.
+
+How the awkward records are handled, all of them kept distinguishable rather than
+folded into a zero:
+
+| case | what the analyzer does |
+| --- | --- |
+| no `file_activity` key at all | counted as *predating C1* and excluded from every distribution and statistic, so an old log can neither inflate nor deflate a finding |
+| `state=measured` | counted, and its counters are readings |
+| `state=none` | counted, and its zeros are readings: the transcript was looked at and held nothing the gateway recognizes. This is not `state=unavailable`, and it is not the changed-file feature's own `changed_files_signal=off`, which means that feature was switched off |
+| `state=partial` | counted, with every value labelled a **floor**, because a bound kept events out of the parse; the state distribution shows how many records are partial |
+| `state=unavailable` | counted in the state distribution and excluded from the activity statistics, because nothing was measured |
+| `correlation=measured` / `no_prior_context` | the two correlation counters `context_files_touched` and `touched_without_context` are read; `no_prior_context` is a real zero - nothing had been supplied earlier in that conversation |
+| `correlation=tracker_miss` / `unavailable` | counted in the correlation distribution and excluded from the two correlation counters, whose zeros there describe a lineage gap rather than a conversation that never saw context |
+| an object missing a required key | counted as *incomplete* and excluded, because a partially deployed writer states some fields and not others |
+| a non-object, a non-string token, or a counter that is a float, a bool or a negative | counted as *malformed* and excluded, because coercing one would turn an unreadable value into a confident zero |
+
+A record is placed in exactly one coverage case, in that order: not-an-object, then a
+missing key, then an unreadable value. An unrecognized *string* token is not malformed -
+it is a valid record whose token this script has never seen, and it lands in the
+`unknown` bucket of its distribution, which excludes it from the statistics without
+erasing the fact that the writer emitted it.
+
+Privacy is structural, not a filter: only the seventeen keys are ever indexed, unknown
+nested keys are ignored rather than enumerated, token values are matched against the
+documented sets and printed as bucket names, and nothing else from the section reaches
+the output - no path, module name, symbol, result body or envelope text. Tests plant
+path-like, module-like, symbol-like, body-like and envelope-like values under unknown
+keys and assert they never appear.
+
+**Offline validation on retained evidence (2026-10-31).** The analyzer was run over four
+retained logs, all of them records C1 had already written before this item existed - so
+these runs read old evidence and measure nothing new, and no gateway was started and no
+backend request was made for any of them. Each run is the complete command over the whole
+log, and counts as a pass only when the process exits 0 and the output reaches
+`END OF REPORT`: a section that prints and a report that finishes are different claims,
+and the milestone needs the second.
+
+| retained log | records | stating `file_activity` | `state` | `correlation` |
+| --- | --- | --- | --- | --- |
+| `logs/c1_live_validation_20261025.jsonl` (the 2026-10-26 probe above) | 4 | 4 | 3 measured, 1 none | 2 measured, 2 no_prior_context |
+| `build/a3/20261030/sessions_base.jsonl` (roadmap A3 control arm) | 9 | 9 | 3 measured, 6 none | 3 measured, 3 no_prior_context, 3 tracker_miss |
+| `build/a3/20261030/sessions_cand.jsonl` (roadmap A3 candidate arm) | 9 | 9 | 3 measured, 6 none | 3 measured, 3 no_prior_context, 3 tracker_miss |
+| `logs/implement_budget_A_4096_20260801.jsonl` (pre-C1 traffic) | 592 | 1 | 1 none, 591 predating C1 | 1 no_prior_context |
+
+The A3 pair shows the two exclusion rules doing their work on genuine traffic. All nine
+records are eligible for the thirteen transcript-only counters: `files_read`,
+`files_touched` and `read_attempts` each read 9 eligible / 3 nonzero / median 0.0 /
+max 1. Three of the nine requests reported one read, and a cross-record sum would have
+printed `3` - a number no record ever claimed - so the report gives the median and the
+maximum of what single records said instead. The correlation pair is eligible for only
+six of the nine, because three carry `correlation=tracker_miss`: an A/B restarts the
+gateway between arms, so the tracker had lost part of each conversation's lineage, and
+those zeros are excluded rather than averaged in as "nothing was supplied earlier". Where
+the lineage held, `context_files_touched` reads 0 nonzero of 6 and
+`touched_without_context` reads 3 nonzero of 6 - the touched files had not been supplied
+as context before, which under `measured`/`no_prior_context` is a finding and not a gap.
+
+The older `logs/implement_budget_A_4096_20260801.jsonl` is the pre-C1 case: 592 records,
+591 of them counted as predating C1 and excluded from every distribution, and the one
+record that does state the section is a stray later probe appended to that file. The
+section printed cleanly for all four logs and carried no path, module, symbol, body or
+envelope content: an automated check for `/`, `\`, `.py`, `apps/`, `packages/`,
+`Result:`, `environment_details` and `def ` inside the printed section found no match in
+any of them.
+
+**The defect these runs surfaced, and the fix E1 made for it.** That fourth log holds 33
+records with `status=error`, and 27 of them store `error: null` - what the gateway logs
+when a failed response carried nothing parseable. The `ERROR REQUESTS` block rendered
+that with `r.get("error", "unknown")[:120]`, which slices `None`, so the run died after
+printing every section above and never reached `END OF REPORT`. Running HEAD's own copy
+of the script over the same four logs reproduces exactly that - exit 1 on this log at
+that statement, exit 0 on the other three - so the defect predates the file-activity
+work and this repair changes the outcome of one run out of four; it is fixed here rather
+than left as a follow-up because a milestone cannot claim to have validated a log whose
+analysis does not finish. Each field is now converted
+to text before it is truncated: a null or absent `request_id` or `error` prints
+`unknown`, a null or absent `last_user_message` prints empty, and a number, bool or
+container prints its `str` form. The widths stay 12, 120 and 80 characters, the two lines
+per record keep their shape, and no error classification or record selection moved - the
+27 null-error records print `error=unknown` and the 6 that logged real text print the
+same text they printed before. All four runs now exit 0 and reach `END OF REPORT`, and
+the 8 tests added to `tests/scripts/test_analyze_sessions_activity.py` for this cover the
+fallbacks, the widths, the conversion of non-string values, and that the report still
+finishes with a path-bearing record in it.
+
 ### Verification status
 
 Everything above is pinned offline, and only offline: `tests/pipeline/test_file_activity.py`
@@ -1640,7 +1748,7 @@ fingerprint identity, stage integration, failure-keeps-request),
 `tests/pipeline/test_user_messages.py` (the registry's two derived views, and the
 pre-C1 behavior of task-text and query selection) and the envelope-capping cases in
 `tests/pipeline/test_history.py`, plus `tests/gateway/test_session_log.py` for the record's
-shape.
+shape, and `tests/scripts/test_analyze_sessions_activity.py` for the offline report above.
 
 **What C1 does not change, and where that was almost lost.** The activity path is
 observational: it decides nothing about what a request sends, and by the time the stage

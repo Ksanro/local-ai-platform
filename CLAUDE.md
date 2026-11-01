@@ -140,9 +140,17 @@ upstream. They are deliberately different — clients keep a stable name while t
 changes.
 
 ```json
-[{"model":"qwen38-27b","backend_model":"qwen3.8-27b","provider":"openai",
-  "base_url":"http://100.106.236.88:30000/v1","context_window":262144}]
+[{"model":"qwen38-27b","backend_model":"qwen3.8-flash-next","provider":"openai",
+  "base_url":"http://100.106.236.88:18300/v1","context_window":262144}]
 ```
+
+That is the live identity as of the 2026-10-31 review: the `qwen38-27b` client
+alias routes through the `openai` provider to a vLLM server hosting
+`qwen3.8-flash-next` on port `18300`. The alias is kept stable so clients do not
+change when the served checkpoint does, so an older document naming SGLang on
+port `30000` for this alias records where a measurement was made, not where
+requests go now. The remote service on port `30000` belongs to another
+workload: never stop it, or anything on that port, while managing the gateway.
 
 Empty `models_config` falls back to single-provider mode, where any model string resolves.
 

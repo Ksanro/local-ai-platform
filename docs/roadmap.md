@@ -238,9 +238,10 @@ them.
    than the live arms' because `_stage_arm` builds a bare `PipelineContext` with no resolved
    model, so the stage falls back to `CHARS_PER_TOKEN=4.0` where the live path uses the
    alias's calibrated `3.5`. That is an offline-probe calibration gap in its own right, the
-   same in both arms so it moves no verdict. Item A3 stays as written and stays open - it is
-   about history capping using the resolved model's `chars_per_token`, which this
-   run neither advances nor measures.
+   same in both arms so it moves no verdict. Item A3 was as written and was still
+   open at that point - it is about history capping using the resolved model's
+   `chars_per_token`, which this run neither advanced nor measured; it closed
+   separately on 2026-10-31.
 4. **B4 - remove mandatory counterfactual cost - DONE (2026-10-25).** The cheap
    direct counters stay on every request and the second context build is now a
    separate opt-in,
@@ -349,18 +350,67 @@ them.
 
 #### Phase D: Documentation And Dormant-Code Policy
 
-1. Update `CLAUDE.md`, `docs/STATUS.md`, this roadmap, the live runbook, and
-   `docs/dormant-code-backlog.md` as their facts change. Compact the long
-   changed-file narrative out of `docs/STATUS.md` into the runbook, leaving a
-   current summary and link.
-2. **Keep all dormant code for now.** Do not delete packages or tests, move them
-   to another branch, broadly refactor them, or activate them incidentally.
-   Capabilities, tasks, workflows, controller, execution, verification,
-   modification, patches, session, bootstrap, and autonomous packages remain
-   outside the live path until a concrete product workflow is chosen.
-3. Continue tracking the documented full-suite failure baseline as dormant
-   debt. Reducing that count is not a current objective, and tests must not be
-   skipped, weakened, or removed to improve it.
+1. **Documentation as facts change - an ongoing policy, not a closable task.**
+   Update `CLAUDE.md`, `docs/STATUS.md`, this roadmap, the live runbook, and
+   `docs/dormant-code-backlog.md` whenever a fact in them moves. Its one bounded
+   piece - compacting the long changed-file narrative out of `docs/STATUS.md` into
+   `docs/live-gateway-runbook.md`, leaving a current summary and links - is
+   **DONE (2026-10-31, at `466ab59`)**; the policy of keeping those documents
+   true as the path changes stays open on purpose and never closes.
+2. **Keep all dormant code for now - standing policy, unchanged.** Do not delete
+   packages or tests, move them to another branch, broadly refactor them, or
+   activate them incidentally. Capabilities, tasks, workflows, controller,
+   execution, verification, modification, patches, session, bootstrap, and
+   autonomous packages remain outside the live path until a concrete product
+   workflow is chosen.
+3. **Continue tracking the documented full-suite failure baseline as dormant debt -
+   standing policy, unchanged.** Reducing that count is not a current objective,
+   and tests must not be skipped, weakened, or removed to improve it.
+
+#### Phase E: Analyze What The Live Path Already Records
+
+1. **E1 - Conversation File Activity session analysis - DONE (2026-10-31).** C1
+   writes seventeen count-only keys into every session record and nothing read
+   them: `scripts/analyze_sessions.py` tallied the changed-file promotion fields
+   and had no counterpart for `context.file_activity`. The analyzer now prints a
+   FILE ACTIVITY section, and it is analysis only - no runtime code changed, no
+   new field was added, and no backend request is needed to produce it.
+
+   The section is snapshot-safe by construction. C1's counters are recomputed
+   from the complete transcript each request carries, and a Cline client resends
+   its whole conversation every turn, so a read done on turn one is stated again
+   by every later record. Adding the column would count that read once per later
+   turn - the exact double-counting C1's snapshot model replaced - so the
+   analyzer reports, per counter, how many records can answer, how many answered
+   above zero, and the median and maximum a *single* record reached, and never
+   reports a cross-record total of files read, touched, attempted or otherwise.
+
+   Records stay distinguishable rather than collapsing into zeros: one that
+   states no `file_activity` predates C1, one missing a key is incomplete, one
+   whose object or values are unreadable is malformed, and all three are counted
+   apart from `state=none`, which is a measured zero. `state=unavailable` and an
+   unrecognized state token are excluded from the activity statistics;
+   `correlation=tracker_miss` and `correlation=unavailable` are excluded from
+   `context_files_touched` and `touched_without_context`, whose zeros there
+   describe a lineage gap and not a conversation that never saw context;
+   `state=partial` is kept with its values labelled floors. The section reads
+   only the seventeen documented keys, ignores unknown nested keys, and prints no
+   path, module, symbol, result body or envelope text.
+
+   Evidence: `tests/scripts/test_analyze_sessions_activity.py` (31 tests), and offline
+   runs of the analyzer over four retained logs - the 2026-10-26 C1 probe
+   (`logs/c1_live_validation_20261025.jsonl`, 4 records), both roadmap A3 arms
+   (`build/a3/20261030/sessions_base.jsonl` and `sessions_cand.jsonl`, 9 records each,
+   carrying real `state=none`, `state=measured`, `correlation=measured`,
+   `no_prior_context` and `tracker_miss` cases), and a pre-C1 log
+   (`logs/implement_budget_A_4096_20260801.jsonl`, 591 of 592 records counted as
+   predating C1 and excluded). Each of the four is the complete command against the
+   whole log, not the new section on its own: "offline validation" here means the run
+   exits 0 and reaches `END OF REPORT`, which all four now do. Getting that on the
+   fourth log required repairing a pre-existing `ERROR REQUESTS` crash on a null
+   `error` field - it crashes HEAD's own copy of the script at that statement, and it
+   is not something this item introduced. All of it is analysis of evidence C1 had
+   already recorded; no new measurement was taken.
 
 #### Explicitly Deferred
 
@@ -371,9 +421,12 @@ them.
 - a general autonomous engineering loop
 - wholesale activation of the dormant platform stack
 
-A1, A2, all of Phase B, C1 and A3 are complete, which closes Phase A. The
-remaining execution order is the dormant-code and documentation sequence below,
-with documentation updated continuously.
+A1, A2, all of Phase B, C1 and A3 are complete, which closes Phase A. Phase D
+item 1's compaction is done and Phase E item 1, the offline analysis of the
+records C1 already writes, is done with it; Phase D items 2 and 3 are standing
+policies rather than work left to do. The remaining execution order is the
+dormant-code and documentation sequence below, with documentation updated
+continuously.
 
 ### 1. Dormant-Code Inventory And Activation — first candidates DONE
 
@@ -670,7 +723,9 @@ control `explain_changed_files_contextbuilder`, and since 2026-10-12 as
 paying for it; the paragraphs below record what the
 offline cases say and what the live half found when it ran on 2026-10-12 and again on
 2026-10-13.
-Measuring which files an agent actually touched also remains open.
+Measuring which files an agent actually touched was still open at that point;
+roadmap C1 has since measured it on the live path and roadmap E1 summarizes its
+records.
 
 Measured offline on 2026-10-11, and still open as a decision. The question - can
 the working-tree bonus outrank a symbol the query matched by name? - needed one
@@ -815,7 +870,9 @@ yet decides per query which of the two a repository is getting.
 `tests/observability/test_quality_harness.py` runs the real
 stage over this checkout's index on both arms of every pair and asserts the context
 difference, so what the A/B sees is a regression test, not a guess. Measuring
-which files an agent actually touched also remains open.
+which files an agent actually touched was still open when that run was recorded;
+roadmap C1 has since measured it on the live path and roadmap E1 summarizes its
+records.
 
 
 ## Deferred

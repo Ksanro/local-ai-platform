@@ -214,6 +214,12 @@ are floors) and `correlation`, whose `tracker_miss` means incomplete supplied-co
 the conversation, and makes its zero not a measurement. Limits: latency unmeasured against a feature-off arm, live
 validation on a scripted rather than native Cline transcript, unrecognized spellings not counted.
 
+`scripts/analyze_sessions.py` now summarizes those records offline in a count-only FILE ACTIVITY section that reads
+only the seventeen keys and never sums a counter across records, because every one of them is a snapshot of the
+transcript its request carried. Do not read a `context.file_activity` `state=none` as "feature off": it means the
+gateway looked at a transcript and found no recognized activity envelope, which is a measured zero, while
+`changed_files_signal=off` is the token that means the changed-file ranking feature was off and nothing was looked at.
+
 Evidence: `docs/roadmap.md` Phase B items 1-5; in `docs/live-gateway-runbook.md`, *Intent Context Budgets*,
 *Intent budget measurements*, *Token-estimate investigation, 2026-08-10*, *Context-selection determinism,
 2026-08-22*, *Change-Aware Ranking (Optional)*, *The Phase B1 promotion guard*, *Replicated changed-file A/B,
@@ -367,12 +373,14 @@ runs should use `--max-tokens 2048` or higher.
 - delta context injection
 - opt-in change-aware repository-context ranking (symbols the query already
   matched get one bounded `+25` bonus when their file is locally modified; the
-  size is an open decision, see the 2026-10-11 note above; off
-  by default, `apps/gateway/main.py` ->
+  weight was retained at `+25` and the decision closed on 2026-10-30 by
+  roadmap Phase B item 5; off by default, `apps/gateway/main.py` ->
   `RepositoryContextStage` -> `ContextBuilder` -> `RankingEngine`)
 - history capping
 - session JSONL logging
-- session log analyzer
+- session log analyzer, including a count-only FILE ACTIVITY section that
+  summarizes roadmap C1's `context.file_activity` records as per-record
+  transcript snapshots without summing any counter across records
 - session analyzer context-cost by-intent table for comparing REFACTOR versus
   EXPLAIN budget use from live session logs
 - CI focused on the documented live gateway path instead of dormant packages

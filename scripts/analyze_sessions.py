@@ -15,6 +15,9 @@ Reads a JSONL session log and prints a structured summary including:
 - **Context cost**: repository-context tokens, prompt share, and assembly time
 - **Changed-file promotion**: whether the working-tree bonus changed the context
   that was sent, tallied by signal state and by whether the comparison ran
+- **File activity**: what the transcripts the gateway was sent show the agent
+  reading and modifying, reported as per-record snapshots - never summed into a
+  cross-record total - with the state and correlation tokens kept distinct
 
 Usage
 -----
@@ -151,6 +154,35 @@ def _bucket_key(tokens: int) -> str:
         return "30-60k"
     else:
         return ">60k"
+
+
+def _preview_text(value: Any, *, fallback: str, limit: int) -> str:
+    """Return one record field as printable text, whatever the log held in it.
+
+    A field a writer means to be a string can arrive as ``None`` - a failed
+    request with no parseable error body logs ``error: null`` - or as a number, a
+    bool or a container. Slicing any of those directly aborts the report halfway
+    through a section, and a milestone report that dies on one stray field is
+    worse than one that prints a placeholder, so conversion happens before
+    truncation.
+
+    Args:
+        value: The raw field. ``None`` selects the fallback.
+        fallback: Text used when the field is missing or ``None``.
+        limit: Maximum number of characters to return.
+
+    Returns:
+        Up to ``limit`` characters of ``value`` converted to text deterministically:
+        the fallback for ``None``, the ordinary string unchanged for text, and the
+        ``str`` form for anything else. Never raises on a well-formed record.
+    """
+    if value is None:
+        text = fallback
+    elif isinstance(value, str):
+        text = value
+    else:
+        text = str(value)
+    return text[:limit]
 
 
 def analyze(records: list[dict[str, Any]]) -> None:
@@ -352,6 +384,9 @@ def analyze(records: list[dict[str, Any]]) -> None:
     # --- Changed-file promotion (counterfactual, count-only) ---
     _print_changed_file_promotion(records)
 
+    # --- Conversation file activity (per-record snapshots, count-only) ---
+    _print_file_activity(records)
+
     # --- History capping stats ---
     _print_history_capping(records)
 
@@ -396,9 +431,9 @@ def analyze(records: list[dict[str, Any]]) -> None:
         print("ERROR REQUESTS")
         print("-" * 40)
         for r in error_records:
-            req_id = r.get("request_id", "unknown")[:12]
-            error_msg = r.get("error", "unknown")[:120]
-            preview = r.get("last_user_message", "")[:80]
+            req_id = _preview_text(r.get("request_id"), fallback="unknown", limit=12)
+            error_msg = _preview_text(r.get("error"), fallback="unknown", limit=120)
+            preview = _preview_text(r.get("last_user_message"), fallback="", limit=80)
             print(f"  id={req_id}  error={error_msg}")
             print(f"     msg: {preview}")
         print()
@@ -1000,6 +1035,274 @@ def _print_changed_file_promotion(records: list[dict[str, Any]]) -> None:
         "    unmeasured (comparison failed, not sampled, or fields absent): "
         f"{summary['unmeasured']}"
     )
+    print()
+
+
+#: The activity section exactly as ``packages.pipeline.file_activity`` defines it
+#: and ``apps/gateway/session_log.py`` writes it under ``context.file_activity``:
+#: two state tokens and fifteen counters, in schema order.  This tuple is the
+#: whole allowlist - a key outside it is never read, never typed and never
+#: printed, which is what keeps this section count-only.
+_FILE_ACTIVITY_FIELDS = (
+    "state",
+    "correlation",
+    "files_read",
+    "files_modified",
+    "files_touched",
+    "read_attempts",
+    "reads_failed",
+    "reads_unknown",
+    "modification_attempts",
+    "modifications_not_modified",
+    "modifications_unknown",
+    "context_files_touched",
+    "touched_without_context",
+    "changed_files_touched",
+    "paths_rejected",
+    "other_events",
+    "events_beyond_bound",
+)
+
+#: The fifteen counters, which are the only numbers the section reports.
+_FILE_ACTIVITY_COUNTERS = _FILE_ACTIVITY_FIELDS[2:]
+
+#: Every state token :class:`~packages.pipeline.file_activity.FileActivityCounts`
+#: can carry, in the order the distributions print.  An unrecognized string is
+#: tallied as ``unknown`` rather than dropped, because a record that states a
+#: token this script has never seen is a fact about the writer, not noise.
+_FILE_ACTIVITY_STATE_VALUES = ("measured", "none", "partial", "unavailable", "unknown")
+_FILE_ACTIVITY_CORRELATION_VALUES = (
+    "measured",
+    "no_prior_context",
+    "tracker_miss",
+    "unavailable",
+    "unknown",
+)
+
+#: The states whose counters are a reading of what the transcript showed.
+#: ``none`` belongs here on purpose: a transcript that held nothing recognizable
+#: is a *measured zero*, the answer a client that sends no envelopes produces.
+#: ``unavailable`` is excluded because there the measurement never ran, and
+#: ``partial`` is included but reported as a floor, because a bound kept events
+#: out of it.  None of the three is the changed-file signal's own ``none``,
+#: which means the ranking feature was switched off.
+_ACTIVITY_STATES = ("measured", "partial", "none")
+
+#: The correlation states that make ``context_files_touched`` and
+#: ``touched_without_context`` readings rather than placeholders.
+#: ``no_prior_context`` is a real zero - the conversation was remembered and had
+#: never been supplied a file - while ``tracker_miss`` means supplied-context
+#: lineage has a gap in it, so its zeros are not measurements.
+_CORRELATION_STATES = ("measured", "no_prior_context")
+
+#: The pair that partitions ``files_touched`` and therefore needs a usable
+#: lineage, as opposed to the other thirteen counters, which the transcript
+#: alone decides.
+_CORRELATION_COUNTERS = ("context_files_touched", "touched_without_context")
+
+
+def _classify_file_activity(record: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    """Sort one record's activity section into a coverage case.
+
+    Four cases, kept apart because they mean different things to a reader:
+    ``before`` - the record states no ``file_activity`` at all and so predates
+    roadmap C1; ``incomplete`` - an object is there but a required key is not,
+    which is what a partially deployed writer produces; ``malformed`` - the
+    object, or a value inside it, has a type this analysis cannot read; and
+    ``valid`` - a complete section whose every value is usable.
+
+    A token outside the documented sets is *not* malformed: it is a string of a
+    readable type, and it lands in the ``unknown`` bucket of its distribution.
+    Malformed means an unreadable type - a section that is not a mapping, a state
+    token that is not a string, or a counter that is a bool, a float or negative.
+
+    Args:
+        record: One session log record dict.
+
+    Returns:
+        The case name, and the section itself when it is complete.
+    """
+    context = record.get("context")
+    if not isinstance(context, dict) or "file_activity" not in context:
+        return "before", {}
+    section = context["file_activity"]
+    if not isinstance(section, dict):
+        return "malformed", {}
+    if any(key not in section for key in _FILE_ACTIVITY_FIELDS):
+        return "incomplete", {}
+    for key in ("state", "correlation"):
+        if not isinstance(section[key], str):
+            return "malformed", {}
+    for key in _FILE_ACTIVITY_COUNTERS:
+        value = section[key]
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            return "malformed", {}
+    return "valid", section
+
+
+def file_activity_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
+    """Aggregate the count-only file-activity sections of a session log.
+
+    Every number describing what a client's transcript showed is a *snapshot*:
+    ``packages.pipeline.file_activity`` recomputes all fifteen counters from the
+    complete transcript the request carried, and a Cline client re-sends its whole
+    conversation on every turn.  A file read once and then carried by fourteen
+    later requests therefore states ``files_read=1`` fourteen times over, so this
+    function reports per-record snapshot statistics - how many records can answer,
+    how many answered above zero, and the median and maximum a single record
+    reached - and deliberately reports **no cross-record sum**.  Adding the column
+    would count early activity once per later turn, which is the bug the snapshot
+    model replaced.
+
+    Records are separated, never merged: one that states no ``file_activity``
+    predates roadmap C1 and cannot enter any statistic; one whose object or values
+    are unreadable is reported as incomplete or malformed rather than read as a
+    zero; a ``state=unavailable`` record is excluded from the activity statistics
+    because it measured nothing; and ``tracker_miss`` and ``unavailable``
+    correlation states are excluded from the two correlation counters, whose zeros
+    there describe a lineage gap.  ``state=none`` is kept and is a measured zero,
+    and ``state=partial`` is kept with its values labelled floors.
+
+    Only :data:`_FILE_ACTIVITY_FIELDS` is ever read from a section.  Unknown nested
+    keys are ignored rather than enumerated, so a writer that started storing a
+    path or a result body could not make this report leak it.
+
+    Args:
+        records: Session log record dicts, as read from JSONL.
+
+    Returns:
+        A deterministic, JSON-compatible summary: coverage counts, the two state
+        distributions, and one per-record snapshot block per counter.  ``median``
+        and ``max`` are ``None`` when no record is eligible, so "nothing could
+        answer" never prints as a measured zero.
+    """
+    by_state = {value: 0 for value in _FILE_ACTIVITY_STATE_VALUES}
+    by_correlation = {value: 0 for value in _FILE_ACTIVITY_CORRELATION_VALUES}
+    seen: dict[str, list[int]] = {field: [] for field in _FILE_ACTIVITY_COUNTERS}
+    before_fields = 0
+    incomplete_fields = 0
+    malformed_fields = 0
+    valid_records = 0
+
+    for record in records:
+        kind, section = _classify_file_activity(record)
+        if kind == "before":
+            before_fields += 1
+            continue
+        if kind == "incomplete":
+            incomplete_fields += 1
+            continue
+        if kind == "malformed":
+            malformed_fields += 1
+            continue
+        valid_records += 1
+
+        state = str(section["state"])
+        correlation = str(section["correlation"])
+        by_state[state if state in by_state else "unknown"] += 1
+        by_correlation[correlation if correlation in by_correlation else "unknown"] += 1
+
+        # A transcript that was never read cannot say what it contained, so the
+        # correlation pair needs both readings usable, not only its own.
+        activity_usable = state in _ACTIVITY_STATES
+        correlation_usable = activity_usable and correlation in _CORRELATION_STATES
+        for field in _FILE_ACTIVITY_COUNTERS:
+            usable = correlation_usable if field in _CORRELATION_COUNTERS else activity_usable
+            if usable:
+                seen[field].append(int(section[field]))
+
+    snapshots: dict[str, Any] = {}
+    for field in _FILE_ACTIVITY_COUNTERS:
+        values = seen[field]
+        snapshots[field] = {
+            "kind": "correlation" if field in _CORRELATION_COUNTERS else "activity",
+            "eligible_records": len(values),
+            "nonzero_records": sum(1 for value in values if value > 0),
+            "median": float(statistics.median(values)) if values else None,
+            "max": max(values) if values else None,
+        }
+
+    return {
+        "records": len(records),
+        "with_fields": incomplete_fields + malformed_fields + valid_records,
+        "before_fields": before_fields,
+        "incomplete_fields": incomplete_fields,
+        "malformed_fields": malformed_fields,
+        "valid_fields": valid_records,
+        "by_state": by_state,
+        "by_correlation": by_correlation,
+        "snapshots": snapshots,
+    }
+
+
+def _print_file_activity(records: list[dict[str, Any]]) -> None:
+    """Print the conversation file-activity section.
+
+    Args:
+        records: A list of session log record dicts.
+    """
+    print("-" * 40)
+    print("FILE ACTIVITY")
+    print("-" * 40)
+
+    summary = file_activity_summary(records)
+    print(f"  records:                {summary['records']}")
+    print(f"  stating file_activity:  {summary['with_fields']}")
+    if summary["with_fields"] == 0:
+        print(f"  predating C1:           {summary['before_fields']}")
+        print("  No record states the file-activity fields.")
+        print()
+        return
+
+    print(f"  predating C1:           {summary['before_fields']} (excluded below)")
+    if summary["incomplete_fields"]:
+        print(f"  missing a field:        {summary['incomplete_fields']} (excluded below)")
+    if summary["malformed_fields"]:
+        print(f"  unusable field types:   {summary['malformed_fields']} (excluded below)")
+    print(f"  read as snapshots:      {summary['valid_fields']}")
+    print()
+    print("  These counters are transcript snapshots, recomputed from each")
+    print("  request's complete transcript.  A Cline client re-sends its whole")
+    print("  conversation every turn, so they are NOT per-turn deltas and are")
+    print("  never summed across records: every statistic below is per-record.")
+    print()
+
+    print("  state - was the transcript read?")
+    for value in _FILE_ACTIVITY_STATE_VALUES:
+        if summary["by_state"][value]:
+            print(f"    {value:<20}{summary['by_state'][value]:>6}")
+    print("  correlation - is the pair a measurement?")
+    for value in _FILE_ACTIVITY_CORRELATION_VALUES:
+        if summary["by_correlation"][value]:
+            print(f"    {value:<20}{summary['by_correlation'][value]:>6}")
+    print()
+
+    print("  per-record snapshot statistics (eligible = records that can answer):")
+    for field in _FILE_ACTIVITY_COUNTERS:
+        stats = summary["snapshots"][field]
+        kind = "corr" if stats["kind"] == "correlation" else "act "
+        median = stats["median"]
+        high = stats["max"]
+        median_text = "-" if median is None else f"{median:.1f}"
+        max_text = "-" if high is None else str(high)
+        print(
+            f"    {kind} {field:<27}"
+            f"eligible={stats['eligible_records']:>5}  "
+            f"nonzero={stats['nonzero_records']:>5}  "
+            f"median={median_text:>6}  "
+            f"max={max_text:>5}"
+        )
+    print()
+    print("  notes:")
+    print("    state=none is a measured zero - the transcript held nothing")
+    print("    recognizable - and is not state=unavailable, where the measurement")
+    print("    never ran; neither is the changed-file ranking feature's own")
+    print("    changed_files_signal=off, which only says that feature was off.")
+    print("    state=partial values are floors: a bound kept events unread.")
+    print("    correlation=tracker_miss and correlation=unavailable zeros are")
+    print("    excluded from the two corr counters, which report a lineage gap.")
+    print("    No path, module, symbol, result body, envelope text or unknown")
+    print("    nested key is read from a record or printed here.")
     print()
 
 
