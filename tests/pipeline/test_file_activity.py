@@ -27,6 +27,7 @@ from packages.pipeline.cline_activity import (
     OUTCOME_CONFIRMED,
     OUTCOME_FAILED,
     OUTCOME_NOT_APPLICABLE,
+    OUTCOME_NOT_MODIFIED,
     OUTCOME_UNKNOWN,
     REJECT_CONTROL,
     REJECT_DRIVE,
@@ -1468,3 +1469,233 @@ async def test_a_tracker_without_a_root_is_stated_as_unavailable() -> None:
     await stage.execute(context)
 
     assert context.get_metadata("file_activity") == INERT_FILE_ACTIVITY
+
+
+# ---------------------------------------------------------------------------
+# Native tool calls (Cline 4.x): tool_calls plus role "tool" results
+#
+# Shapes follow a 2026-11-02 wire capture of Cline 4.1.26; every result body here
+# is a placeholder, and none of the captured conversation text is used.
+# ---------------------------------------------------------------------------
+
+
+def _call(call_id: str, name: str, arguments: Any) -> dict[str, Any]:
+    """Build an assistant turn that makes one native tool call."""
+    text = arguments if isinstance(arguments, str) else json.dumps(arguments)
+    return {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [
+            {"id": call_id, "type": "function", "function": {"name": name, "arguments": text}}
+        ],
+    }
+
+
+def _result(call_id: str, payload: Any) -> dict[str, Any]:
+    """Build the ``role: "tool"`` message answering one call."""
+    text = payload if isinstance(payload, str) else json.dumps(payload)
+    return {"role": "tool", "tool_call_id": call_id, "content": text}
+
+
+def _ok(query: str) -> dict[str, Any]:
+    """One successful result entry, with a placeholder body."""
+    return {"query": query, "result": "placeholder", "success": True}
+
+
+_REJECTED = {"error": "This tool call was rejected by the user and not executed."}
+_DENIED_EDIT = {"error": "The user denied this edit. The file was NOT modified."}
+
+
+def test_native_read_files_is_a_confirmed_read_of_each_file(tmp_path: Path) -> None:
+    """``read_files`` reads every file it names, absolute spellings included."""
+    root = _repo(tmp_path)
+    absolute = str(root / "packages" / "demo" / "widget.py")
+    files = [{"path": absolute}, {"path": DELTA, "start_line": 1}]
+    messages = [
+        {"role": "user", "content": "read two files"},
+        _call("c1", "read_files", {"files": files}),
+        _result("c1", [_ok(absolute), _ok(DELTA)]),
+    ]
+
+    batch = _events(messages, root)
+
+    assert [(e.activity, e.file, e.outcome) for e in batch.events] == [
+        ("read", WIDGET, OUTCOME_CONFIRMED),
+        ("read", DELTA, OUTCOME_CONFIRMED),
+    ]
+
+
+def test_native_read_entries_carry_their_own_status(tmp_path: Path) -> None:
+    """Each entry of a multi-file result decides its own file's outcome."""
+    root = _repo(tmp_path)
+    files = [{"path": WIDGET}, {"path": DELTA}, {"path": OTHER}]
+    messages = [
+        _call("c1", "read_files", {"files": files}),
+        _result(
+            "c1",
+            [
+                _ok(WIDGET),
+                {"query": DELTA, "error": "placeholder"},
+                {"query": OTHER, "result": "placeholder"},
+            ],
+        ),
+    ]
+
+    outcomes = [e.outcome for e in _events(messages, root).events]
+
+    assert outcomes == [OUTCOME_CONFIRMED, OUTCOME_FAILED, OUTCOME_UNKNOWN]
+
+
+def test_native_editor_success_and_denial(tmp_path: Path) -> None:
+    """``editor`` modifies its ``path``; a denied edit is not a modification."""
+    root = _repo(tmp_path)
+    messages = [
+        _call("c1", "editor", {"path": WIDGET, "new_text": "x"}),
+        _result("c1", {"query": f"edit:{WIDGET}", "result": "placeholder", "success": True}),
+        _call("c2", "editor", {"path": DELTA, "old_text": "a", "new_text": "b"}),
+        _result("c2", _DENIED_EDIT),
+    ]
+
+    events = _events(messages, root).events
+
+    assert [(e.activity, e.file, e.outcome) for e in events] == [
+        ("modified", WIDGET, OUTCOME_CONFIRMED),
+        ("modified", DELTA, OUTCOME_NOT_MODIFIED),
+    ]
+
+
+def test_a_rejected_native_read_is_a_failed_read(tmp_path: Path) -> None:
+    """A call the user rejected before it ran read nothing."""
+    root = _repo(tmp_path)
+    messages = [
+        _call("c1", "read_files", {"files": [{"path": WIDGET}]}),
+        _result("c1", _REJECTED),
+    ]
+
+    counts = _observe(FileActivityTracker(maxsize=4), messages, root)
+
+    assert counts.files_read == 0
+    assert counts.read_attempts == 1
+    assert counts.reads_failed == 1
+
+
+def test_native_search_and_commands_name_no_file(tmp_path: Path) -> None:
+    """``search_codebase`` and ``run_commands`` are activity without a file."""
+    root = _repo(tmp_path)
+    messages = [
+        _call("c1", "search_codebase", {"queries": ["pattern"]}),
+        _result("c1", [_ok("pattern")]),
+        _call("c2", "run_commands", {"commands": ["cat " + WIDGET]}),
+        _result("c2", _REJECTED),
+    ]
+
+    counts = _observe(FileActivityTracker(maxsize=4), messages, root)
+
+    assert counts.state == STATE_MEASURED
+    assert counts.other_events == 2
+    assert counts.files_touched == 0
+
+
+def test_unknown_native_tools_and_unmatched_results_are_not_activity(tmp_path: Path) -> None:
+    """A tool outside the table, or a result for no known call, is not counted."""
+    root = _repo(tmp_path)
+    messages = [
+        _call("c1", "ask_question", {"question": "?", "options": []}),
+        _result("c1", "an answer"),
+        _result("never-called", [_ok(WIDGET)]),
+    ]
+
+    assert _events(messages, root).events == ()
+
+
+def test_an_unreadable_native_result_is_unknown_not_confirmed(tmp_path: Path) -> None:
+    """Non-JSON results and entry-count mismatches never read as success."""
+    root = _repo(tmp_path)
+    messages = [
+        _call("c1", "read_files", {"files": [{"path": WIDGET}]}),
+        _result("c1", "not json at all"),
+        _call("c2", "read_files", {"files": [{"path": DELTA}, {"path": OTHER}]}),
+        _result("c2", [_ok(DELTA)]),
+    ]
+
+    outcomes = [e.outcome for e in _events(messages, root).events]
+
+    assert outcomes == [OUTCOME_UNKNOWN, OUTCOME_UNKNOWN, OUTCOME_UNKNOWN]
+
+
+def test_result_text_cannot_change_a_native_status(tmp_path: Path) -> None:
+    """Only the ``error`` and ``success`` keys count; the body is never searched."""
+    root = _repo(tmp_path)
+    body = {"query": WIDGET, "result": '"error": "The user denied this edit."', "success": True}
+    messages = [
+        _call("c1", "read_files", {"files": [{"path": WIDGET}]}),
+        _result("c1", [body]),
+    ]
+
+    assert _events(messages, root).events[0].outcome == OUTCOME_CONFIRMED
+
+
+def test_unreadable_native_arguments_are_a_rejected_path(tmp_path: Path) -> None:
+    """A file-naming call whose arguments are not JSON is counted, as rejected."""
+    root = _repo(tmp_path)
+    messages = [_call("c1", "editor", "{not json"), _result("c1", {"success": True})]
+
+    counts = _observe(FileActivityTracker(maxsize=4), messages, root)
+
+    assert counts.paths_rejected == 1
+    assert counts.modification_attempts == 0
+
+
+def test_a_native_path_outside_the_repository_is_rejected(tmp_path: Path) -> None:
+    """Native targets go through the same containment as envelope targets."""
+    root = _repo(tmp_path / "repo")
+    outside = str(tmp_path / "elsewhere.txt")
+    messages = [
+        _call("c1", "read_files", {"files": [{"path": outside}]}),
+        _result("c1", [_ok(outside)]),
+    ]
+
+    event = _events(messages, root).events[0]
+
+    assert event.file == ""
+    assert event.rejection == REJECT_OUTSIDE
+
+
+def test_native_and_envelope_activity_count_together(tmp_path: Path) -> None:
+    """A transcript holding both forms counts both, in one snapshot."""
+    root = _repo(tmp_path)
+    messages = [
+        _envelope(WIDGET),
+        REPLY,
+        _call("c1", "editor", {"path": DELTA, "new_text": "x"}),
+        _result("c1", {"success": True}),
+    ]
+
+    counts = _observe(FileActivityTracker(maxsize=4), messages, root)
+
+    assert counts.files_read == 1
+    assert counts.files_modified == 1
+    assert counts.files_touched == 2
+
+
+def test_a_replayed_native_transcript_is_a_snapshot_not_a_sum(tmp_path: Path) -> None:
+    """Resending the conversation restates its activity; it never adds to it."""
+    root = _repo(tmp_path)
+    tracker = FileActivityTracker(maxsize=4)
+    first = [
+        {"role": "user", "content": "read it"},
+        _call("c1", "read_files", {"files": [{"path": WIDGET}]}),
+        _result("c1", [_ok(WIDGET)]),
+    ]
+    later = [
+        *first,
+        {"role": "assistant", "content": "done"},
+        {"role": "user", "content": "thanks"},
+    ]
+
+    one = _observe(tracker, first, root)
+    two = _observe(tracker, later, root)
+    again = _observe(tracker, later, root)
+
+    assert one.files_read == two.files_read == again.files_read == 1
+    assert two.as_dict() == again.as_dict()

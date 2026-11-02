@@ -214,6 +214,12 @@ are floors) and `correlation`, whose `tracker_miss` means incomplete supplied-co
 the conversation, and makes its zero not a measurement. Limits: latency unmeasured against a feature-off arm, live
 validation on a scripted rather than native Cline transcript, unrecognized spellings not counted.
 
+Since 2026-11-02 C1 also reads Cline 4.x native tool calls (`read_files`, `editor`, `search_codebase`, `run_commands`
+as assistant `tool_calls` plus `role: "tool"` results), not only the older text envelopes. A native-Cline probe found
+that the gateway had been dropping a client's `tools` field and that the serializer rejected `role: "tool"`
+messages, so a native tool-calling client could not use tools through the gateway at all; both are fixed (`8695063`).
+The native-Cline live validation itself is still to be rerun.
+
 `scripts/analyze_sessions.py` now summarizes those records offline in a count-only FILE ACTIVITY section that reads
 only the seventeen keys and never sums a counter across records, because every one of them is a snapshot of the
 transcript its request carried. Do not read a `context.file_activity` `state=none` as "feature off": it means the

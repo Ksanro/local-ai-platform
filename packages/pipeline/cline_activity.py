@@ -31,6 +31,18 @@ never closes, or an envelope that does not start the message.  A header found
 message or model answer can produce - is never seen, because nothing after the
 terminator is examined at all.
 
+Native tool calls (Cline 4.x)
+-----------------------------
+
+Cline 4.x does not write envelopes.  It uses OpenAI native tool calling: an
+assistant turn carries ``tool_calls`` (tool name plus JSON ``arguments``) and each
+result arrives as a ``role: "tool"`` message whose ``tool_call_id`` names the call.
+:data:`NATIVE_TOOL_ACTIVITY` maps those tool names to the same activities, the
+call's arguments supply the file targets - which go through the same normalizer as
+an envelope's - and the result is decoded as JSON for its ``error`` and
+``success`` keys only.  Its ``result`` text is never examined.  A result without a
+readable status is ``"unknown"``, never a success.
+
 Result status
 -------------
 
@@ -66,7 +78,9 @@ Envelope text is untrusted input, and path text doubly so.
 
 - Only the anchored header is parsed.  No result body, source text, or command
   output is scanned for filenames, ever.  The one exception is the closed status
-  read above, which can produce a token and no string.
+  read above, which can produce a token and no string.  A native call's targets
+  come from its arguments, and its result is consulted only for the ``error`` and
+  ``success`` keys of the decoded JSON.
 - Every target is normalized before it is counted: slashes, redundant ``.``
   segments, relative spellings, absolute in-repository spellings, Windows drive
   spelling and case, and Unicode composition.
@@ -104,12 +118,15 @@ Public API
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import unicodedata
 from collections import deque
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 from typing import Final
 
 from packages.context.content import content_to_text
@@ -126,6 +143,8 @@ __all__ = [
     "MAX_ENVELOPE_HEADER_CHARS",
     "MAX_PATH_CHARS",
     "MAX_RESULT_HEAD_CHARS",
+    "MAX_NATIVE_RESULT_CHARS",
+    "NATIVE_TOOL_ACTIVITY",
     "ACTIVITY_NONE",
     "ACTIVITY_READ",
     "ACTIVITY_MODIFIED",
@@ -181,6 +200,30 @@ MAX_RESULT_HEAD_CHARS: Final = 200
 #: only outcome values that may leave this module, and no marker text does.
 #: ``OUTCOME_FAILED`` is the reader's half of :data:`OUTCOME_NOT_MODIFIED`: the
 #: client said this read did not happen.
+#: Cline 4.x's native tools, as an OpenAI ``tool_calls`` function name, and the
+#: activity each reports.  The same split as the envelope registry: ``read_files``
+#: reads and ``editor`` modifies the files their arguments name, while
+#: ``search_codebase`` and ``run_commands`` are recognized without naming one - a
+#: shell command can touch any file, and which is not something its text says
+#: reliably.  A tool outside this table is not activity this module recognizes.
+NATIVE_TOOL_ACTIVITY: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "read_files": ACTIVITY_READ,
+        "editor": ACTIVITY_MODIFIED,
+        "search_codebase": ACTIVITY_NONE,
+        "run_commands": ACTIVITY_NONE,
+    }
+)
+
+#: The longest native tool result or argument string decoded as JSON.  A read of a
+#: large file returns its contents, so this is generous; a longer result is read
+#: as an unknown status rather than parsed.
+MAX_NATIVE_RESULT_CHARS: Final = 4_000_000
+
+#: Internal status tokens of one native result entry.
+_NATIVE_OK: Final = "ok"
+_NATIVE_FAILED: Final = "failed"
+
 OUTCOME_CONFIRMED: Final = "confirmed"
 OUTCOME_NOT_MODIFIED: Final = "not_modified"
 OUTCOME_FAILED: Final = "failed"
@@ -449,7 +492,13 @@ class ResolvedEnvelopes:
 
 
 def parse_envelopes(messages: object) -> tuple[list[Envelope], int]:
-    """Read the anchored envelope headers of the user-role messages.
+    """Read the transcript's tool activity, in both forms Cline has used.
+
+    Older Cline reports a tool result as a user-role message with an anchored
+    envelope header.  Cline 4.x uses OpenAI native tool calls: an assistant turn's
+    ``tool_calls`` names the tool and its arguments, and a ``role: "tool"`` message
+    with the matching ``tool_call_id`` carries the result.  Both become the same
+    :class:`Envelope` values, in message order, under one bound.
 
     When a transcript holds more recognized envelopes than
     :data:`MAX_ENVELOPES_PER_REQUEST`, it is the *oldest* that are dropped: the
@@ -470,8 +519,25 @@ def parse_envelopes(messages: object) -> tuple[list[Envelope], int]:
 
     found: deque[Envelope] = deque(maxlen=MAX_ENVELOPES_PER_REQUEST)
     recognized = 0
+    # Native tool calls the transcript has announced so far, by call id, so each
+    # ``role: "tool"`` result can be read against the call it answers.
+    calls: dict[str, tuple[str, object]] = {}
     for message in messages:
-        if not isinstance(message, dict) or message.get("role") != "user":
+        if not isinstance(message, dict):
+            continue
+        role = message.get("role")
+        if role == "assistant":
+            _remember_native_calls(message.get("tool_calls"), calls)
+            continue
+        if role == "tool":
+            call = calls.get(str(message.get("tool_call_id", "")))
+            if call is None:
+                continue
+            for envelope in _native_envelopes(call[0], call[1], message.get("content", "")):
+                recognized += 1
+                found.append(envelope)
+            continue
+        if role != "user":
             continue
         envelope = parse_message_envelope(content_to_text(message.get("content", "")))
         if envelope is None:
@@ -479,6 +545,175 @@ def parse_envelopes(messages: object) -> tuple[list[Envelope], int]:
         recognized += 1
         found.append(envelope)
     return list(found), max(recognized - MAX_ENVELOPES_PER_REQUEST, 0)
+
+
+def _remember_native_calls(tool_calls: object, calls: dict[str, tuple[str, object]]) -> None:
+    """Record the native tool calls one assistant turn announced.
+
+    Only calls to a tool in :data:`NATIVE_TOOL_ACTIVITY` are kept; any other tool is
+    not file activity this module recognizes, exactly as an unknown envelope header
+    is not an envelope.
+
+    Args:
+        tool_calls: The assistant message's ``tool_calls`` value.  Untrusted.
+        calls: ``{call id: (tool name, raw arguments)}``, updated in place.
+    """
+    if not isinstance(tool_calls, list):
+        return
+    for call in tool_calls:
+        if not isinstance(call, dict):
+            continue
+        function = call.get("function")
+        if not isinstance(function, dict):
+            continue
+        name = function.get("name")
+        call_id = call.get("id")
+        if isinstance(name, str) and name in NATIVE_TOOL_ACTIVITY and isinstance(call_id, str):
+            calls[call_id] = (name, function.get("arguments"))
+
+
+def _native_envelopes(tool: str, arguments: object, content: object) -> list[Envelope]:
+    """Turn one native tool call and its result into envelopes.
+
+    The call's arguments name the files; the result is read only for its status
+    keys.  A ``read_files`` call can name several files and yields one envelope per
+    file, matched to the result's entries by position.
+
+    Args:
+        tool: A tool name from :data:`NATIVE_TOOL_ACTIVITY`.
+        arguments: The call's ``arguments`` - a JSON string in OpenAI's format.
+            Untrusted.
+        content: The ``role: "tool"`` message's content.  Untrusted.
+
+    Returns:
+        The envelopes, in the order the call named their files.  A file-naming call
+        whose arguments cannot be read yields one malformed envelope, so it is
+        counted as a rejected path rather than lost.
+    """
+    activity = NATIVE_TOOL_ACTIVITY[tool]
+    if activity == ACTIVITY_NONE:
+        return [Envelope(tool=tool, activity=ACTIVITY_NONE, target="")]
+
+    args = _json_object(arguments)
+    if args is None:
+        return [Envelope(tool=tool, activity=activity, target="", malformed=True)]
+    targets = _native_targets(args, activity)
+    if not targets:
+        return [Envelope(tool=tool, activity=activity, target="")]
+
+    statuses = _native_statuses(content, len(targets))
+    failed = OUTCOME_FAILED if activity == ACTIVITY_READ else OUTCOME_NOT_MODIFIED
+    envelopes: list[Envelope] = []
+    for target, status in zip(targets, statuses, strict=True):
+        outcome = {_NATIVE_OK: OUTCOME_CONFIRMED, _NATIVE_FAILED: failed}.get(
+            status, OUTCOME_UNKNOWN
+        )
+        malformed = not isinstance(target, str)
+        envelopes.append(
+            Envelope(
+                tool=tool,
+                activity=activity,
+                target="" if malformed else str(target).strip(),
+                malformed=malformed,
+                outcome=outcome,
+            )
+        )
+    return envelopes
+
+
+def _native_targets(args: dict[str, object], activity: str) -> list[object]:
+    """Return the file targets a native call's arguments name, unvalidated.
+
+    ``read_files`` names its files as ``files: [{path, start_line?, end_line?}]``;
+    a single ``path`` (or ``file_path``) is accepted as well, which is how Cline's
+    own saved sessions record some reads.  ``editor`` names one ``path``.  A target
+    that is not a string is returned as-is so the caller can count it malformed.
+
+    Args:
+        args: The decoded call arguments.
+        activity: The tool's activity, deciding which shapes are accepted.
+
+    Returns:
+        The targets in the order the call named them, at most
+        :data:`MAX_ENVELOPES_PER_REQUEST`.
+    """
+    files = args.get("files") if activity == ACTIVITY_READ else None
+    if isinstance(files, list):
+        targets: list[object] = []
+        for item in files[:MAX_ENVELOPES_PER_REQUEST]:
+            if isinstance(item, dict):
+                targets.append(item.get("path", item.get("file_path")))
+            else:
+                targets.append(item)
+        return targets
+    single = args.get("path", args.get("file_path"))
+    return [] if single is None else [single]
+
+
+def _native_statuses(content: object, count: int) -> list[str]:
+    """Return one status per target from a native tool result.
+
+    Only the ``error`` and ``success`` keys are consulted.  The ``result`` text -
+    file contents, search output - is never examined, so a file that happens to
+    contain the word "error" cannot change a status.
+
+    - An object with an ``error`` key: every target failed (a denied edit, or a call
+      the user rejected before it ran).
+    - An object: its own status applies to every target.
+    - A list with exactly ``count`` entries: entry *i* is target *i*'s status.
+    - Anything else - a list of another length, text that is not JSON, a result
+      longer than :data:`MAX_NATIVE_RESULT_CHARS` - is unknown for every target.
+
+    Args:
+        content: The tool message content.  Untrusted.
+        count: How many targets the call named.
+
+    Returns:
+        ``count`` tokens, each ``_NATIVE_OK``, ``_NATIVE_FAILED`` or ``""``.
+    """
+    decoded = _json_value(content_to_text(content))
+    if isinstance(decoded, dict):
+        return [_native_status(decoded)] * count
+    if isinstance(decoded, list) and len(decoded) == count:
+        return [_native_status(entry) for entry in decoded]
+    return [""] * count
+
+
+def _native_status(entry: object) -> str:
+    """Return the status one result object reports.
+
+    Args:
+        entry: One decoded result object.  Untrusted.
+
+    Returns:
+        ``_NATIVE_FAILED`` for a present ``error`` or ``success: false``,
+        ``_NATIVE_OK`` for ``success: true`` and no error, and ``""`` otherwise.
+    """
+    if not isinstance(entry, dict):
+        return ""
+    if entry.get("error") or entry.get("success") is False:
+        return _NATIVE_FAILED
+    if entry.get("success") is True:
+        return _NATIVE_OK
+    return ""
+
+
+def _json_object(value: object) -> dict[str, object] | None:
+    """Decode a call's arguments into an object, or ``None`` if they are not one."""
+    if isinstance(value, dict):
+        return value
+    decoded = _json_value(value) if isinstance(value, str) else None
+    return decoded if isinstance(decoded, dict) else None
+
+
+def _json_value(text: str) -> object:
+    """Decode bounded JSON text, or ``None`` when it is too long or not JSON."""
+    if len(text) > MAX_NATIVE_RESULT_CHARS:
+        return None
+    try:
+        return json.loads(text)
+    except ValueError:
+        return None
 
 
 def parse_message_envelope(text: str) -> Envelope | None:

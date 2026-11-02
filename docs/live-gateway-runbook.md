@@ -1492,6 +1492,35 @@ produces. It is a claim about this function on this filesystem, not about reques
 end-to-end cost is still unmeasured, and measuring it needs a feature-off arm (see *Verification
 status*).
 
+### Native tool calls (Cline 4.x)
+
+Cline 4.x writes no envelopes. A 2026-11-02 wire capture of Cline 4.1.26 (29 requests, kept
+outside the repository) shows OpenAI native tool calling: an assistant turn with
+`content: null` and `tool_calls` naming the tool and its JSON `arguments`, answered by a
+`role: "tool"` message with the matching `tool_call_id` whose content is a JSON string.
+`NATIVE_TOOL_ACTIVITY` in `packages/pipeline/cline_activity.py` maps the tools:
+
+| Tool | Activity | Targets | Status read from the result |
+| --- | --- | --- | --- |
+| `read_files` | read | `files[].path` (or a single `path`/`file_path`) | per-file list entry, by position |
+| `editor` | modified | `path` | the result object |
+| `search_codebase`, `run_commands` | no file | - | - |
+
+Only the decoded result's `error` and `success` keys are read: `success: true` confirms,
+`success: false` or an `error` key fails (a denied edit is `not_modified`, a rejected
+read is a failed read), and anything else - no status, text that is not JSON, a list whose
+length does not match the call's files - is `unknown`. The `result` text is never
+examined. Targets go through the same normalizer as envelope targets, so Cline's absolute
+`c:\...` paths inside the repository become repository-relative and anything outside is
+rejected. Tools outside the table (`ask_question`, `fetch_web_content`) and results for a
+call the transcript never announced are not activity. A file a model changes through
+`run_commands` is not attributed, exactly as `execute_command` never was.
+
+Replayed over that capture offline, the parser reports 3 confirmed reads, 1 confirmed
+modification and 16 file-less events on the final request, and every request's snapshot
+is non-decreasing: the same transcript resent restates its activity rather than adding to
+it. This is offline evidence; the native-Cline live validation is still to be rerun.
+
 ### Attempts and outcomes are separate numbers
 
 A header says an operation was attempted. The client's own result line says what
