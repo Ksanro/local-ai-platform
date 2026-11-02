@@ -24,8 +24,8 @@ Message Ordering
 5. Related Callers section.
 6. Related Callees section.
 7. Related Modules section.
-8. Original user messages (copied unchanged).
-9. Assistant messages (copied unchanged).
+8. Conversation messages - user, assistant and tool - copied unchanged,
+   in their original order.
 
 Context Quality v2
 ------------------
@@ -137,8 +137,8 @@ class OpenAISerializer(ProviderSerializer):
         5. Related Callers section (if ContextPackage has callers).
         6. Related Callees section (if ContextPackage has callees).
         7. Related Modules section (if ContextPackage has modules).
-        8. Original user messages (copied unchanged).
-        9. Assistant messages (copied unchanged).
+        8. Conversation messages - user, assistant and tool - copied
+           unchanged, in their original order.
 
         Args:
             context_package: The platform context package, or ``None``.
@@ -161,7 +161,7 @@ class OpenAISerializer(ProviderSerializer):
         # Extract client system messages (preserve verbatim).
         client_systems = self._extract_client_system_messages(messages)
 
-        # Extract conversation messages (user + assistant only).
+        # Extract conversation messages (user, assistant and tool).
         conversation_messages = self._extract_conversation_messages(messages)
 
         # Assemble a SINGLE system message. vLLM's Qwen chat template
@@ -196,7 +196,7 @@ class OpenAISerializer(ProviderSerializer):
                 {"role": "system", "content": "\n\n".join(parts)}
             )
 
-        # Conversation messages (user + assistant) last.
+        # Conversation messages (user, assistant and tool) last.
         all_messages.extend(conversation_messages)
 
         return ProviderRequest(
@@ -209,8 +209,10 @@ class OpenAISerializer(ProviderSerializer):
     def _validate_messages(messages: list[dict[str, Any]]) -> None:
         """Validate message structure.
 
-        Each message must have ``role`` and ``content`` keys.
-        Roles must be one of ``system``, ``user``, ``assistant``.
+        Each message must have ``role`` and ``content`` keys, except an
+        assistant message carrying ``tool_calls``, which may omit
+        ``content``. Roles must be one of ``system``, ``user``,
+        ``assistant``, ``tool``.
 
         Args:
             messages: The messages to validate.
@@ -218,7 +220,7 @@ class OpenAISerializer(ProviderSerializer):
         Raises:
             SerializationFormatError: If messages are invalid.
         """
-        valid_roles = {"system", "user", "assistant"}
+        valid_roles = {"system", "user", "assistant", "tool"}
         for i, message in enumerate(messages):
             if not isinstance(message, dict):
                 raise SerializationFormatError(
@@ -228,7 +230,10 @@ class OpenAISerializer(ProviderSerializer):
                 raise SerializationFormatError(
                     f"Message {i} missing 'role' key"
                 )
-            if "content" not in message:
+            # An assistant turn that only calls tools may omit ``content``.
+            if "content" not in message and not (
+                message["role"] == "assistant" and message.get("tool_calls")
+            ):
                 raise SerializationFormatError(
                     f"Message {i} missing 'content' key"
                 )
@@ -434,24 +439,26 @@ class OpenAISerializer(ProviderSerializer):
     def _extract_conversation_messages(
         messages: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
-        """Extract and return user and assistant messages unchanged.
+        """Extract and return user, assistant and tool messages unchanged.
 
-        Copies all user and assistant messages in their original order.
-        System messages are excluded (they are handled separately).
-        The serializer never modifies user input.
+        Copies all user, assistant and tool messages in their original
+        order, so each ``role: "tool"`` result stays directly after the
+        assistant ``tool_calls`` turn it answers. System messages are
+        excluded (they are handled separately). The serializer never
+        modifies user input.
 
         Args:
             messages: The full message list from the gateway.
 
         Returns:
-            A new list containing only user and assistant messages,
+            A new list containing only user, assistant and tool messages,
             in their original order.
         """
         return [
             dict(message)  # shallow copy to avoid mutation
             for message in messages
             if isinstance(message, dict)
-            and message.get("role") in ("user", "assistant")
+            and message.get("role") in ("user", "assistant", "tool")
         ]
 
 

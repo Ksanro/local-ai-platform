@@ -359,7 +359,11 @@ async def chat_completions(
     # Build the pipeline request.
     # Only optional passthrough params go in kwargs; messages/model/stream
     # are the sole source of truth via the dedicated PipelineRequest fields.
-    kwargs: dict[str, Any] = {}
+    # Every protocol field the gateway does not declare - ``tools``,
+    # ``tool_choice``, ``top_p``, ``stop`` and the rest - arrives in
+    # ``model_extra`` and is forwarded unchanged: dropping ``tools`` silently
+    # turns a native tool-calling client into a text-only one.
+    kwargs: dict[str, Any] = dict(body.model_extra or {})
     if body.temperature is not None:
         kwargs["temperature"] = body.temperature
     if body.max_tokens is not None:

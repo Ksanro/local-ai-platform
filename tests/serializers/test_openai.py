@@ -545,3 +545,63 @@ class TestClientSystemMessagePreservation:
         assert "Primary symbol:" in result.messages[0]["content"]
         assert result.messages[1]["role"] == "user"
         assert result.messages[1]["content"] == "How does auth work?"
+
+
+def _native_tool_conversation() -> list[dict[str, object]]:
+    """A Cline 4.x-style native tool exchange: call, result, follow-up."""
+    return [
+        {"role": "system", "content": "You are a coding agent."},
+        {"role": "user", "content": "Read the readme."},
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "read_files", "arguments": '{"paths":["README.md"]}'},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "content": "# Title"},
+        {"role": "assistant", "content": "It has a title."},
+        {"role": "user", "content": "Thanks."},
+    ]
+
+
+def test_native_tool_messages_survive_context_injection_in_order() -> None:
+    """Tool results stay, in order, beside the repository context.
+
+    ``role: "tool"`` used to fail validation, so the stage fell back to the
+    unserialized messages and the request silently lost its repository
+    context on every turn after the first tool call.
+    """
+    messages = _native_tool_conversation()
+    package = ContextPackage(primary_symbol="A", supporting_symbols=["B"])
+
+    result = OpenAISerializer().serialize(package, messages)
+
+    assert [m["role"] for m in result.messages] == [
+        "system",
+        "user",
+        "assistant",
+        "tool",
+        "assistant",
+        "user",
+    ]
+    assert "You are a coding agent." in result.messages[0]["content"]
+    assert "Primary symbol:" in result.messages[0]["content"]
+    assert result.messages[1:] == messages[1:]
+
+
+def test_assistant_tool_call_without_content_is_valid() -> None:
+    """An assistant turn that only calls tools may omit ``content``."""
+    result = OpenAISerializer().serialize(None, _native_tool_conversation())
+
+    assert "content" not in result.messages[2]
+    assert result.messages[2]["tool_calls"][0]["id"] == "call_1"
+
+
+def test_assistant_without_content_or_tool_calls_is_still_invalid() -> None:
+    """Relaxing ``content`` for tool calls does not relax it in general."""
+    with pytest.raises(SerializationFormatError):
+        OpenAISerializer().serialize(None, [{"role": "assistant"}])

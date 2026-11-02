@@ -106,7 +106,7 @@ The local git hook (`.git/hooks/pre-commit`, untracked and machine-local)
 delegates to the tracked `scripts/precommit_test_gate.sh`:
 
 - **Default mode (what the hook runs):** the live-path test set only
-  (`tests/pipeline`, `tests/gateway`, `tests/providers`, `tests/planning`,
+  (`tests/pipeline`, `tests/gateway`, `tests/providers`, `tests/serializers`, `tests/planning`,
   `tests/context`, `tests/repository`, `tests/evaluation`, `tests/scripts`,
   `tests/engineering_memory`, `tests/test_protocol_invariant.py`, plus the
   three activated `tests/observability` quality files). The commit is

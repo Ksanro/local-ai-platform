@@ -74,4 +74,4 @@ jobs:
           uv sync --locked
       - name: Run live-path tests
         run: |
-          uv run python -m pytest tests/pipeline tests/gateway tests/providers tests/planning tests/context tests/repository -q
+          uv run python -m pytest tests/pipeline tests/gateway tests/providers tests/serializers tests/planning tests/context tests/repository -q

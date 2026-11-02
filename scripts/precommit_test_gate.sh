@@ -46,6 +46,7 @@ if [ "$run_full" -eq 0 ]; then
     tests/pipeline \
     tests/gateway \
     tests/providers \
+    tests/serializers \
     tests/planning \
     tests/context \
     tests/repository \

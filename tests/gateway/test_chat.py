@@ -240,6 +240,71 @@ def test_chat_completions_forwards_context_intent_metadata() -> None:
     assert pipeline_request.metadata["context_intent"] == "IMPLEMENT"
 
 
+def test_chat_completions_forwards_native_tool_fields_to_the_provider() -> None:
+    """Undeclared protocol fields reach the provider payload unchanged.
+
+    The endpoint used to copy only ``temperature`` and ``max_tokens`` into the
+    pipeline kwargs, so a native tool-calling client (Cline 4.x) lost its
+    ``tools`` and the backend model answered in plain text. Gateway-only
+    fields must still stay out of what is forwarded.
+    """
+    from packages.pipeline.normalized import NormalizedRequest
+
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "read_files",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+    ]
+    payload = {
+        "messages": [{"role": "user", "content": "read the readme"}],
+        "model": "qwen36",
+        "stream": True,
+        "tools": tools,
+        "tool_choice": "auto",
+        "parallel_tool_calls": False,
+        "top_p": 0.9,
+        "stop": ["</done>"],
+        "reasoning_effort": "high",
+        "temperature": 0.2,
+        "max_tokens": 512,
+        "context_intent": "EXPLAIN",
+        "repository_context_enabled": True,
+    }
+    mock_engine = AsyncMock()
+    mock_engine.execute = AsyncMock(
+        return_value=PipelineResponse(
+            success=True,
+            data={"choices": [{"message": {"role": "assistant", "content": "ok"}}]},
+        )
+    )
+    app = _make_app()
+    app.state.pipeline = mock_engine
+
+    TestClient(app).post("/v1/chat/completions", json=payload)
+
+    pipeline_request = mock_engine.execute.call_args.args[0]
+    provider_payload = NormalizedRequest.from_client(
+        pipeline_request.to_provider_kwargs()
+    ).to_provider_payload("backend-model")
+
+    assert provider_payload["tools"] == tools
+    assert provider_payload["tool_choice"] == "auto"
+    assert provider_payload["parallel_tool_calls"] is False
+    assert provider_payload["top_p"] == 0.9
+    assert provider_payload["stop"] == ["</done>"]
+    assert provider_payload["reasoning_effort"] == "high"
+    assert provider_payload["temperature"] == 0.2
+    assert provider_payload["max_tokens"] == 512
+    assert provider_payload["model"] == "backend-model"
+    assert provider_payload["stream_options"] == {"include_usage": True}
+    assert "context_intent" not in provider_payload
+    assert "repository_context_enabled" not in provider_payload
+
+
 def test_chat_completions_forwards_context_intent_header() -> None:
     """Verify X-Context-Intent is forwarded to the pipeline."""
     payload = {

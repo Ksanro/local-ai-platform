@@ -252,6 +252,16 @@ class NormalizedRequest:
         if self.extra:
             result.update(self.extra)
 
+        # A client's own ``stream_options`` keeps its keys, but usage stays
+        # requested: the session log reads it from the final chunk.
+        if self.stream:
+            client_options = self.extra.get("stream_options")
+            merged: dict[str, Any] = (
+                dict(client_options) if isinstance(client_options, dict) else {}
+            )
+            merged["include_usage"] = True
+            result["stream_options"] = merged
+
         return result
 
     def with_messages(self, messages: list[dict[str, Any]]) -> "NormalizedRequest":
