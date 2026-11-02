@@ -297,9 +297,11 @@ def test_fallback_router() -> None:
     router = FallbackModelRouter("openai")
     client = _client(model_router=router, settings=settings)
     with patch_quality_history([]):
+        # The fallback router reads its model name through its own
+        # get_settings(); unpatched, it would read the machine's .env.
         with patch(
             "apps.gateway.api.runtime_context.get_settings", return_value=settings
-        ):
+        ), patch("packages.providers.router.get_settings", return_value=settings):
             response = client.get("/debug/runtime-context")
     assert response.status_code == 200
     body = response.json()

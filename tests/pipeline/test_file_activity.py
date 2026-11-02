@@ -13,6 +13,7 @@ mean "nothing was touched".
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -405,11 +406,27 @@ def test_an_absent_root_still_measures(tmp_path: Path) -> None:
     assert batch.events[0].file == "x.py"
 
 
+#: Whether this filesystem folds case, decided the way ``file_identity`` decides it.
+_CASE_INSENSITIVE_FS = os.path.normcase("A") == "a"
+
+
 def test_file_identity_is_idempotent() -> None:
     """Normalizing an identity that is already normalized changes nothing."""
-    assert file_identity(file_identity("Apps\\Gateway\\x.py")) == file_identity(
-        "apps/gateway/x.py"
-    )
+    once = file_identity("Apps\\Gateway\\x.py")
+
+    assert file_identity(once) == once
+
+
+def test_file_identity_folds_case_only_where_the_filesystem_does() -> None:
+    """Two spellings differing only in case are one file on Windows, two on Linux."""
+    mixed = file_identity("Apps\\Gateway\\x.py")
+    lower = file_identity("apps/gateway/x.py")
+
+    if _CASE_INSENSITIVE_FS:
+        assert mixed == lower
+    else:
+        assert mixed == "Apps/Gateway/x.py"
+        assert mixed != lower
 
 
 # ---------------------------------------------------------------------------
@@ -422,7 +439,10 @@ def test_module_keys_become_the_envelope_identity(tmp_path: Path) -> None:
     root = _repo(tmp_path)
 
     derived = module_files_of(["packages/demo/widget"])
-    batch = _events([_envelope("Packages\\Demo\\Widget.py")], root)
+    # A case-folding filesystem lets the client's spelling differ in case too;
+    # a case-sensitive one names a different file if it does.
+    spelling = "Packages\\Demo\\Widget.py" if _CASE_INSENSITIVE_FS else "packages\\demo\\widget.py"
+    batch = _events([_envelope(spelling)], root)
 
     assert derived == (WIDGET,)
     assert batch.events[0].file == derived[0]
