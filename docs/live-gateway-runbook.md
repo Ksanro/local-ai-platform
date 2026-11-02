@@ -1519,7 +1519,34 @@ call the transcript never announced are not activity. A file a model changes thr
 Replayed over that capture offline, the parser reports 3 confirmed reads, 1 confirmed
 modification and 16 file-less events on the final request, and every request's snapshot
 is non-decreasing: the same transcript resent restates its activity rather than adding to
-it. This is offline evidence; the native-Cline live validation is still to be rerun.
+it.
+
+**Native-Cline live validation (roadmap E2, 2026-11-02).** Run `e2native-20261102-0939Z`
+at `b6d4a58`: an isolated worktree, a gateway on port 8031 indexing that worktree and
+logging to its own file (confirmed through `/debug/runtime-context` and a config check
+before the first request), and a real Cline 4.1.26 task in Act mode with auto-approve off.
+Six turns asked for, in order: a read, a search, creating a marker file (approved), a read
+of a missing file, an edit to the marker (rejected), and a tool-free answer. The model ran
+no shell command. Results:
+
+| Record | `n_messages` | What it shows |
+| --- | --- | --- |
+| 1 | 2 | `state=none`, `correlation=no_prior_context` - nothing done yet |
+| 2 | 4 | 1 confirmed read; `correlation=measured`, `touched_without_context=1` |
+| 4 | 8 | the search, as `other_events=1` |
+| 6 | 12 | 1 confirmed modification, `files_touched=2` |
+| 8 | 16 | the missing file: `read_attempts=2`, `reads_failed=1` |
+| 9-12 | 18-25 | unchanged snapshot through the rejected edit and the final answer |
+
+The final record matches Cline's own saved task record call for call: `read_files` twice
+(one success, one failure), `search_codebase` once, `editor` twice (the creation, then the
+rejected edit, which cannot undo the confirmed modification of the same file), and
+`ask_question` once, which is not activity. 12 requests produced 12 records, every one
+with usage figures and `context.status=assembled`, so repository context survived the
+tool messages. `scripts/analyze_sessions.py` over the log exits 0, reaches `END OF REPORT`,
+and its FILE ACTIVITY section contains no path. Evidence, including the raw log, stays in
+`C:\Users\ovidi\lap-e2-evidence\e2native-20261102-0939Z`. This validates counting only;
+it measures no latency and no ranking or answer quality.
 
 ### Attempts and outcomes are separate numbers
 

@@ -411,6 +411,22 @@ them.
    `error` field - it crashes HEAD's own copy of the script at that statement, and it
    is not something this item introduced. All of it is analysis of evidence C1 had
    already recorded; no new measurement was taken.
+2. **E2 - Validate file activity with native Cline traffic - DONE (2026-11-02).**
+   The first probe (`e2native-20261101-2121Z`, at `6adb30a`) executed no tool at
+   all: the gateway dropped the client's `tools` field, so the model wrote tool
+   calls as text, and the serializer rejected `role: "tool"` messages. Both were
+   fixed in `8695063`. A wire capture of Cline 4.1.26 then showed it uses OpenAI
+   native tool calls, which C1 did not read; `193c049` (type fix `b6d4a58`) taught
+   C1 that format. The rerun (`e2native-20261102-0939Z`, at `b6d4a58`) drove a real
+   Cline 4.1.26 task through an isolated gateway: 12 requests, 12 records, all with
+   usage, repository context assembled on every one. The final record states one
+   confirmed read, one failed read, one confirmed modification, one search and no
+   rejected path, and matches Cline's own task record call for call; every later
+   record restates the same snapshot rather than adding to it. Correlation was
+   `measured` from the second request on. This validates counting only - no latency
+   or ranking-quality claim. Evidence stays outside the repository
+   (`C:\Users\ovidi\lap-e2-evidence\`); details in the runbook, *Native tool calls
+   (Cline 4.x)*.
 
 #### Explicitly Deferred
 
@@ -422,8 +438,9 @@ them.
 - wholesale activation of the dormant platform stack
 
 A1, A2, all of Phase B, C1 and A3 are complete, which closes Phase A. Phase D
-item 1's compaction is done and Phase E item 1, the offline analysis of the
-records C1 already writes, is done with it; Phase D items 2 and 3 are standing
+item 1's compaction is done, and Phase E items 1 and 2 - offline analysis of the
+records C1 writes, and C1's validation on native Cline traffic - are done with it;
+Phase D items 2 and 3 are standing
 policies rather than work left to do. The remaining execution order is the
 dormant-code and documentation sequence below, with documentation updated
 continuously.

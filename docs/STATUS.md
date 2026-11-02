@@ -211,14 +211,15 @@ path is unconditional - not a ranking input, not a feature flag: `context.file_a
 keys, fifteen counters plus `state` (`none`: nothing the transcript held that the gateway recognizes as a supported
 activity envelope; `unavailable`: the measurement could not run; `partial`: a bound excluded events, so the totals
 are floors) and `correlation`, whose `tracker_miss` means incomplete supplied-context lineage, sticks for the rest of
-the conversation, and makes its zero not a measurement. Limits: latency unmeasured against a feature-off arm, live
-validation on a scripted rather than native Cline transcript, unrecognized spellings not counted.
+the conversation, and makes its zero not a measurement. Limits: latency unmeasured against a feature-off arm,
+unrecognized spellings not counted, and a file a model changes through a shell command not attributed.
 
 Since 2026-11-02 C1 also reads Cline 4.x native tool calls (`read_files`, `editor`, `search_codebase`, `run_commands`
 as assistant `tool_calls` plus `role: "tool"` results), not only the older text envelopes. A native-Cline probe found
 that the gateway had been dropping a client's `tools` field and that the serializer rejected `role: "tool"`
 messages, so a native tool-calling client could not use tools through the gateway at all; both are fixed (`8695063`).
-The native-Cline live validation itself is still to be rerun.
+Roadmap E2 then validated C1 on a real Cline 4.1.26 task through an isolated gateway (2026-11-02): 12 requests, 12
+records, and a final snapshot matching Cline's own task record call for call.
 
 `scripts/analyze_sessions.py` now summarizes those records offline in a count-only FILE ACTIVITY section that reads
 only the seventeen keys and never sums a counter across records, because every one of them is a snapshot of the
