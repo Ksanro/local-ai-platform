@@ -533,9 +533,9 @@ def parse_envelopes(messages: object) -> tuple[list[Envelope], int]:
             call = calls.get(str(message.get("tool_call_id", "")))
             if call is None:
                 continue
-            for envelope in _native_envelopes(call[0], call[1], message.get("content", "")):
+            for native in _native_envelopes(call[0], call[1], message.get("content", "")):
                 recognized += 1
-                found.append(envelope)
+                found.append(native)
             continue
         if role != "user":
             continue
