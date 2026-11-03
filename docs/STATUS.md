@@ -53,8 +53,10 @@ which is now a derived view of one registry rather than a second literal list
 corrections recorded under *Verification status*). That section also carries the live evidence:
 four requests through a gateway restarted from `f74d16d` on 2026-10-26, which is a scripted
 transcript rather than native Cline traffic, and a survey of this repository's own session
-records for what a real client sends. C1's incremental latency has not been measured with a
-feature-off arm. Before that, B4
+records for what a real client sends. C1's incremental latency was measured against a
+feature-off arm on 2026-11-03 (roadmap E3): after two fixes it is 1.6 ms per request at the
+median calibrated conversation and 5.6 ms at a p99 shape larger than the context window
+allows; the first request to name a path still pays its `realpath`. Before that, B4
 removed the mandatory per-request counterfactual cost from change-aware ranking: the
 no-bonus comparison build now
 sits behind `APP_REPOSITORY_CONTEXT_CHANGED_FILES_COMPARISON_ENABLED`, off by

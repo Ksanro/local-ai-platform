@@ -94,10 +94,15 @@ Envelope text is untrusted input, and path text doubly so.
   ``strict=False``: nothing is created, opened, or tested for existence.  The only
   filesystem call is read-only path resolution.
 - A rejection yields a token and a counter.  No path, target text or tool string
-  is ever raised, logged, or returned in a value a caller could persist.  The one
-  place a resolved target is kept is a local inside
-  :func:`resolve_file_activity_events`, memoizing that request's own envelopes; it
-  is not reachable from another request and does not outlive this one.
+  is ever raised, logged, or returned in a value a caller could persist.
+- Resolved targets are kept in memory in two places, neither ever logged or
+  returned: a local inside :func:`resolve_file_activity_events` memoizing one
+  request's envelopes, and the bounded map on :class:`RepositoryPathNormalizer`
+  (:data:`MAX_RESOLVED_PATHS` entries) that carries ``realpath`` answers across
+  requests.  The map's keys are lexically checked candidates and its values are
+  what the filesystem answered, so a client can choose what is looked up but not
+  what it resolves to.  Its one cost is staleness: a link re-pointed while the
+  gateway runs keeps its old answer until evicted or restarted.
 
 Public API
 ----------
@@ -121,7 +126,9 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
 import unicodedata
+from collections import OrderedDict
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -139,6 +146,7 @@ from packages.pipeline.user_messages import (
 
 __all__ = [
     "MAX_ENVELOPES_PER_REQUEST",
+    "MAX_RESOLVED_PATHS",
     "MAX_ENVELOPE_HEADER_CHARS",
     "MAX_PATH_CHARS",
     "MAX_RESULT_HEAD_CHARS",
@@ -179,6 +187,11 @@ MAX_PATH_CHARS: Final = 512
 #: fall out of the window are counted in :attr:`ResolvedEnvelopes.beyond_bound`
 #: rather than silently setting the totals a turn backwards.
 MAX_ENVELOPES_PER_REQUEST: Final = 256
+
+#: Resolved candidates one normalizer remembers across requests.  A conversation
+#: names tens of files, so this holds many conversations' worth, and its memory is
+#: bounded: a key is at most :data:`MAX_PATH_CHARS` past the root.
+MAX_RESOLVED_PATHS: Final = 4096
 
 #: The marker that closes a Cline envelope header and opens its result body.
 #: Everything from here on is model output and is never examined, with the single
@@ -360,13 +373,23 @@ class RepositoryPathNormalizer:
     file that is about to be created, so resolution runs with ``strict=False`` and
     nothing is created, opened, or tested for existence.
 
+    Resolution is the expensive step - two filesystem calls per target on Windows -
+    and a conversation names the same files on every request, so its answers are
+    kept across requests in a bounded least-recently-used map.  Only the filesystem
+    step is kept: every lexical check runs on every call, a key is a candidate that
+    already passed them (so it is at most :data:`MAX_PATH_CHARS` past the root), and
+    a value is what ``realpath`` and ``relpath`` answered - a client chooses which
+    paths are looked up, never what they resolve to.  The cost is staleness: a
+    symlink or junction re-pointed while the gateway runs keeps its old answer until
+    the entry is evicted or the gateway restarts.
+
     Attributes:
         root_ok: Whether the configured root could be resolved at all.  When it
             could not, every target is rejected as ``"root"``: an unusable
             configuration is stated, not guessed at.
     """
 
-    __slots__ = ("_root", "root_ok")
+    __slots__ = ("_lock", "_resolved", "_root", "root_ok")
 
     def __init__(self, root: Path | str) -> None:
         """Bind the normalizer to one repository root.
@@ -377,6 +400,8 @@ class RepositoryPathNormalizer:
         """
         self._root = _canonical_root(root)
         self.root_ok = self._root != ""
+        self._resolved: OrderedDict[str, tuple[str, str]] = OrderedDict()
+        self._lock = threading.Lock()
 
     def normalize(self, target: str) -> tuple[str, str]:
         """Return the ``(file identity, rejection token)`` pair for one target.
@@ -416,10 +441,38 @@ class RepositoryPathNormalizer:
         # the file the envelope meant.
         absolute = identity.startswith("/") or _DRIVE_PREFIX.match(identity) is not None
         candidate = identity if absolute else f"{self._root}/{identity}"
+        with self._lock:
+            cached = self._resolved.get(candidate)
+            if cached is not None:
+                self._resolved.move_to_end(candidate)
+                return cached
+        answer = self._resolve(candidate)
+        if answer is None:
+            # The filesystem refused this time; that is not an answer to keep.
+            return "", REJECT_OUTSIDE
+        with self._lock:
+            self._resolved[candidate] = answer
+            self._resolved.move_to_end(candidate)
+            while len(self._resolved) > MAX_RESOLVED_PATHS:
+                self._resolved.popitem(last=False)
+        return answer
+
+    def _resolve(self, candidate: str) -> tuple[str, str] | None:
+        """Return the containment answer for one lexically valid candidate.
+
+        Args:
+            candidate: An absolute path, or one joined onto the canonical root, that
+                passed every lexical check in :meth:`normalize`.
+
+        Returns:
+            The same ``(file identity, rejection token)`` pair :meth:`normalize`
+            documents, or ``None`` when ``realpath`` raised - a refusal the caller
+            reports as outside without remembering it.
+        """
         try:
             resolved = os.path.realpath(candidate, strict=False)
         except (OSError, ValueError):
-            return "", REJECT_OUTSIDE
+            return None
         try:
             relative = os.path.relpath(resolved, self._root)
         except ValueError:
@@ -836,11 +889,12 @@ def resolve_file_activity_events(
     A target spelling is resolved by the normalizer at most once per call: a Cline
     transcript re-sends the same envelope text inside every request, so the same
     handful of targets would otherwise reach ``realpath`` again for every copy of
-    itself.  That cache is a local of this function, not state on the normalizer -
-    it dies with the request, holds nothing a client could have written to poison a
-    later one, and is bounded by :data:`MAX_ENVELOPES_PER_REQUEST` because it can
-    only ever gain one entry per envelope parsed here.  Distinct spellings of the
-    same file are distinct keys, and each still resolves on its own.
+    itself.  That map is a local of this function and dies with the request; it
+    saves even the lexical checks for a repeated spelling, and is bounded by
+    :data:`MAX_ENVELOPES_PER_REQUEST` because it can only ever gain one entry per
+    envelope parsed here.  Across requests the normalizer keeps its own bounded map
+    of filesystem answers, so a later request of the same conversation does not
+    reach ``realpath`` again for a file it has already named.
     """
     envelopes, beyond = parse_envelopes(messages)
     resolved_targets: dict[str, tuple[str, str]] = {}

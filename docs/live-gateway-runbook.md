@@ -1466,15 +1466,20 @@ drive-absolute target (`C:\Users\dev\repo\x.py`) was the one spelling that used 
 relative and joined onto the root, landing outside it; it is now recognized as absolute before
 any joining is attempted.
 
-Resolution is memoized within a request only: `resolve_file_activity_events` keeps a
-local map from target spelling to resolved identity for the duration of one call, so the
-forty copies of one envelope a re-sending transcript carries cost one `realpath` rather
-than forty. The map is a function-local, never state on the normalizer or the tracker -
-no client path is held past the request that named it, nothing can go stale between
-requests, and its size is bounded by `MAX_ENVELOPES_PER_REQUEST` because it gains at most
-one entry per envelope parsed. Distinct spellings of one file are distinct keys and each
-still resolves on its own, which is the honest limit of a cache that refuses to outlive a
-request; the containment rules, the rejections and the counts are untouched by it.
+Resolution is memoized at two levels. Within a request, `resolve_file_activity_events`
+keeps a local map from target spelling to resolved identity, so the forty copies of one
+envelope a re-sending transcript carries cost one lexical check and one lookup rather
+than forty; it is bounded by `MAX_ENVELOPES_PER_REQUEST`. Across requests (since roadmap
+E3, 2026-11-03), `RepositoryPathNormalizer` keeps the filesystem answers - what
+`realpath` and `relpath` returned for a lexically checked candidate - in a bounded
+least-recently-used map (`MAX_RESOLVED_PATHS`, 4096 entries). This replaced the earlier
+rule that no client path outlives its request, on purpose: re-resolving every file a
+conversation had named cost about 150 us per path per request on Windows and was the
+largest remaining part of C1's cost. A client can choose which paths are looked up, never
+what they resolve to; a `realpath` that raises is not remembered; nothing in either map is
+logged or returned. The accepted cost is staleness: a symlink or junction re-pointed while
+the gateway runs keeps its old answer until evicted or restarted. The containment rules,
+the rejections and the counts are unchanged.
 
 Measured on this machine (one throwaway script, 25 repetitions per shape, median of a
 `resolve_file_activity_events()` call over a temporary repository, before and after the change;

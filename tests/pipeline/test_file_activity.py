@@ -1112,7 +1112,7 @@ def test_one_long_conversation_consumes_many_states(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Path resolution is per request, and never wider than the request
+# Path resolution: memoized per request, and its filesystem answers kept across them
 # ---------------------------------------------------------------------------
 
 
@@ -1158,9 +1158,8 @@ def test_a_repeated_target_is_resolved_once_per_request(tmp_path: Path) -> None:
 def test_distinct_targets_still_resolve_on_their_own(tmp_path: Path) -> None:
     """Memoizing a spelling must not memoize the file it names.
 
-    Two ways of writing one path are two keys here, and each is resolved; that is
-    the honest limit of a cache that refuses to keep a client's path past the
-    request that sent it.
+    Two ways of writing one path are two keys here, and each is resolved; the
+    per-request map is keyed by the client's spelling, not by the file.
 
     Args:
         tmp_path: The pytest temporary directory to build a repository in.
@@ -1176,7 +1175,11 @@ def test_distinct_targets_still_resolve_on_their_own(tmp_path: Path) -> None:
 
 
 def test_the_request_cache_does_not_survive_into_the_next_request(tmp_path: Path) -> None:
-    """A second request re-resolves, because nothing is cached across requests."""
+    """A second request walks its envelopes again: the per-request map dies with it.
+
+    What crosses requests is only the normalizer's map of filesystem answers, which
+    sits below :meth:`normalize` - see the ``realpath`` tests that follow.
+    """
     root = _repo(tmp_path)
     normalizer = _CountingNormalizer(root)
     messages = [_envelope(WIDGET), _saved(DELTA)]
@@ -1878,3 +1881,106 @@ def test_the_overflow_count_mirrors_the_envelopes_a_call_builds(
     text = arguments if isinstance(arguments, str) else json.dumps(arguments)
     built = activity_module._native_envelopes(tool, text, json.dumps({"success": True}))
     assert activity_module._native_envelope_count(tool, text) == len(built)
+
+
+# ---------------------------------------------------------------------------
+# realpath answers are kept across requests, bounded, and never change an answer
+# ---------------------------------------------------------------------------
+
+
+def _count_realpath(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Record every ``realpath`` the module makes from now on, and return the record."""
+    seen: list[str] = []
+    real = os.path.realpath
+
+    def spy(path: Any, *args: Any, **kwargs: Any) -> Any:
+        seen.append(str(path))
+        return real(path, *args, **kwargs)
+
+    monkeypatch.setattr(activity_module.os.path, "realpath", spy)
+    return seen
+
+
+def test_a_later_request_reuses_the_filesystem_answer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The second request of a conversation reaches ``realpath`` for nothing it named before."""
+    root = _repo(tmp_path)
+    normalizer = RepositoryPathNormalizer(root)
+    seen = _count_realpath(monkeypatch)
+    first_request = [_envelope(WIDGET), _saved(DELTA)]
+    second_request = [*first_request, _envelope(WIDGET), _envelope("packages/new.py")]
+
+    first = resolve_file_activity_events(first_request, normalizer)
+    resolved_first = len(seen)
+    second = resolve_file_activity_events(second_request, normalizer)
+
+    assert resolved_first == 2
+    assert len(seen) == 3  # only the one file the second request named for the first time
+    assert second.events[:2] == first.events
+
+
+def test_the_cross_request_map_changes_no_answer(tmp_path: Path) -> None:
+    """A warm normalizer answers every target exactly as a fresh one does, rejections included."""
+    root = _repo(tmp_path)
+    targets = [WIDGET, f"./{WIDGET}", DELTA, "../../outside.txt", f"{root.as_posix()}/{WIDGET}",
+               "packages/demo/../demo/widget.py", "packages", "."]
+    warm = RepositoryPathNormalizer(root)
+    for target in targets:
+        warm.normalize(target)
+
+    for target in targets:
+        assert warm.normalize(target) == RepositoryPathNormalizer(root).normalize(target)
+
+
+def test_the_cross_request_map_is_bounded_and_evicts_the_oldest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The map never holds more than its bound, and an evicted target resolves again."""
+    monkeypatch.setattr(activity_module, "MAX_RESOLVED_PATHS", 3)
+    root = _repo(tmp_path)
+    normalizer = RepositoryPathNormalizer(root)
+    seen = _count_realpath(monkeypatch)
+
+    for index in range(5):
+        normalizer.normalize(f"pkg/f{index}.py")
+    assert len(normalizer._resolved) == 3
+    assert len(seen) == 5
+
+    normalizer.normalize("pkg/f4.py")  # newest: still held
+    assert len(seen) == 5
+    normalizer.normalize("pkg/f0.py")  # oldest: evicted, so resolved again
+    assert len(seen) == 6
+    assert len(normalizer._resolved) == 3
+
+
+def test_a_lexical_rejection_never_reaches_the_map(tmp_path: Path) -> None:
+    """Only a candidate that passed every lexical check is remembered."""
+    normalizer = RepositoryPathNormalizer(_repo(tmp_path))
+    long_path = "x" * (MAX_PATH_CHARS + 1)
+    for target in ("", "a\x00b", "a\tb", long_path, "docs:notes", "//server/share"):
+        _identity, rejection = normalizer.normalize(target)
+        assert rejection
+    assert len(normalizer._resolved) == 0
+
+
+def test_a_failed_resolution_is_not_remembered(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A ``realpath`` that raised is reported as outside once, then asked again."""
+    root = _repo(tmp_path)
+    normalizer = RepositoryPathNormalizer(root)
+    real = os.path.realpath
+    failures = {"left": 1}
+
+    def flaky(path: Any, *args: Any, **kwargs: Any) -> Any:
+        if failures["left"]:
+            failures["left"] -= 1
+            raise OSError("transient")
+        return real(path, *args, **kwargs)
+
+    monkeypatch.setattr(activity_module.os.path, "realpath", flaky)
+
+    assert normalizer.normalize(WIDGET) == ("", REJECT_OUTSIDE)
+    assert len(normalizer._resolved) == 0
+    assert normalizer.normalize(WIDGET) == (WIDGET, "")

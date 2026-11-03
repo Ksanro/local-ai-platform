@@ -344,9 +344,8 @@ them.
    planning/history bookkeeping set so C1 stays observational. Live evidence is a
    four-request probe against a restarted gateway on 2026-10-26 plus a survey of
    existing session records (`docs/live-gateway-runbook.md`, *Conversation File
-   Activity (roadmap C1)*). Still unmeasured: C1 under native Cline traffic, and
-   its incremental latency against a feature-off arm. Both are optional follow-ups,
-   not blockers.
+   Activity (roadmap C1)*). Both follow-ups are since done: native Cline
+   traffic in E2 and the incremental latency in E3 (Phase E).
 
 #### Phase D: Documentation And Dormant-Code Policy
 
@@ -427,6 +426,31 @@ them.
    or ranking-quality claim. Evidence stays outside the repository
    (`C:\Users\ovidi\lap-e2-evidence\`); details in the runbook, *Native tool calls
    (Cline 4.x)*.
+3. **E3 - C1's incremental latency against a feature-off arm - DONE (2026-11-03).**
+   `scripts/bench_c1_latency.py` (`43d55f7`) times `RepositoryContextStage` with a
+   `FileActivityTracker` against the identical stage built with `file_activity=None`,
+   in one process, on the same transcripts; every timed call builds fresh objects,
+   warm cells replay their conversation's earlier requests outside the timer, and a
+   correctness pass checks every payload field. Realistic cells take their shape from
+   `scripts/calibrate_c1_shapes.py`, which reads the 39 local Cline sessions and
+   prints counts only. Thresholds were set before measuring: under 2 ms negligible,
+   5 ms or more actionable, on the conservative interval of 8 per-block deltas.
+   The first measurement was actionable: 23.3 ms at R-p99-warm, 6.1 ms at
+   R-p50-warm. A pilot sweep and a profile found two causes - every native tool
+   result in the transcript was JSON-decoded and then discarded by the 256-envelope
+   bound, and every distinct path was re-resolved with `realpath` (about 150 us
+   each on Windows) on every request. `fa1fa22` fills the bound newest first and
+   counts what falls outside it without decoding; the follow-up keeps `realpath`
+   answers across requests in a bounded map on `RepositoryPathNormalizer`
+   (`MAX_RESOLVED_PATHS`, 4096), which reverses the earlier per-request-only design
+   on purpose. After both: R-p50-warm 1.6 ms (negligible), R-p90-warm 4.3 ms,
+   R-p99-warm 5.6 ms. The p99 cell is one whole stored session sent as one request
+   (4.9 M characters, about 1.2 M tokens), larger than any request the 262 k context
+   window allows, so it is an upper bound rather than traffic. Cold cells are
+   unchanged (R-p99-cold 18.3 ms): the first sighting of a path still pays
+   `realpath`, and the map is shared by every conversation on the gateway. Accepted
+   cost: a symlink or junction re-pointed while the gateway runs keeps its old
+   answer until evicted or restarted. Benchmark output stays under `build/`.
 
 #### Explicitly Deferred
 
@@ -438,8 +462,9 @@ them.
 - wholesale activation of the dormant platform stack
 
 A1, A2, all of Phase B, C1 and A3 are complete, which closes Phase A. Phase D
-item 1's compaction is done, and Phase E items 1 and 2 - offline analysis of the
-records C1 writes, and C1's validation on native Cline traffic - are done with it;
+item 1's compaction is done, and Phase E items 1 to 3 - offline analysis of the
+records C1 writes, C1's validation on native Cline traffic, and its latency against
+a feature-off arm - are done with it;
 Phase D items 2 and 3 are standing
 policies rather than work left to do. The remaining execution order is the
 dormant-code and documentation sequence below, with documentation updated
