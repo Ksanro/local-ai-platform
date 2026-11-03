@@ -122,7 +122,6 @@ import json
 import os
 import re
 import unicodedata
-from collections import deque
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -513,38 +512,67 @@ def parse_envelopes(messages: object) -> tuple[list[Envelope], int]:
     Returns:
         A ``(envelopes in message order, recognized envelopes beyond the bound)``
         pair.
+
+    The walk runs newest first and stops decoding once the bound is full.  A native
+    result body is the expensive part of a transcript - it is a file's contents, and
+    a long conversation re-sends every one of them in each request - so an envelope
+    that the bound would drop is counted from its call's arguments alone and its
+    result is never decoded.  Matching a result to its call still runs oldest first,
+    because a result answers the call announced *before* it; that pass decodes
+    nothing.
     """
     if not isinstance(messages, list):
         return [], 0
 
-    found: deque[Envelope] = deque(maxlen=MAX_ENVELOPES_PER_REQUEST)
-    recognized = 0
-    # Native tool calls the transcript has announced so far, by call id, so each
-    # ``role: "tool"`` result can be read against the call it answers.
+    # Oldest first: the call each ``role: "tool"`` result answers, by position.
     calls: dict[str, tuple[str, object]] = {}
-    for message in messages:
+    answered: dict[int, tuple[str, object]] = {}
+    for index, message in enumerate(messages):
         if not isinstance(message, dict):
             continue
         role = message.get("role")
         if role == "assistant":
             _remember_native_calls(message.get("tool_calls"), calls)
-            continue
-        if role == "tool":
+        elif role == "tool":
             call = calls.get(str(message.get("tool_call_id", "")))
+            if call is not None:
+                answered[index] = call
+
+    # Newest first: fill the bound, then only count what falls outside it.
+    room = MAX_ENVELOPES_PER_REQUEST
+    beyond = 0
+    kept: list[list[Envelope]] = []
+    for index in range(len(messages) - 1, -1, -1):
+        message = messages[index]
+        if not isinstance(message, dict):
+            continue
+        role = message.get("role")
+        if role == "tool":
+            call = answered.get(index)
             if call is None:
                 continue
-            for native in _native_envelopes(call[0], call[1], message.get("content", "")):
-                recognized += 1
-                found.append(native)
+            if room <= 0:
+                beyond += _native_envelope_count(call[0], call[1])
+                continue
+            batch = _native_envelopes(call[0], call[1], message.get("content", ""))
+        elif role == "user":
+            envelope = parse_message_envelope(content_to_text(message.get("content", "")))
+            if envelope is None:
+                continue
+            if room <= 0:
+                beyond += 1
+                continue
+            batch = [envelope]
+        else:
             continue
-        if role != "user":
-            continue
-        envelope = parse_message_envelope(content_to_text(message.get("content", "")))
-        if envelope is None:
-            continue
-        recognized += 1
-        found.append(envelope)
-    return list(found), max(recognized - MAX_ENVELOPES_PER_REQUEST, 0)
+        if len(batch) > room:
+            # One call naming more files than the room left keeps its newest ones,
+            # exactly as a bounded queue filled oldest first would.
+            beyond += len(batch) - room
+            batch = batch[len(batch) - room :]
+        room -= len(batch)
+        kept.append(batch)
+    return [envelope for batch in reversed(kept) for envelope in batch], beyond
 
 
 def _remember_native_calls(tool_calls: object, calls: dict[str, tuple[str, object]]) -> None:
@@ -619,6 +647,31 @@ def _native_envelopes(tool: str, arguments: object, content: object) -> list[Env
             )
         )
     return envelopes
+
+
+def _native_envelope_count(tool: str, arguments: object) -> int:
+    """Return how many envelopes :func:`_native_envelopes` would build for one call.
+
+    The count depends only on the call's arguments, so the result body - the large,
+    expensive half of a native call - is never decoded.  Every branch mirrors
+    :func:`_native_envelopes`: a call naming no file, a call whose arguments cannot
+    be read, and a call naming no target each yield one envelope; otherwise there is
+    one per target.
+
+    Args:
+        tool: A tool name from :data:`NATIVE_TOOL_ACTIVITY`.
+        arguments: The call's ``arguments``.  Untrusted.
+
+    Returns:
+        The envelope count, at least one.
+    """
+    activity = NATIVE_TOOL_ACTIVITY[tool]
+    if activity == ACTIVITY_NONE:
+        return 1
+    args = _json_object(arguments)
+    if args is None:
+        return 1
+    return max(len(_native_targets(args, activity)), 1)
 
 
 def _native_targets(args: dict[str, object], activity: str) -> list[object]:

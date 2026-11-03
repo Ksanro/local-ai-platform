@@ -1699,3 +1699,182 @@ def test_a_replayed_native_transcript_is_a_snapshot_not_a_sum(tmp_path: Path) ->
 
     assert one.files_read == two.files_read == again.files_read == 1
     assert two.as_dict() == again.as_dict()
+
+
+# ---------------------------------------------------------------------------
+# The bound is filled newest first, and what falls outside it is never decoded
+# ---------------------------------------------------------------------------
+
+
+def _reference_parse(messages: list[Any]) -> tuple[list[Any], int]:
+    """The original oldest-first walk into a bounded queue, kept as the specification.
+
+    Every result body is decoded and the queue then drops the oldest envelopes.  The
+    production walk must return exactly this, envelope for envelope.
+    """
+    from collections import deque
+
+    bound = activity_module.MAX_ENVELOPES_PER_REQUEST
+    found: deque[Any] = deque(maxlen=bound)
+    recognized = 0
+    calls: dict[str, tuple[str, object]] = {}
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        role = message.get("role")
+        if role == "assistant":
+            activity_module._remember_native_calls(message.get("tool_calls"), calls)
+            continue
+        if role == "tool":
+            call = calls.get(str(message.get("tool_call_id", "")))
+            if call is None:
+                continue
+            for native in activity_module._native_envelopes(
+                call[0], call[1], message.get("content", "")
+            ):
+                recognized += 1
+                found.append(native)
+            continue
+        if role != "user":
+            continue
+        envelope = activity_module.parse_message_envelope(
+            activity_module.content_to_text(message.get("content", ""))
+        )
+        if envelope is None:
+            continue
+        recognized += 1
+        found.append(envelope)
+    return list(found), max(recognized - bound, 0)
+
+
+def _random_transcript(rng: Any, length: int) -> list[Any]:
+    """Return a transcript mixing every shape the walk has to keep in order.
+
+    Legacy envelopes, plain user text, native calls naming one or several files,
+    calls whose arguments are not JSON, results answering no announced call, a call
+    id announced twice, results that arrive before their call, and non-dict entries.
+    """
+    messages: list[Any] = []
+    serial = 0
+    for _ in range(length):
+        roll = rng.random()
+        if roll < 0.2:
+            messages.append(_envelope(f"pkg/m{rng.randrange(40)}.py"))
+        elif roll < 0.27:
+            messages.append(_saved(f"pkg/m{rng.randrange(40)}.py"))
+        elif roll < 0.32:
+            messages.append({"role": "user", "content": "plain follow-up text"})
+        elif roll < 0.34:
+            messages.append("not a message")
+        elif roll < 0.38:
+            messages.append(_result(f"never_{serial}", [_ok("x")]))
+        else:
+            serial += 1
+            call_id = f"c{serial % 30}"  # ids recur, so a later call rebinds one
+            kind = rng.random()
+            if kind < 0.45:
+                count = rng.randrange(1, 6)
+                files = [{"path": f"pkg/m{rng.randrange(40)}.py"} for _ in range(count)]
+                call = _call(call_id, "read_files", {"files": files})
+                payload: Any = [_ok("q") for _ in range(count)]
+            elif kind < 0.7:
+                call = _call(call_id, "editor", {"path": f"pkg/m{rng.randrange(40)}.py"})
+                payload = _DENIED_EDIT if rng.random() < 0.3 else {"success": True}
+            elif kind < 0.8:
+                call = _call(call_id, "editor", "arguments that are not json")
+                payload = {"success": True}
+            elif kind < 0.9:
+                call = _call(call_id, "read_files", {"query": "no target at all"})
+                payload = _REJECTED
+            else:
+                call = _call(call_id, "search_codebase", {"query": "x"})
+                payload = {"output": "matches"}
+            result = _result(call_id, payload)
+            if rng.random() < 0.05:
+                messages.extend([result, call])  # a result before its call answers nothing
+            else:
+                messages.extend([call, result])
+    return messages
+
+
+@pytest.mark.parametrize("bound", [1, 3, 17, 256])
+def test_the_newest_first_walk_matches_the_bounded_queue_it_replaced(
+    monkeypatch: pytest.MonkeyPatch, bound: int
+) -> None:
+    """Same envelopes, same order, same overflow count, on transcripts of every size."""
+    import random
+
+    monkeypatch.setattr(activity_module, "MAX_ENVELOPES_PER_REQUEST", bound)
+    rng = random.Random(20261103 + bound)
+    for _ in range(60):
+        messages = _random_transcript(rng, rng.randrange(0, 200))
+        assert activity_module.parse_envelopes(messages) == _reference_parse(messages)
+
+
+def test_a_call_straddling_the_bound_keeps_its_newest_files(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A read of three files with room for two keeps the last two and counts one out."""
+    monkeypatch.setattr(activity_module, "MAX_ENVELOPES_PER_REQUEST", 3)
+    files = [{"path": f"pkg/f{index}.py"} for index in range(3)]
+    messages = [
+        _call("a", "read_files", {"files": files}),
+        _result("a", [_ok("q")] * 3),
+        _envelope(WIDGET),
+    ]
+
+    envelopes, beyond = activity_module.parse_envelopes(messages)
+
+    assert [envelope.target for envelope in envelopes] == ["pkg/f1.py", "pkg/f2.py", WIDGET]
+    assert beyond == 1
+    assert (envelopes, beyond) == _reference_parse(messages)
+
+
+def test_a_result_outside_the_bound_is_counted_and_never_decoded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only the bodies the bound keeps reach the JSON decoder."""
+    monkeypatch.setattr(activity_module, "MAX_ENVELOPES_PER_REQUEST", 2)
+    decoded: list[str] = []
+    real = activity_module._native_statuses
+
+    def spy(content: object, count: int) -> list[str]:
+        decoded.append(str(content))
+        return real(content, count)
+
+    monkeypatch.setattr(activity_module, "_native_statuses", spy)
+    messages: list[Any] = []
+    for index in range(6):
+        messages.append(_call(f"c{index}", "editor", {"path": f"pkg/f{index}.py"}))
+        messages.append(_result(f"c{index}", {"success": True, "result": f"body {index}"}))
+
+    envelopes, beyond = activity_module.parse_envelopes(messages)
+
+    assert [envelope.target for envelope in envelopes] == ["pkg/f4.py", "pkg/f5.py"]
+    assert beyond == 4
+    assert len(decoded) == 2
+    assert all("body 4" in text or "body 5" in text for text in decoded)
+
+
+@pytest.mark.parametrize(
+    ("tool", "arguments"),
+    [
+        ("read_files", {"files": [{"path": "a.py"}, {"path": "b.py"}, "c.py", {"x": 1}]}),
+        ("read_files", {"files": []}),
+        ("read_files", {"path": "a.py"}),
+        ("read_files", {"query": "nothing named"}),
+        ("editor", {"path": "a.py"}),
+        ("editor", {"path": 42}),
+        ("editor", "not json"),
+        ("editor", '["a list", "not an object"]'),
+        ("search_codebase", {"query": "x"}),
+        ("run_commands", "anything at all"),
+    ],
+)
+def test_the_overflow_count_mirrors_the_envelopes_a_call_builds(
+    tool: str, arguments: Any
+) -> None:
+    """Counting a call from its arguments gives the number decoding it would build."""
+    text = arguments if isinstance(arguments, str) else json.dumps(arguments)
+    built = activity_module._native_envelopes(tool, text, json.dumps({"success": True}))
+    assert activity_module._native_envelope_count(tool, text) == len(built)
