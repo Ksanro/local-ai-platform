@@ -48,11 +48,22 @@
   - `git status --short`
 - Avoid broad searches that can flood context. Scope grep/search to the requested files first; broaden only if needed.
 
+## Context Economy
+
+Every request resends the whole conversation, so anything read stays in context and is paid for again on every later turn.
+
+- Read a file once. Read it again only if it changed since your last read: you edited it, a command you ran rewrote it, or `git status --short` / `git diff --stat` shows it changed.
+- After your own edit, trust the edit tool's result and the diff instead of re-reading the whole file. Re-read only the edited region when you need to check it.
+- When you need several files or several ranges, request them in one batched call, not one call per file.
+- Read ranges, not whole files, when the task only needs part of a large file. Search first (scoped to the relevant paths) to find the range.
+- Keep command output small: filter, `Select-Object -First N`, or count instead of printing large outputs. Never print a large file or log just to look at it.
+- Do not repeat a command whose result is already in the conversation unless something it depends on changed.
+
 ## Gateway / Backend
 
 - Gateway runs locally on port `8001` with `apps.gateway.main:create_app`.
-- SGLang backend is remote at `http://100.106.236.88:30000/v1`.
-- Do not stop SGLang or anything on port `30000` while managing the gateway.
+- The live backend is vLLM at `http://100.106.236.88:18300/v1` (model `qwen3.8-flash-next`, client alias `qwen38-27b`). See `CLAUDE.md`, "Model routing".
+- Port `30000` belongs to another workload. Never stop or modify anything on port `30000`.
 - If source code or `.env` changed, restart the gateway before live probes.
 - Before stopping gateway processes, list candidates and match command lines.
 - Stop only processes whose command line contains both `uvicorn` and `apps.gateway.main:create_app`.
