@@ -66,6 +66,18 @@ def test_settings_include_tests_by_default() -> None:
     assert settings.repository_exclude_tests is False
 
 
+def test_settings_exclude_scripts_and_build_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The live index skips ``scripts/`` and the Git-ignored ``build/`` scratch tree."""
+    monkeypatch.delenv("APP_REPOSITORY_EXCLUDE_GLOBS", raising=False)
+
+    settings = Settings()
+
+    globs = [g.strip() for g in settings.repository_exclude_globs.split(",")]
+    assert globs == ["scripts/**", "build/**"]
+
+
 def test_changed_file_signal_is_off_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
     """Change-aware ranking stays dormant unless it is explicitly enabled."""
     monkeypatch.delenv("APP_REPOSITORY_CONTEXT_CHANGED_FILES_ENABLED", raising=False)

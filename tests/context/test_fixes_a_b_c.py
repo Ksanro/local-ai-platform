@@ -10,6 +10,8 @@ Acceptance Criteria
   when more than 20 distinct candidates exist
 - with ``repository_exclude_globs="scripts/**"``, a fixture file under
   ``scripts/`` is not indexed
+- with ``build/**`` in the globs, a fixture copy nested under the Git-ignored
+  ``build/`` scratch tree is not indexed while a ``packages/`` file still is
 - with the setting empty, it is indexed
 - glob matching is relative to the index root
 - exact symbol-name match outranks a longer name matching only camel-case
@@ -176,6 +178,41 @@ class TestExcludeGlobs:
             modules = list(index.modules.keys())
             assert "scripts/tool" in modules
             assert "main" in modules
+
+    def test_build_glob_excludes_nested_copies(self) -> None:
+        """``build/**`` excludes a nested build/ copy, keeping packages/ live.
+
+        ``build/`` is Git-ignored scratch that also holds byte copies of real
+        modules (``build/phase_g_trial/reviewer/realroot/packages/...``), so
+        the copies arrive as duplicate symbols that can be ranked against the
+        originals. Matching runs through ``fnmatch`` on the root-relative path,
+        which normalises both sides with ``os.path.normcase`` on Windows, so
+        ``build/**`` has to cover the deep copies and not only ``build/x.py``.
+        The ``Settings`` default that carries this glob is pinned in
+        ``tests/gateway/test_config.py``.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            copied = root / "build" / "phase_g_trial" / "reviewer" / "realroot"
+            copied.mkdir(parents=True)
+            (copied / "repository_context.py").write_text(
+                'def copied_stage():\n    pass\n',
+                encoding="utf-8",
+            )
+            stages = root / "packages" / "pipeline" / "stages"
+            stages.mkdir(parents=True)
+            (stages / "repository_context.py").write_text(
+                'def real_stage():\n    pass\n',
+                encoding="utf-8",
+            )
+
+            index = build_index(
+                root, exclude_tests=False, exclude_globs="scripts/**,build/**"
+            )
+            modules = list(index.modules.keys())
+
+            assert not [m for m in modules if m.startswith("build/")]
+            assert "packages/pipeline/stages/repository_context" in modules
 
     def test_excluded_glob_count(self) -> None:
         """Builder should track excluded glob count."""

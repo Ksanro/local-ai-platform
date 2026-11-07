@@ -95,7 +95,7 @@ class Settings(BaseSettings):
     repository_context_enabled: bool = True
     repository_path: str = "."
     repository_exclude_tests: bool = False
-    repository_exclude_globs: str = "scripts/**"  # comma-separated glob list; empty disables
+    repository_exclude_globs: str = "scripts/**,build/**"  # comma-separated globs; empty disables
     repository_context_max_tokens: int = 4096
     repository_context_intent_budgets: str = ""
     repository_context_changed_files_enabled: bool = False  # opt-in change-aware ranking
