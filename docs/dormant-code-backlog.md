@@ -3,10 +3,18 @@
 This backlog tracks code that exists in the repository but is not wired into
 the live gateway path.
 
-Last reviewed: 2026-10-09 (`packages.repository.git_changes` gained a live but
+Last reviewed: 2026-11-03 (documentation-only consistency pass with the roadmap
+refresh at `ebb98f9`; nothing in this file moved out of dormant by it. The
+`packages.repository.git_changes` row's live consumer is now settled: roadmap
+Phase B item 5 closed the change-aware ranking decision on 2026-10-30 with the
+default off and `RankingConfig.WEIGHT_CHANGED_FILE` at `+25`, and the next
+milestone - roadmap Phase F, Repository Context Quality Per Token - runs with that
+feature off in both arms. The earlier `packages.capabilities` inventory recount from
+2026-09-19 stands, and the remaining rows still date from the 2026-08-01 pass.)
+
+Previous review: 2026-10-09 (`packages.repository.git_changes` gained a live but
 opt-in consumer - change-aware repository-context ranking - recorded under
-"Cleanup Notes"; the `packages.capabilities` inventory recount from 2026-09-19
-stands, and the remaining rows still date from the 2026-08-01 pass).
+"Cleanup Notes".)
 
 ## Live Boundary
 
@@ -19,7 +27,7 @@ FastAPI /v1/chat/completions
   -> RepositoryContextStage
   -> PipelineEngine history cap
   -> ProviderStage
-  -> vLLM
+  -> vLLM backend (OpenAI-compatible, via the "openai" provider)
 ```
 
 Anything not reachable from that path, a gateway endpoint, or a live script is
@@ -215,7 +223,10 @@ agent runtime", which should be a deliberate milestone.
   `APP_REPOSITORY_CONTEXT_CHANGED_FILES_ENABLED=true` (default off). It stays a
   read-only, two-command Git surface - now under a wall-clock budget per
   command - and no diff, patch, or GitHub capability was activated by that
-  wiring.
+  wiring. Roadmap Phase B item 5 closed the decision that wiring left open
+  (2026-10-30): the default stays off and `RankingConfig.WEIGHT_CHANGED_FILE`
+  stays `+25`, so this stays a dormant-by-default consumer rather than a live
+  one.
 
 - `packages/pipeline/stages/__init__.py` imports dormant stages for package
   convenience, but `apps/gateway/main.py` registers only

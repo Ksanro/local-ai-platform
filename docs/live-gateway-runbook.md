@@ -2461,9 +2461,583 @@ fill it, so the configuration this run was taken under is the block above rather
 field of the record. The `20/20` figures earlier in this file and in `docs/STATUS.md`
 stay what they are - measurements of the earlier 8-probe set, one of them on the SGLang
 deployment this alias no longer points at - and this run supplements rather than replaces
-them.
+them. Roadmap Phase F step F1 re-ran this exact shape at `ebb98f9` on 2026-11-06; see
+"Phase F1 reproduction of the A1 baseline, 2026-11-06 (roadmap F1)" below for what moved.
 
 
+
+### Phase F1 reproduction of the A1 baseline, 2026-11-06 (roadmap F1)
+
+Roadmap Phase F step F1: A1's command shape and configuration re-measured at the current
+commit `ebb98f9`, from a detached worktree, over the whole 11-probe / 30-fact
+`--compare-context` pair against `qwen3.8-flash-next` on the vLLM backend through the
+`qwen38-27b` alias. Its job is to reproduce the live behaviour and record what moved, not
+to classify anything: the phase does not require a run to land on `25/30` and `4/30`
+before its evidence may be used, because the answer side of this measurement is variable
+at 11 samples (roadmap B5 re-ran a single probe for exactly that reason).
+
+Nothing in the runtime path differs between the two measurements. The main checkout's
+uncommitted work is documentation only, the worktree holds the committed tree at
+`ebb98f9`, and `scripts/ab_launcher.py`'s template is A1's configuration unchanged.
+
+Commands, in run order:
+
+```powershell
+# 1. detached worktree at the commit under measurement, holding no .env
+git worktree add --detach ..\lap-f1-ebb98f9 ebb98f9                  # exit 0
+# 2. that tree's own environment, from the tracked lock (the procedure above)
+Set-Location ..\lap-f1-ebb98f9; .\uv.exe sync --locked; Set-Location ..\local-ai-platform
+# 3. the experiment, validated, and rendered for the arm that measures context
+.\uv.exe run python scripts\ab_launcher.py template --name f1_a1_reproduction `
+    --worktree ..\lap-f1-ebb98f9 --out build\f1\experiment_f1.json    # exit 0
+.\uv.exe run python scripts\ab_launcher.py validate `
+    --config build\f1\experiment_f1.json                             # exit 0
+.\uv.exe run python scripts\ab_launcher.py show `
+    --config build\f1\experiment_f1.json --arm off                   # exit 0
+# 4. the arm 'off', exactly as that block renders it: port 8011,
+#    APP_REPOSITORY_CONTEXT_CHANGED_FILES_ENABLED=false, REQUEST_TIMEOUT=300,
+#    APP_REPOSITORY_PATH=C:\Users\ovidi\lap-f1-ebb98f9, its own session log
+# 5. the live-path gate, run in the worktree before any measured request
+Set-Location ..\lap-f1-ebb98f9
+& 'C:\Program Files\Git\bin\bash.exe' scripts/precommit_test_gate.sh
+#     2519 passed, 1 warning in 206.11s - "pre-commit: live gate OK", exit 0
+# 6. the measurement, then the read-only report over its JSON
+.\uv.exe run python scripts\quality_harness.py --base-url http://127.0.0.1:8011/v1 `
+    --model qwen38-27b --max-tokens 8192 --timeout 345 `
+    --reasoning-model qwen38-27b --compare-context --json `
+    > C:\Users\ovidi\local-ai-platform\build\f1\quality_compare_qwen38_vllm_20261106.json
+.\uv.exe run python scripts\evaluate_quality_harness.py `
+    C:\Users\ovidi\local-ai-platform\build\f1\quality_compare_qwen38_vllm_20261106.json `
+    --model qwen38-27b --gateway-commit ebb98f9                      # exit 0
+```
+
+`show --arm off` prints a Terminal 2 line carrying `--repeat 3`, which `--compare-context`
+refuses; step 6 replaces that line exactly as A1's step 4 did. The environment block,
+port, `REQUEST_TIMEOUT=300` and the 345-second client timeout are the validated file's.
+Step 6's evaluator ran without `--persist`, so this measurement neither wrote nor read an
+`EngineeringMemory` record. The harness itself was started detached, so its exit code was
+not captured; the evidence that it completed is a well-formed 22-record document and an
+empty (0-byte) stderr, with `--fail-under` left at its default of 0.
+
+Artifacts, all under the Git-ignored `build\f1\`:
+
+| file | what it is |
+|---|---|
+| `quality_compare_qwen38_vllm_20261106.json` | the harness's raw `--compare-context --json` document, 22 probe records |
+| `sessions_f1_a1_reproduction_off_20261106.jsonl` | copy of the arm's session log - 22 records, this run only, nothing removed |
+| `a1_sessions_a1_vllm_baseline_off_20261024.jsonl` | copy of A1's log, so the per-request comparison does not depend on `..\lap-ab-a1-0371d64` surviving |
+| `experiment_f1.json`, `show_arm_off.txt`, `arm_off_gateway.ps1` | the validated experiment, its rendered `off` arm, and the block that started it |
+| `f1_analysis.py`, `f1_analysis_20261106.txt` | the A1-to-F1 comparison and its output, which produced the tables below |
+| `f1_evaluation_20261106.txt` | `evaluate_quality_harness.py`'s report for the run |
+| `harness_start_20261106.txt`, `harness_end_20261106.txt` | 19:21:04.410 and 19:33:56.914 local - 772.5 s of wall clock |
+| `gate_20261106_out.txt`, `gateway_20261106_out.txt`, `gateway_20261106_err.txt`, `harness_20261106_err.txt`, `sync_20261106_out.txt`, `sync_20261106_err.txt` | transcripts of the gate, the arm and the environment build |
+
+The arm ran from `C:\Users\ovidi\lap-f1-ebb98f9` and wrote to
+`logs\sessions_f1_a1_reproduction_off.jsonl` inside that tree; the worktree was left in
+place, as A1's was. The configuration as validated is A1's: `chars_per_token=3.5`,
+`repository_context_max_tokens=4096`, intent budgets `SEARCH/TEST/DEBUG=2048` and
+`REFACTOR/IMPLEMENT/EXPLAIN=4096`, history cap on at 3000 tokens, delta injection on,
+changed-file ranking off with its counterfactual build on,
+`RELATIONSHIP_RANKING_ENABLED`/`RELATIONSHIP_EXPANSION_ENABLED` true,
+`APP_REPOSITORY_EXCLUDE_TESTS=false`, `APP_REPOSITORY_EXCLUDE_GLOBS=scripts/**`,
+`APP_REPOSITORY_CONTEXT_CHANGED_FILES_TTL_SECONDS=0`, `APP_CONTEXT_INTENT_RULES={}`,
+`APP_CONTEXT_DELTA_CACHE_SIZE=256`.
+
+What was checked before any measured request, on `http://127.0.0.1:8011`:
+
+- `/health` - `{"status":"ok","repository_context_enabled":true}`
+- gateway `/v1/models` - the alias `qwen38-27b`; backend
+  `http://100.106.236.88:18300/v1/models` - exactly one model, `qwen3.8-flash-next`
+  (`owned_by: vllm`, `max_model_len: 400000`, root
+  `/hf/hub/models--nvidia--Qwen3.8-Flash-Next-NVFP4/snapshots/fc694b54fb0174e0913e6adf86691ef85a4ead47-fp8hybrid`).
+  That is the backend identity confirmation the phase asks for, and it was taken before
+  the first scored request. Port `30000` was never contacted, and nothing was listening
+  on `8001` to begin with.
+- `/debug/runtime-context` - `routing_mode=models_config`, `default_model=qwen38-27b`,
+  `default_provider=openai`, `models[0].backend_model=qwen3.8-flash-next`,
+  `base_url=http://100.106.236.88:18300/v1`, `context_window=262144`,
+  `max_output_tokens=8192`, `chars_per_token=3.5`, `repository_context_max_tokens=4096`,
+  the intent-budget map above, `context_delta_injection=true`, `history_cap_enabled=true`,
+  `history_cap_tokens=3000`, and the arm's own session-log path
+- the arm's startup line - `repository_index path=C:\Users\ovidi\lap-f1-ebb98f9
+  files=515 modules=515 symbols=9022 relationships=19720 excluded_tests=0
+  excluded_globs=15 duration_ms=10693.3`, and no `changed_files_signal enabled=true` line
+- no separate smoke request was sent. A1 used one to prove the changed-file feature was
+  off, then deleted its record; the same proof here is the startup line above plus
+  `context.changed_files_signal=off` on all 22 records, so the log holds exactly this
+  run's 22 requests with nothing removed from it.
+- the live-path gate - `2519 passed, 1 warning in 206.11s (0:03:26)`, exit 0, run from the
+  worktree before the measurement.
+
+The result, from `build\f1\f1_analysis_20261106.txt` over the two harness documents:
+
+| arm | facts A1 -> F1 | style | prompt tokens A1 -> F1 | summed seconds A1 -> F1 | longest A1 -> F1 | errors / timeouts |
+|---|---|---|---|---|---|---|
+| repository context on | `25/30` -> `25/30` | `11/11` ok in both | 33109 -> 32716 | 129.6 -> 188.0 | 24.0 -> 29.4 | 0 / 0 in both |
+| repository context off | `4/30` -> `2/30` | `11/11` ok in both | 2221 -> 2221 | 532.1 -> 553.3 | 193.8 -> 187.0 | 0 / 0 in both |
+
+Twenty-two requests in 772.5 s of wall clock (19:21:04.410 to 19:33:56.914 local), 741.3 s
+of summed per-probe latency. Provider wait, read from the arm's own records: context on
+155.7 s summed, 14.2 s mean, 27.1 s longest against A1's 116.6 / 10.6 / 23.4; context off
+553.1 s / 50.3 s / 187.0 s against A1's 531.9 / 48.4 / 193.8. Stage time inside the context
+arm (`timing.stages.repository_context_ms`) summed 32.2 s with a 5788.3 ms maximum on
+`debug_streaming_preview`, where A1's same eleven requests summed 12.8 s and peaked at
+2694.2 ms; in the no-context half it is 0.6-1.0 ms per request, which is the per-request
+flag doing what it is meant to. No request errored and none reached either ceiling. The
+no-context `explain_changed_files_history_cap` call repeated A1's shape - all 8192
+completion tokens spent on hidden reasoning, an empty answer,
+`metadata.truncation_risk=true`, 187.0 s - and is scored 0/4 for that reason.
+
+Per probe, context arm, A1 -> F1 (estimated tokens and symbol counts are the arm's own
+session records):
+
+| probe | facts | prompt tokens | seconds | estimated context tokens | symbols selected |
+|---|---|---|---|---|---|
+| `search_answer_preview` | 2 -> 2 | 2017 -> 1988 | 6.3 -> 6.0 | 2046 -> 2046 | 1 -> 1 |
+| `debug_streaming_preview` | 3 -> 2 | 2058 -> 2029 | 8.6 -> 28.5 | 2046 -> 2046 | 1 -> 1 |
+| `test_list_content` | 2 -> 2 | 2008 -> 2008 | 3.5 -> 8.5 | 2027 -> 2027 | 5 -> 5 |
+| `explain_live_path` | 4 -> 4 | 2479 -> 2492 | 14.5 -> 19.9 | 2868 -> 2868 | 4 -> 4 |
+| `refactor_repository_context` | 1 -> 1 | 3220 -> 3584 | 9.6 -> 29.4 | 3658 -> 4049 | 1 -> 1 |
+| `implement_health_flag` | 2 -> 2 | 3469 -> 2921 | 5.5 -> 8.0 | 3678 -> 3122 | 5 -> 4 |
+| `multiturn_history_cap_budget` | 3 -> 3 | 3683 -> 3451 | 14.1 -> 16.4 | 4046 -> 3750 | 7 -> 6 |
+| `multiturn_config_systems` | 2 -> 2 | 4133 -> 4133 | 9.6 -> 12.3 | 4054 -> 4054 | 18 -> 18 |
+| `explain_changed_files_contextbuilder` | 2 -> 3 | 3466 -> 3466 | 21.2 -> 27.4 | 3988 -> 3988 | 3 -> 3 |
+| `explain_changed_files_repository_index` | 3 -> 3 | 3551 -> 3551 | 24.0 -> 20.4 | 4091 -> 4091 | 11 -> 11 |
+| `explain_changed_files_history_cap` | 1 -> 1 | 3025 -> 3093 | 12.7 -> 11.4 | 2807 -> 2861 | 20 -> 20 |
+
+Totals: 32716 prompt tokens for 25 scored facts (1309 per scored fact), against the
+no-context half's 2221 for 2 - a `+30495` prompt delta for `+23` converted facts (1326
+per converted fact). The stage's own `context.estimated_tokens` summed 34902 over the same
+eleven context-on requests, where A1's summed 35309; per scored fact that is 1396, per
+converted fact 1517. Both bases are reported because they are different quantities: the
+estimate runs 2186 tokens above what the provider charged for the whole of this arm's
+context-on prompts, and 4407 above the arm's measured prompt delta.
+
+The five facts A1's context arm did not deliver, as measured now:
+
+| fact | probe | scored, A1 -> F1 | what this run records | left for F2 |
+|---|---|---|---|---|
+| `select_last_task_text` | `refactor_repository_context` | miss -> miss (1/2 both days) | the context-on record selected 1 symbol, 4049 estimated tokens against a 4096 budget, primary `packages/pipeline/stages/repository_context.RepositoryContextStage`; A1's same request selected the same single symbol at 3658 estimated tokens, so what was sent is the same file 391 estimated tokens larger. This answer named `_extract_last_task_text`; no such callable exists in the tree - `select_last_task_text` is defined at `packages/pipeline/user_messages.py:153` and is a promotion target at `packages/context/builder.py:412` | whether `packages/pipeline/user_messages` is in the candidate set for that query at all, and whether one 4049-token symbol leaves room for a second |
+| `packages/context/builder.py` | `explain_changed_files_contextbuilder` | miss -> **hit** (2/3 -> 3/3) | converted on a request identical to A1's in every recorded field: 3466 prompt tokens, 3988 estimated context tokens, 3 symbols, primary `packages/context/builder.ContextBuilder._enforce_budget`; the answer quotes line 773 of the file | whether A1's miss was ever reachable from the context side - the recorded context shape did not change, so this is a question about the matcher and the answer, not about ranking |
+| `max_current_tool_result_tokens` | `explain_changed_files_history_cap` | miss -> miss (1/4 both days) | the package carried 20 symbols at 2861 estimated tokens under a 4096 budget; 20 is also the stage's `ContextQuery(max_symbols=20)` (`packages/pipeline/stages/repository_context.py:601`), but the session count sums supporting symbols with the primary (`:835-838`), so the log cannot say which of the two bound it. Primary `apps/gateway/api/models.list_models`; A1 sent the same count at 2807 estimated. `history.dropped_count=0` in all 22 records of both runs | whether the helper is among `packages/pipeline/history`'s indexed candidates for this query, and whether the count cap or the budget is what ends the selection |
+| `_looks_like_cline_tool_result_message` | same probe | miss -> miss | the same record; the answer named the module's constants instead (`CHARS_PER_TOKEN = 4.0`, `RATIO_MIN = 0.5`, `RATIO_MAX = 20.0`) and `cap_history`'s signature | as above |
+| `[... truncated by gateway history cap ...]` | same probe | miss -> miss | because capping dropped nothing in either run, this literal's only route into a prompt is inside a selected symbol's source; 20 symbols at 2861 estimated tokens is wide and thin | whether `packages/pipeline/history.cap_history`'s source, which holds that literal, reached the package |
+
+Two probes sent the same context on both days and their facts moved in opposite directions.
+`debug_streaming_preview`, which holds none of the five, carried 2046 estimated tokens and 1
+symbol with primary `apps/gateway/session_log._extract_answer_preview` in both runs, and lost
+`_choice_content` here. `explain_changed_files_contextbuilder`, which holds one of them,
+carried 3988 estimated tokens and 3 symbols with primary
+`packages/context/builder.ContextBuilder._enforce_budget` in both runs, and converted
+`packages/context/builder.py` here. Same recorded context, different answer. That is the
+answer-side variance this step assumes rather than fights, and it is why the context arm
+reproducing `25/30` exactly is not evidence that retrieval held steady: the total is the
+same because one gain and one loss cancelled.
+
+`refactor_repository_context` is not in that group. Its selected symbol is the same file
+but 391 estimated tokens larger at `ebb98f9`, and the probe scores 1/2 on both days.
+Whether that growth is what left no room for the second name is an offline question.
+
+On `explain_changed_files_history_cap` the package carried 20 symbols with 1235 estimated
+tokens of the 4096 budget unspent, and the primary symbol recorded is
+`apps/gateway/api/models.list_models`, which the question does not ask about. Whether that 20
+is the stage's `ContextQuery(max_symbols=20)` ceiling
+(`packages/pipeline/stages/repository_context.py:601`) or one supporting symbol below it is
+not readable from a log whose count adds the primary to
+the supporting list (`:835-838`). F2 has to say whether the two mechanism helpers are
+reachable from that query's ranking at all, reached and cut by a count, or reached and
+delivered thin.
+
+The conditions that are not A1's, which do not change what the arm measured but do move the
+numbers around it: the indexed tree is ten files larger (515 files, 9022 symbols and 19720
+relationships against A1's 505, 8590 and 18309) and reports 15 exclude globs where A1
+reported 13; answer times rose on both halves with prompt counts unchanged, so a shared
+backend is the only candidate for that; and the repository-context stage took 2.5 times
+A1's summed time over the same eleven requests, 32.2 s against 12.8 s. F5's latency floor
+must therefore be quoted against a same-day control arm - A1's 11.8 s per request is a
+historical reference, not a target.
+
+No fact above is classified. Nothing in this step required that it be: the five classes are
+deterministic-evidence claims, and they belong to F2's offline `_stage_arm()` and
+`context_facts_available()` replay of these three probes - including whether
+`_promote_repository_context_stage_symbols` reaches
+`packages/pipeline/user_messages.select_last_task_text` the way the history-cap and
+config-system promotions reach their named targets. That replay ran the same day, offline; the
+section below records what each of the five facts turned out to be, and the promotion question
+answered out to be a non-cause.
+
+### Phase F2 offline classification of the five A1 fact misses, 2026-11-06 (roadmap F2)
+
+Roadmap Phase F step F2: the five facts A1's context arm did not deliver, classified into the
+phase's five classes from deterministic evidence only. No gateway was started, no request was
+sent, nothing on port 8011 or 30000 was contacted, and no runtime source or test was changed.
+`build\f2\f2_classification.py` - disposable, Git-ignored, under `build\` - imports the detached
+worktree's own `scripts\quality_harness.py` and runs that tree's real `RepositoryIndex`,
+`PlanningStage`, `RepositoryContextStage`, `ContextBuilder`, `RankingEngine`, `ContextBudget`,
+`ContextComposer`, `OpenAISerializer`, `_stage_arm()`, `context_facts_available()` and
+`score_answer` over the three probes that hold the five facts, with `changed_modules` empty. It
+records, in order, the raw index matches, the ranked candidates before any query-specific
+promotion, the candidates after the promotions and `_ensure_named_candidates`, what
+`max_symbols=20` cut, what `_enforce_budget` dropped, the delivered representation of every
+selected symbol, and each fact's exact text in the serialized prompt.
+
+Commands, in run order:
+
+```powershell
+# 1. the tree under measurement: detached, exactly ebb98f9, holding no .env
+git -C ..\lap-f1-ebb98f9 rev-parse HEAD          # ebb98f9c42562747f5a27e9ae716b8e53dfadd1f
+git -C ..\lap-f1-ebb98f9 symbolic-ref -q HEAD    # exit 1, so the worktree is detached
+git -C ..\lap-f1-ebb98f9 status --short          # empty
+Test-Path ..\lap-f1-ebb98f9\.env                 # False
+# 2. the replay, twice, with that tree's lock-matched interpreter. stdout and stderr go
+#    to build\f2\f2_runN_out.txt and build\f2\f2_runN_err.txt; both _err files are 0 bytes.
+$exe = '..\lap-f1-ebb98f9\.venv\Scripts\python.exe'
+& $exe build\f2\f2_classification.py --out-prefix build\f2\f2_run1    # exit 0
+& $exe build\f2\f2_classification.py --out-prefix build\f2\f2_run2    # exit 0
+# 3. determinism: the two runs, byte for byte
+Get-FileHash -Algorithm SHA256 -LiteralPath build\f2\f2_run1.json,build\f2\f2_run2.json,`
+    build\f2\f2_run1.txt,build\f2\f2_run2.txt
+# 4. the focused suites the exercised seam owns; runtime code is unchanged, so no test
+#    was added. .venv here is this checkout's, whose source is identical to ebb98f9's.
+.\.venv\Scripts\python.exe -m pytest tests\context\test_builder.py `
+    tests\context\test_ranking.py tests\pipeline\test_repository_context_stage.py `
+    tests\observability\test_quality_harness.py -q
+#    248 passed in 26.13s
+```
+
+The hashes, identical across the runs and re-confirmed by a third run that was then deleted:
+
+| artifact | sha256 |
+|---|---|
+| `build\f2\f2_run1.json`, `build\f2\f2_run2.json` | `B150BE7A25BF49468ECC15E0204A60AA3D2225293061CB098B0AC8BD4B361DE1` |
+| `build\f2\f2_run1.txt`, `build\f2\f2_run2.txt` | `D81B26E401564AB82147E87D6A06D25C897661C89E4466494E91E8758D0F726D` |
+
+Both shapes index the same tree the F1 arm indexed - 515 modules, 9022 symbols, 19720
+relationships, `exclude_tests=False`, `exclude_globs=scripts/**`, read through the harness's own
+`repository_index_settings()` - and both take their budgets from the validated
+`build\f1\experiment_f1.json` rather than from a `.env`: `SEARCH/TEST/DEBUG=2048`,
+`REFACTOR/IMPLEMENT/EXPLAIN=4096`, `repository_context_max_tokens=4096`, `max_symbols=20`,
+`max_modules=10`. Shape A is `_stage_arm()` unchanged: a bare `PipelineContext` with no resolved
+model and no plan, so `RepositoryContextStage._resolve_chars_per_token` returns the 4.0
+fallback. Shape B runs the same stage behind the real `ModelResolutionStage` (the alias's
+`ModelRegistry.from_json` entry, `chars_per_token=3.5`, `context_window=262144`,
+`backend_model=qwen3.8-flash-next`) and the real `PlanningStage`. Classification follows the
+production shape.
+
+Shape B is also the shape the live run agrees with, record for record:
+
+| probe | F1 session record | shape B replay |
+|---|---|---|
+| `refactor_repository_context` | `REFACTOR`, assembled, primary `packages/pipeline/stages/repository_context.RepositoryContextStage`, 1 symbol, 4049 estimated of 4096 | same intent, same primary, 1 of 20 candidates kept, 4049 estimated |
+| `explain_changed_files_contextbuilder` | `EXPLAIN`, assembled, primary `packages/context/builder.ContextBuilder._enforce_budget`, 3 symbols, 3988 estimated | same intent, same primary, 3 of 20 kept, 3988 estimated |
+| `explain_changed_files_history_cap` | `EXPLAIN`, assembled, primary `apps/gateway/api/models.list_models`, 20 symbols, 2861 estimated | same intent, same primary, 20 kept, 2861 estimated |
+
+The classes, one per fact, with the evidence line each rests on. "owners" are the symbols that
+could deliver the fact - the symbol that defines it where one exists, otherwise every symbol
+whose own source carries its text; the index's `get_symbol_source()` returns the module's text,
+so a holder's offset is an offset into that module file.
+
+| fact | class | where it stood in the replay, and what the answer did |
+|---|---|---|
+| `select_last_task_text` | (b) retrieved and trimmed | 116 owners, 115 of them among the 4127 candidates that cleared the score floor; the defining symbol `packages/pipeline/user_messages.select_last_task_text` was hoisted by `_promote_repository_context_stage_symbols` to candidate position 2 and survived the cut of 20; `_enforce_budget` then took the package from 20 symbols to 1 (the primary at 4049 of 4096), dropping it. Prompt occurrences 0, `context_facts_available()` does not list it. A1 and F1 both missed it |
+| `packages/context/builder.py` | (d) delivered and unused | 33 owners of `packages/context/builder` ranked, all 33 in the candidate list, 15 cut at 20 and 15 dropped by the budget, 3 selected (primary `ContextBuilder._enforce_budget` at 7168 source + 6817 docstring + 19 signature characters, then `ContextBuilder` as a 1814-character preview and `.build` signature-only). The context message carries the module key 8 times and `context_facts_available()` lists the fact. A1 missed it, F1 scored it, on records the replay reproduces exactly - and the string with `.py` on the end appears 0 times, so what the matcher accepts is the variant without it |
+| `max_current_tool_result_tokens` | (c) selected and thin | 250 owners, 116 ranked, 114 of them cut at `max_symbols=20`; 2 selected - `packages/pipeline/history._build_cap_groups.find` as a 1814-character `source_preview` and `.union` signature-only (0 delivered characters) - and the literal sits at offset 5842 of the 18056-character module text, so the delivered form stops 3628 characters short. Prompt occurrences 0; missed by both answers |
+| `_looks_like_cline_tool_result_message` | (b) retrieved and trimmed | its defining symbol ranked and entered the candidate list and was one of the 25 owners cut at `max_symbols=20`; no delivered symbol carried it (0 prompt occurrences); missed by both answers. It is in no promotion target list |
+| `[... truncated by gateway history cap ...]` | (c) selected and thin | no symbol is named for it, so the ladder runs on the 244 symbols that carry it: 111 ranked, 109 cut at 20, the same 2 selected in preview and signature form, literal at module-text offset 5842. Delivered, therefore 0 prompt occurrences. This is the fact F1 could only describe as "wide and thin"; the number for "thin" is 1814 of 18056 characters, and it is a class (c) only because a representation actually containing the literal was never sent |
+
+Nothing is class (a): every fact's symbol or carrier reached the builder's candidate list at
+least once, so "not retrieved" describes none of them. Nothing is class (e): the two answers
+that missed `select_last_task_text` named `_extract_last_task_text` and
+`select_context_query_text`, neither of which states the fact, and the history-cap answers named
+`cap_history`, its signature and module constants, which is why `cap_history` scored and the
+mechanism did not. The matcher was not loosened to reach these verdicts - it is
+`scripts\quality_harness.py`'s own `score_answer`, run over the stored A1 and F1 answer text and
+over the serialized prompt.
+
+The promotion asymmetry the roadmap flagged as "checkable offline and not yet a conclusion" is
+now a conclusion. `named-symbol calls` for `refactor_repository_context` records the three
+targets of `_promote_repository_context_stage_symbols` with `appended: []`,
+`targets_missing_from_candidates: []` and `target_positions_after` of 0, 1 and 2: it reordered,
+it did not append, and it had nothing to append because ranking had already found all three - so
+the missing `_ensure_named_candidates` call at `packages/context/builder.py:398-414` cost no
+fact here.
+For `explain_changed_files_history_cap` the record is `named-symbol calls: []` and
+`ensure_named_candidates calls: []`, because `_query_targets_history_cap` returns false for that
+prompt - it asks how the gateway "cap[s] conversation history", which matches none of the
+predicate's seven clauses - so the history-cap promotion at `:433-447` never ran and its append
+path was never reached. Both history-cap facts were lost earlier than any promotion: at the
+`max_symbols=20` slice and at preview depth.
+
+The 4.0-versus-3.5 comparison changes no class. `same_class` is true for all five facts; what
+moves is the amount of text a character budget admits. Shape A reports 3799, 3810 and 2567
+estimated tokens for the three probes where shape B and the live records report 4049, 3988 and
+2861, and the same 512-token supporting preview is 2070 characters at 4.0 against 1814 at 3.5 -
+shorter at the calibrated ratio, which is why the production-shaped replay is the one that
+decides. The selection is identical in both shapes for all three probes (1, 3 and 20 symbols,
+the same primaries), so the classes do not rest on which ratio was in force.
+
+Artifacts, all under the Git-ignored `build\f2\`:
+
+| file | what it is |
+|---|---|
+| `f2_classification.py` | the disposable analysis script - in-process wrappers around the real builder and ranking seam, no runtime edit |
+| `f2_run1.json`, `f2_run2.json` | the evidence: both shapes of all three probes, the step-by-step candidate lists, per-fact positions, serialized-prompt occurrences, matcher results against the A1 and F1 answers, and the replay-to-record parity |
+| `f2_run1.txt`, `f2_run2.txt` | the same as a report, in a fixed order, byte-identical between the two runs |
+| `f2_run1_out.txt`, `f2_run2_out.txt` | the script's stdout: the five class lines and the artifact sizes; the matching `_err.txt` files are empty |
+| `_peek.py`, `_peek_repo.txt`, `_peek_cb.txt`, `_peek_hc.txt` | a second disposable helper, one dump per probe: it imports the analysis script and prints the frozen compare record - the answer text, `prompt_tokens`, and the `hits`/`misses` the matcher scored - unmodified, which is what the per-fact quotes about what the model said are taken from. The compare record holds no request block; the request-shape parity is the session log's, which the analysis script reads in `session_evidence()` |
+
+Four of the five facts are context-side and open - two (b) and two (c) - so **F3 is
+authorized**. The single bounded variable this step proposes, and does not implement, is the
+primary symbol's share of the unchanged budget: `ContextBuilder`'s `primary_symbol_max_tokens`
+from 2048 to 1536 tokens. Its predicted effect is one conversion, `select_last_task_text`,
+because that is the fact whose symbol reached the package and was popped for want of room - the
+primary is 7168 source characters plus a 6817-character docstring, 4049 estimated tokens of a
+4096 ceiling, and 512 tokens of primary source freed is the 512-token supporting preview that
+carries the helper. Predicted token cost is about zero, since the ceiling is not raised. It
+predicts no conversion for the two history-cap facts, which are cut at the count of 20 before
+the budget is spent, and none for the builder file, which is already delivered; reaching those
+two would need `max_symbols` or the supporting pool, which are separate variables that buy
+facts with tokens.
+
+
+### Phase F3/F4 offline measurement of the primary-allowance candidate, 2026-11-06 (roadmap F3, F4)
+
+Roadmap Phase F steps F3 and F4: the one authorized variable - `ContextBuilder`'s default
+`primary_symbol_max_tokens`, 2048 to 1536 at `packages/context/builder.py:99` - implemented,
+tested and measured offline. No gateway was started, no backend was contacted, no configuration
+default was touched and the context ceiling is unchanged at 4096. F5 was not run. The candidate
+was rejected and reverted on 2026-11-07 - see *Rejection and reversion (roadmap F6)* at the end of
+this section; the shipped value is 2048.
+
+**The measured answer is that the candidate does not convert `select_last_task_text`.** It stays
+class (b) in both shapes, its literal appears 0 times in the serialized prompt of both arms, and
+the reason is a prefix property of `_enforce_budget` that F2's arithmetic did not account for.
+
+Commands, in run order. `build\f3\f3_classification.py` re-runs `build\f2\f2_classification.py`
+byte-identically - F2's script is not edited, so F2's pinned hashes stay reproducible - behind an
+import finder that resolves `packages` and `apps` from the checkout named by `--code-root`. The
+measured corpus stays the detached worktree in every run, so `modules=515 symbols=9022
+relationships=19720` is the same tree F1 ran live and F2 classified, and the only thing that
+differs between a `worktree` run and a `main` run is the runtime code.
+
+```powershell
+git -C ..\lap-f1-ebb98f9 status --short          # empty, detached at ebb98f9
+Test-Path ..\lap-f1-ebb98f9\.env                 # False
+git --no-pager diff --stat -- packages           # builder.py | 2 +-
+
+# 1. the control: the shipped code, which must reproduce F2 byte for byte
+.\.venv\Scripts\python.exe -X utf8 build\f3\f3_classification.py `
+    --code-root worktree --out-prefix build\f3\f3_base_run1      # exit 0
+.\.venv\Scripts\python.exe -X utf8 build\f3\f3_classification.py `
+    --code-root worktree --out-prefix build\f3\f3_base_run2      # exit 0
+# 2. the candidate, twice
+.\.venv\Scripts\python.exe -X utf8 build\f3\f3_classification.py `
+    --code-root main --out-prefix build\f3\f3_cand_run1          # exit 0
+.\.venv\Scripts\python.exe -X utf8 build\f3\f3_classification.py `
+    --code-root main --out-prefix build\f3\f3_cand_run2          # exit 0
+# 3. all eleven fixed probes, both shapes, both arms, in one artifact per run
+.\.venv\Scripts\python.exe -X utf8 build\f3\f3_probe_delta.py --out-prefix build\f3\f3_delta_run1
+.\.venv\Scripts\python.exe -X utf8 build\f3\f3_probe_delta.py --out-prefix build\f3\f3_delta_run2
+# 4. why the conversion fails: the cost of each deliverable prefix, and the allowance sweep
+.\.venv\Scripts\python.exe -X utf8 build\f3\f3_prefix_costs.py
+.\.venv\Scripts\python.exe -X utf8 build\f3\f3_gradient.py
+# 5. determinism, then fail-before and pass-after
+Get-FileHash -Algorithm SHA256 -LiteralPath build\f3\f3_cand_run1.json,build\f3\f3_cand_run2.json,`
+    build\f3\f3_cand_run1.txt,build\f3\f3_cand_run2.txt
+.\.venv\Scripts\python.exe -m pytest `
+    tests\context\test_builder.py::TestDefaultPrimaryAllowanceAgainstTotalBudget `
+    tests\pipeline\test_repository_context_stage.py::TestPrimaryAllowanceAtTheStageBoundary -q
+```
+
+Byte-identical outputs. The two control runs reproduce F2's artifacts exactly - the same JSON and
+report hashes `build\f2\f2_run1.json` carries - which is what licenses reading the difference in
+the candidate runs as the candidate and nothing else.
+
+| artifact pair | sha256 | equals |
+|---|---|---|
+| `f3_base_run1.json`, `f3_base_run2.json` | `B150BE7A25BF49468ECC15E0204A60AA3D2225293061CB098B0AC8BD4B361DE1` | `f2_run1.json` |
+| `f3_base_run1.txt`, `f3_base_run2.txt` | `D81B26E401564AB82147E87D6A06D25C897661C89E4466494E91E8758D0F726D` | `f2_run1.txt` |
+| `f3_cand_run1.json`, `f3_cand_run2.json` | `07F14E0F32E65E77E5CC789E5E2B6314329844A8D391A212B829966AC555AE24` | - |
+| `f3_cand_run1.txt`, `f3_cand_run2.txt` | `62F2FC0221571AFC2E974EF16CC810050F6D47BEA40A7CCE2653D79FD89FE59C` | - |
+| `f3_delta_run1.json`, `f3_delta_run2.json` | `F6A5C712FE774F9BF44DAA622E4A669DB3E1AD8BABDD5F7C1D0500AB25B49917` | - |
+| `f3_delta_run1.txt`, `f3_delta_run2.txt` | `36E5C12F7FCFA8629BF90B20D756544F03C9F0C5907EF1F07BB1733A7BCF1A10` | - |
+
+The five F2 facts, replayed. Classes come from the production shape; the 4.0 seam shape agrees on
+every one of them in both arms, and the literal counts are the serialized context message.
+
+| fact | class 2048 -> 1536 | occurrences in the context 2048 -> 1536 | estimated tokens 2048 -> 1536 |
+|---|---|---|---|
+| `select_last_task_text` | (b) -> **(b)** | 0 -> 0 | 4049 -> 3537 |
+| `packages/context/builder.py` | (d) -> (d) | 8 -> 8 | 3988 -> 3957 |
+| `max_current_tool_result_tokens` | (c) -> (c) | 0 -> 0 | 2861 -> 2861 |
+| `_looks_like_cline_tool_result_message` | (b) -> (b) | 0 -> 0 | 2861 -> 2861 |
+| `[... truncated by gateway history cap ...]` | (c) -> (c) | 0 -> 0 | 2861 -> 2861 |
+
+No fact changed class. `packages/context/builder.py` is still delivered, now on a request that
+carries a fourth symbol from that file instead of three. The three history-cap facts are
+untouched because their probe is nowhere near the budget - 2,861 estimated tokens of 4,096, with
+the primary being `apps/gateway/api/models.list_models` at 1,102 characters - so the allowance
+never binds and the loss happens at `max_symbols=20` and at preview depth, as F2 recorded.
+
+Why the predicted conversion did not happen. `_enforce_budget` keeps the primary and pops candidates
+off the tail, so the only packages it can hand the composer are prefixes of the order the
+promotions built - and on this probe that order is `RepositoryContextStage`, then
+`RepositoryContextStage._extract_query`, then `select_last_task_text`. A symbol's estimated cost
+includes its module docstring, and a second symbol in the same file is charged that same 6,817
+characters again. So the helper is never the symbol the walk discards; it goes on the way past a
+predecessor no affordable prefix contains:
+
+| delivered prefix | at 2048 | at 1536 | at 512 | at 1 |
+|---|---:|---:|---:|---:|
+| `[stage]` | 4,049 fits | 3,537 fits | 2,513 fits | 2,002 fits |
+| `[stage, _extract_query]` | 6,561 over | 6,049 over | 5,025 over | 4,514 over |
+| `[stage, _extract_query, select_last_task_text]` | 6,968 over | 6,456 over | 5,432 over | 4,921 over |
+
+The ceiling is 4,096 in every column, and the delivered row is the longest prefix that fits, which
+is the first row everywhere. With the primary allowed a single token - a package carrying nothing
+of the stage file but its module docstring - the prefix that would hold the helper is still 4,921
+tokens over. `f3_gradient.txt` is the same sweep in the other direction, 2048 through 512, and it
+returns one delivered symbol at every value. The variable that reaches `select_last_task_text` is
+the order the promotion builds, or the module docstring charged twice per symbol of a file, not the
+size of the primary's allowance.
+
+All eleven probes, both arms. 16 of the 22 probe/shape rows differ, across eight probes -
+`explain_changed_files_history_cap`, `implement_health_flag` and `test_list_content` are delivered
+identically in both arms. Five probes gain a supporting symbol, no probe's primary changed, no
+expected fact was gained and none was lost, and no row exceeded the unchanged 4096 ceiling in
+either arm - the highest estimate anywhere is 4096 exactly, the baseline's
+`explain_changed_files_repository_index` seam shape, which the candidate brings down to 4009.
+
+| probe | shape A / B, symbols 2048 -> 1536 | shape A / B, estimated tokens | shape A / B, serialized context chars |
+|---|---|---|---|
+| `search_answer_preview` | 1 -> 1 / 1 -> 1 | 4053 -> 3541 / 2046 -> 2046 | 17244 -> 15040 / 8064 -> 7998 |
+| `debug_streaming_preview` | 1 -> 1 / 1 -> 1 | 4053 -> 3541 / 4094 -> 3828 | 17244 -> 15040 / 15258 -> 14232 |
+| `test_list_content` | 20 -> 20 / 5 -> 5 | identical | identical |
+| `explain_live_path` | 4 -> **5** / 4 -> 4 | 2829 -> 4072 / 2868 -> 2356 | 13300 -> 18252 / 11906 -> 9946 |
+| `refactor_repository_context` | 1 -> 1 / 1 -> 1 | 3799 -> 3287 / 4049 -> 3537 | 16455 -> 14171 / 15319 -> 13351 |
+| `implement_health_flag` | 5 -> 5 / 4 -> 4 | identical | identical |
+| `multiturn_history_cap_budget` | 7 -> **9** / 6 -> **8** | 3986 -> 3907 / 3750 -> 3874 | 18708 -> 18734 / 15492 -> 16236 |
+| `multiturn_config_systems` | 15 -> **18** / 14 -> **16** | 3905 -> 4078 / 4023 -> 3977 | 19237 -> 20279 / 17396 -> 17379 |
+| `explain_changed_files_contextbuilder` | 3 -> **4** / 3 -> **4** | 3810 -> 3718 / 3988 -> 3957 | 17674 -> 17253 / 16270 -> 16129 |
+| `explain_changed_files_repository_index` | 14 -> 14 / 11 -> **12** | 4096 -> 4009 / 4091 -> 3944 | 19132 -> 18742 / 16873 -> 16297 |
+| `explain_changed_files_history_cap` | 20 -> 20 / 20 -> 20 | identical | identical |
+
+The gained symbols are ordinary previews of modules that were already in the package or newly
+admitted: on `explain_changed_files_contextbuilder`, `ContextBuilder._estimate_candidate_tokens_for_ranking`
+in both shapes; on `multiturn_history_cap_budget`, `history._build_cap_groups` and
+`context.models.ContextBudgetResult`; on `multiturn_config_systems`, three more in the seam shape
+and two in the production one. On `explain_live_path` only the seam shape gains -
+`RepositoryContextStage._serialize` - and on `explain_changed_files_repository_index` only the
+production shape gains - `RepositoryIndex.get_symbol_full_context`. One literal count moved with
+the wider package: `cap_history` appears 14 times in the 2048 arm's production-shaped
+history-cap context and 18 times in the candidate's, the seam shape being 18 in both.
+
+Tests, and the arm that fails. Four tests were added; the two that carry the claim were run against
+the unchanged 2048 tree first and failed there, naming the absence rather than a number:
+
+```
+FAILED tests/context/test_builder.py::TestDefaultPrimaryAllowanceAgainstTotalBudget::
+    test_promoted_supporting_symbol_reaches_the_package_at_the_default
+  AssertionError: the budget pass dropped the promoted supporting symbol:
+    selected=['packages/pipeline/stages/repository_context.RepositoryContextStage'],
+    estimated_tokens=3920 of 4096
+FAILED tests/pipeline/test_repository_context_stage.py::TestPrimaryAllowanceAtTheStageBoundary::
+    test_trimmed_primary_hands_the_pool_to_the_promoted_helper
+  AssertionError: the promoted supporting symbol was trimmed out of the package:
+    sent=[], estimated_tokens=3920 of 4096
+2 failed, 2 passed in 0.14s
+```
+
+After the one-line edit the same command reads `4 passed`. No test compares
+`primary_symbol_max_tokens` to any number. What makes the flipped assertions meaningful is the
+partner each one sits beside:
+`TestDefaultPrimaryAllowanceAgainstTotalBudget.test_a_larger_primary_allowance_crowds_the_supporting_symbol_out`
+takes one step above whatever the default currently is, read from the signature, and shows the
+symbol crowded straight back out;
+`TestPrimaryAllowanceAtTheStageBoundary.test_a_symbol_ahead_of_the_helper_costs_the_pool_over`
+rebuilds the live ordering - a method from the primary's own file promoted ahead of the helper -
+and shows the serialized request containing `select_last_task_text` at neither allowance. That last
+one passes before and after, which is its use: it is the measured reason F3's prediction failed,
+pinned in the suite that owns what the stage sends. All four keep the surrounding invariants -
+the primary delivered first, the total budget still 4096, the un-promoted ordering unchanged, the
+same-file neighbour still rejected - so nothing here is carried by a weakened assertion.
+
+Gates.
+
+| command | result |
+|---|---|
+| `-m pytest tests\context\test_builder.py tests\context\test_ranking.py tests\pipeline\test_repository_context_stage.py tests\observability\test_quality_harness.py -q` | 4 failed, 248 passed, exit 1 |
+| `-m pytest tests\context tests\pipeline -q` (the documented context/pipeline gate) | 817 passed, exit 0 |
+| `-m pytest -q` (full suite) | 47 failed, 5075 passed, 3 skipped - four above the documented 43 baseline |
+| `-m ruff check packages\context\builder.py tests\context\test_builder.py tests\pipeline\test_repository_context_stage.py` | All checks passed, exit 0 |
+| `-m mypy packages\providers packages\pipeline apps\gateway` (documented live-path gate) | Success: no issues found in 46 source files, exit 0 |
+| `-m mypy packages\context` (the changed surface) | Success: no issues found in 14 source files, exit 0 |
+| `& 'C:\Program Files\Git\bin\bash.exe' scripts/precommit_test_gate.sh` | 4 failed, 2519 passed - "pre-commit: live gate FAILED (pytest exit 1)" |
+
+The four failures are not in the new tests, and they are not corpus drift. At 2048 in this same
+checkout all ten `test_changed_file_ab_*` cases pass; the candidate breaks four, and
+`f3_ab_guards.txt` shows the same four counters moving over the clean `ebb98f9` corpus as well,
+with `facts_lost` empty in every case: `symbols_promoted` 0 to 2 on the eviction case and 4 to 6 on
+the gain case, the negative control's `context_differs` false to true with three delivered symbols
+becoming four and five, and the eviction pair's strict-subset relation broken by two extra symbols
+in the changed arm. They are Phase B's measurements pinned at the allowance Phase B measured, and
+per `CLAUDE.md` they were left failing - not re-baselined, weakened, skipped or edited. The
+live-path gate blocks on them, so this candidate cannot be carried to a commit as it stands.
+
+Artifacts, all under the Git-ignored `build\f3\`.
+
+| file | what it is |
+|---|---|
+| `f3_classification.py` | the replay launcher: the import finder, plus a `.provenance.json` sidecar naming the code root, the builder's origin file, the allowance in force and the artifact hashes |
+| `f3_base_run1.*`, `f3_base_run2.*` | the control - F2's script over the shipped code, byte-identical to F2's own artifacts |
+| `f3_cand_run1.*`, `f3_cand_run2.*` | the same script over the candidate: classes, step-by-step candidate lists, serialized-prompt occurrences |
+| `f3_probe_delta.py`, `f3_delta_run1.*`, `f3_delta_run2.*` | all eleven probes, both shapes, both arms in one process, plus the per-field difference table |
+| `f3_prefix_costs.py`, `f3_prefix_costs.txt` | the cost of each deliverable prefix at four allowances - the arithmetic that says no value of this variable converts the fact |
+| `f3_gradient.py`, `f3_gradient.txt` | the allowance swept from 2048 to 512 on the REFACTOR probe: one delivered symbol at every value |
+| `f3_ab_guards.py`, `f3_ab_guards.txt` | the three changed-file cases over the clean corpus in both arms, which separates the four test failures from drift |
+| `fail_before.txt`, `fail_before_all.txt`, `u_fail_before.txt`, `pytest_builder_after.txt`, `gate_full_out.txt`, `gate_livepath_out.txt` | the captured pytest output behind the fail-before block and the gate table |
+| `abguards_at_2048.txt`, `abguards_at_1536.txt`, `gate_ctxpipe_final.txt` | the ten `test_changed_file_ab_*` cases run twice - 10 passed with the constant back at 2048, 4 failed and 6 passed at 1536 - and the 817-test context/pipeline gate at the candidate |
+
+What this does not settle: whether a live request answers differently. F5 was not run - the
+offline result says a live A/B would measure a smaller primary and a wider package on eight probes
+rather than a conversion, and the live-path gate did not pass with the candidate in the tree. The
+decision this section left open was taken on 2026-11-07, below.
+
+#### Rejection and reversion (roadmap F6), 2026-11-07
+
+**Rejected and reverted; Phase F closes as a measured negative result with no runtime change.**
+The candidate failed every condition it could be judged on before F5: no conversion of
+`select_last_task_text`, no expected fact gained across the 11 probes, context composition
+changed on 8 of them, and four established Phase B tests broken, taking the full suite from 43
+failures to 47. Re-baselining those four tests was not authorized and not justified by a
+candidate that gains nothing.
+
+Reverted with `git checkout -- packages/context/builder.py tests/context/test_builder.py
+tests/pipeline/test_repository_context_stage.py`. The default is back at
+`primary_symbol_max_tokens: int = 2048` (`packages/context/builder.py:99`), and both test files
+are byte-for-byte their pre-F3 state: all four F4 tests above were removed, the "tripwire"
+included, because it asserted the current prefix-only delivery (`supporting_symbols == []`) as
+expected behaviour and would fail a future fix of it. The `build\f3\` artifacts and this section
+are the record.
+
+Verification after reversion (Git Bash, `uv run python -m ...`):
+
+| command | result |
+|---|---|
+| `pytest tests/context/test_builder.py tests/context/test_ranking.py tests/pipeline/test_repository_context_stage.py tests/observability/test_quality_harness.py -q` | 248 passed, exit 0 |
+| `pytest tests/context tests/pipeline -q` | 813 passed, exit 0 (817 with the four F4 tests) |
+| `scripts/precommit_test_gate.sh` | 2519 passed, "pre-commit: live gate OK", exit 0 |
+| `scripts/precommit_test_gate.sh --full` | 43 failed, 5075 passed, 3 skipped, "pre-commit: full suite OK (43 failures, baseline 43)", exit 0 |
+| `ruff check packages/context/builder.py tests/context/test_builder.py tests/pipeline/test_repository_context_stage.py` | All checks passed, exit 0 |
+| `mypy packages/providers packages/pipeline apps/gateway` | no issues in 46 source files, exit 0 |
+| `mypy packages/context` | no issues in 14 source files, exit 0 |
+
+Found by the phase and recorded for a future milestone only, not proposed here: `_enforce_budget`
+can deliver only a prefix of the promoted order, so a promoted symbol behind an unaffordable
+predecessor is unreachable by any allowance; and a symbol in the primary's own file is charged
+that file's module docstring a second time. Promotion order, docstring accounting, `max_symbols`
+and preview depth would each need their own milestone, an F2-style classification of the
+reachable set before any prediction, and their own authorization.
 
 ## Interpreting long runs, timeouts, and failed execution
 

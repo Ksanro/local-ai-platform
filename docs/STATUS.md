@@ -3,7 +3,17 @@
 This file is the current runtime snapshot. It intentionally describes only
 what matters for the live gateway path and calls out dormant code explicitly.
 
-Last reviewed: 2026-10-31 (two things, one pass. Roadmap Phase A item 3 is closed: history capping now
+Last reviewed: 2026-11-07 (documentation-only; no runtime fact in this file changed). Phases
+A to E of the 2026-10-24 sequence remain complete. Phase F, Repository Context Quality Per
+Token, reproduced the current controlled baseline (F1), classified offline the five facts its
+context arm did not deliver (F2), and tested one bounded candidate - the primary symbol's
+share of the unchanged 4096-token budget (F3, F4). The candidate failed its offline
+prediction and the live-path gate, so it was rejected and reverted, and F5 was not run.
+No Phase F runtime change was accepted: `ContextBuilder`'s `primary_symbol_max_tokens`
+default remains 2048. Detailed evidence is in `docs/roadmap.md`, Phase F, and
+`docs/live-gateway-runbook.md`, the Phase F1, F2 and F3/F4 sections.
+
+Previous review: 2026-10-31 (two things, one pass. Roadmap Phase A item 3 is closed: history capping now
 estimates message tokens with the resolved model's `chars_per_token` (`qwen38-27b`: `3.5`) instead of the
 global `4.0`, after finding that `cap_history` had accepted an `estimate` callable it never called, and it
 now budgets against the routed model's `definition.context_window` - a branch verified offline, because
@@ -623,7 +633,11 @@ environment uses whatever Python uv discovers, against `requires-python = ">=3.1
   `SEARCH`/`TEST`/`DEBUG`/`EXPLAIN` have measured budget overrides; `REFACTOR`
   was measured and reverted to the shared default after a replicated
   regression - see `docs/roadmap.md` section 3 and the runbook's "Intent Context Budgets"
-  section for the measured numbers.
+  section for the measured numbers. The five facts that baseline's context arm did not
+  deliver were the subject of `docs/roadmap.md` Phase F, Repository Context Quality Per
+  Token, which closed 2026-11-07 as a measured negative result with no runtime change.
+  Promotion order and same-file module-docstring accounting in the budget pass are
+  recorded there only as possible future investigations, each needing its own milestone.
 - The model often includes reasoning/preamble despite terse system prompts; the
   quality harness now records deterministic style violations separately from
   required-fact score.

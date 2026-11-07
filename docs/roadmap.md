@@ -2,11 +2,53 @@
 
 This roadmap is based on the current live gateway, not on dormant scaffolding.
 
-Last reviewed: 2026-10-24 (the next measured development sequence is recorded
-below. Dormant code stays intact and isolated; no deletion, archival move, or
-incidental activation is part of the current plan).
+Last reviewed: 2026-11-07 (Phase F closed as a measured negative result: the F3 candidate,
+`primary_symbol_max_tokens` 2048 to 1536, converted no fact, broke four Phase B tests and was
+rejected and reverted before F5; the shipped runtime is unchanged. See Phase F item 6.)
 
-Previous review: 2026-09-19 (records the completed dormant Capability Framework v1
+Previous review: 2026-11-06 (through commit `ebb98f9`. Phase F step F1 was measured, not
+written: A1's command shape re-ran from a detached worktree of `ebb98f9`, launched by
+`scripts/ab_launcher.py`'s `off` arm on an isolated port with its own session log, with the
+live-path gate green first (2519 passed, 206.11 s) and the backend identity confirmed before
+any scored request. The context arm scored `25/30` again - 32716 prompt tokens in 188.0 s,
+style `11/11` ok, nothing errored, nothing timed out, longest request 29.4 s - and the
+no-context half scored `2/30` where A1 scored `4/30`, on requests identical one by one in
+prompt tokens (2221 in both runs). Under the unchanged context-arm total the composition
+moved: `_choice_content` was delivered by A1's identical context and missed today, and
+`packages/context/builder.py`, one of the two facts still open, converted on a request
+identical to A1's in every recorded field. `select_last_task_text` and the three history-cap
+facts are still missed. No fact is classified from a live arm: F2 owns the classes and F1's
+evidence table is its input. Two statements in Phase F were corrected on the way - 1324 and
+1471 are ratios of total provider prompt tokens and not of repository context (the
+context-only figure is 1412 estimated tokens per scored fact, from the session field
+`context.estimated_tokens`), and F1 no longer requires a live run to reproduce `25/30` and
+`4/30` before its evidence may be used. Phases A to E stay complete: the measurement base was
+repaired and re-run (A1-A2), the history cap became a calibrated number in the code that
+spends it (A3), change-aware ranking was settled offline and live and closed with its
+default and its weight unchanged (B1-B5), and conversation file activity is measured on the
+live path, summarized offline, validated against native Cline traffic, and benchmarked
+against a feature-off arm (C1, E1-E3). Dormant code stays intact and isolated; no deletion,
+archival move, or incidental activation is part of the current plan, and change-aware ranking
+stays off by default.)
+
+Previous review: 2026-11-03 (documentation-only, through commit `ebb98f9`: Phases A to E of
+the sequence below were confirmed complete and Phase F, Repository Context Quality Per
+Token, was opened as the next measured milestone. It starts from the controlled 11-probe
+baseline - `25/30` expected facts with repository context against `4/30` without it, an arm
+delta of `+30888` prompt tokens across the `+21` facts the flag converted - and asks what the
+five facts context did not deliver cost, in that order. No runtime fact changed: the live
+path remains `ModelResolutionStage` -> `PlanningStage` -> `RepositoryContextStage` ->
+`ProviderStage` with two configuration switches and no runtime `EngineeringMemory` read, and
+C1 stays inert until a client sends `tools`. Everything measured through `ebb98f9` stays as
+it was written; the statements that carry it were reworded where they had gone stale, and the
+rest of this file is the record. Dormant code stays intact and isolated; no deletion,
+archival move, or incidental activation is part of the current plan, and change-aware ranking
+stays off by default.)
+
+Review before that: 2026-10-24 (recorded the measured development sequence that Phases
+A-E above now closes, and kept dormant code intact and isolated).
+
+Review before that: 2026-09-19 (records the completed dormant Capability Framework v1
 prototype and the first read-only, script-reachable Git Integration slice; the
 live-gateway priorities were unchanged since the 2026-09-09 pass).
 
@@ -49,6 +91,12 @@ live-gateway priorities were unchanged since the 2026-09-09 pass).
   validated 2026-09-09 for repository-context budgeting: 5/8 -> 0/8 measured
   context-cost overages, no quality/style regression; roadmap A3 extended the
   same resolved ratio to history capping, measured 2026-10-31
+- conversation-scoped file activity on the live path (roadmap C1, landed
+  `f74d16d`/`c0d91bd`, complete 2026-10-30): recognized Cline write/edit/search tool
+  results normalized to repository-relative paths, counted per conversation and
+  recorded count-only in every session record behind `FileActivityTracker`; analyzed
+  offline by the session analyzer's FILE ACTIVITY section (E1), validated against
+  native Cline 4.x tool calls (E2), and benchmarked against a feature-off arm (E3)
 
 ## Immediate Goals
 
@@ -452,6 +500,410 @@ them.
    cost: a symlink or junction re-pointed while the gateway runs keeps its old
    answer until evicted or restarted. Benchmark output stays under `build/`.
 
+#### Phase F: Repository Context Quality Per Token
+
+The milestone now in line, opened 2026-11-03 at commit `ebb98f9`, where step F1 was measured and
+step F2 classified on 2026-11-06 - the first live, the second offline and deterministic. F3 was
+authorized by what F2 found, was built and measured offline on 2026-11-06, and did not convert
+the fact it predicted; F4 measured what it does change and found four established Phase B tests
+broken by it. **Phase F closed 2026-11-07 as a measured negative result (item 6):** the candidate
+was rejected and reverted, F5 was not run, and no Phase F runtime change was accepted - the
+shipped `primary_symbol_max_tokens` is still 2048. Phases A to E are closed, so
+this was the item that followed them. It keeps the pattern the 2026-10-24 sequence set - reproduce,
+change one variable, test, measure live, accept or revert -
+and stays planning-first through the existing `context_budget_ranking` task in
+`scripts/local_agent_coding.py`, whose scope this phase extends.
+
+**The number it starts from.** The controlled A1 baseline (2026-10-24, `0371d64`,
+`scripts/quality_harness.py --compare-context --json` over the whole 11-probe /
+30-fact set against `qwen3.8-flash-next` on vLLM through the `qwen38-27b` alias,
+`chars_per_token=3.5`, `repository_context_max_tokens=4096`, intent budgets
+`SEARCH/TEST/DEBUG=2048` and `REFACTOR/IMPLEMENT/EXPLAIN=4096`, history cap on at
+3000 tokens, changed-file ranking off in both halves of the pair, `REQUEST_TIMEOUT=300`
+against a 345 s harness timeout): `25/30` expected facts with repository context
+against `4/30` without it, style `11/11` ok in both arms, no errored and no timed-out
+request, 33109 prompt tokens in 129.6 s against 2221 in 532.1 s. Both of those are total
+prompt tokens the provider reported for the whole request, so the two ratios drawn from
+them are per-request figures and not repository-context figures: `+30888` prompt tokens
+bought `+21` facts, about 1471 prompt tokens per fact the flag converted, and the context
+arm spent 1324 per fact it scored. The context-only figure is a different quantity from a
+different source - the session record field `context.estimated_tokens`, summed over the
+same run's 11 context-arm records, totals 35309 there, which is 1412 estimated context
+tokens per scored fact and 1681 per converted fact. That field is the stage's own
+character-based estimate at the calibrated `chars_per_token`, and for these eleven
+requests it runs 4421 tokens above the measured prompt-token delta and 2200 above the
+context arm's entire reported prompt, so the two bases are quoted side by side and never
+interchanged. The five facts the context arm did not deliver are
+this phase's subject: `select_last_task_text` (`refactor_repository_context`, 1/2,
+3220 prompt tokens), `packages/context/builder.py`
+(`explain_changed_files_contextbuilder`, 2/3, 3466), and three of the four on
+`explain_changed_files_history_cap` (1/4, 3025) - `max_current_tool_result_tokens`,
+`_looks_like_cline_tool_result_message` and
+`[... truncated by gateway history cap ...]`, with only `cap_history` arriving. The
+configuration, commands and per-probe numbers are in
+`docs/live-gateway-runbook.md`, "Current controlled baseline, 2026-10-24 (roadmap A1)";
+artifact `logs\quality_compare_qwen38_vllm_20261024.json`.
+
+**What is already explained, and so is not this phase's target.** Three of the five
+sit in the one probe whose working-tree bonus is their documented reason: the runbook
+records `1/4` there as what an arm without the bonus scores, and roadmap B5 closed
+that question on 2026-10-30 with `RankingConfig.WEIGHT_CHANGED_FILE` at `+25` and
+change-aware ranking off by default. Recovering those three facts by turning that
+feature on is a decided matter and is not on the table here. What is genuinely open is
+the other two facts, and the cost question that covers all five.
+
+**The question this phase answers.** F1 has been measured, and it says which facts moved
+rather than why. It reproduced `25/30` at `ebb98f9`, and the movement inside that unchanged
+total sat on probes whose recorded context is identical between the two days - same symbols
+selected, same estimated tokens, same primary - so on those probes the answer side is
+implicated by observation, not by inference. What still no measurement says is whether the
+facts that remain missed are retrieval, ranking and composition, or answer-side. The three
+lead to different work: the text never reached the prompt, it reached the prompt thin or out
+of position, or it reached the prompt complete and the answer did not use it. The ratio is
+only worth quoting once they are separated.
+
+**The metric to report.** Keep A1's reporting shape - facts per arm, prompt tokens per
+arm, style, errors, timeouts, wall seconds - and add the marginal number in both bases,
+each named for what it divides. On reported prompt tokens the baseline is 1324 per fact
+the context arm scored and 1471 per fact the flag converted; on the stage's own
+`context.estimated_tokens` it is 1412 and 1681 for the same counts. A candidate that
+converts a fact while adding context improves quality per token only if its marginal
+cost is below the figure it is quoted against, so the base used, the conversion count and
+the token delta are reported together or not at all. F1 measured those four numbers on
+2026-11-06: 32716 prompt tokens and 34902 estimated context tokens for `25/30`, against a
+no-context half of 2221 tokens and `2/30` - `+30495` prompt tokens for `+23` converted
+facts, which is 1309 prompt tokens per scored fact, 1326 per converted fact, 1396 estimated
+context tokens per scored fact and 1517 per converted fact. The context arm reached A1's
+score for 393 fewer prompt tokens than A1 spent, and that came from composition rather than
+from a cheaper mechanism: one probe sent a symbol fewer, another sent the same symbol at 391
+estimated tokens more.
+
+1. **F1 - reproduce the live behaviour and record what moved.** Re-run A1's command shape
+   at the current commit, from a detached worktree, with the harness and the gateway
+   pointed at that tree's own session log so the run's records hold nothing else. A1 is
+   the historical reference, not a gate: answer-side sampling variance at this sample
+   size is already documented in this file (roadmap B5 re-ran a probe for that reason
+   alone), so a run that does not land on `25/30` and `4/30` is not a change in
+   conditions that voids it - it is the current number, and what has to be recorded is
+   which probes moved, in which direction, and whether anything other than the answer
+   explains it: a style violation, an error, a timeout, or a `context.status` that is not
+   `assembled`. No fact may be called context-side or answer-side from this step alone.
+   Per fact - the five historical misses first - record whether the current answer scored
+   it, and what the run left behind says about it, which measured here is everything a live
+   arm can give: the session record's `intent`, `context.status`, `context.primary_symbol`,
+   `context.symbols_selected`, `context.max_tokens` and `history.dropped_count`, plus the
+   stage's own `context.estimated_tokens`. Neither the harness document nor the session log
+   stores the serialized prompt - `apps/gateway/session_log.py` records message counts and
+   previews, not the request text - so this step reports the shape of what was sent and never
+   its text, which is precisely the gap F2 exists to close. Record the probe's delta against
+   A1 beside it, and what stays unresolved.
+
+   Measured 2026-11-06 at `ebb98f9`, from `C:\Users\ovidi\lap-f1-ebb98f9` on port 8011. The
+   commands, configuration, artifact paths and per-probe deltas are in
+   `docs/live-gateway-runbook.md`, "Phase F1 reproduction of the A1 baseline, 2026-11-06
+   (roadmap F1)". The context arm scored `25/30` as A1 did, for 32716 prompt tokens in
+   188.0 s, style `11/11` ok, zero errored and zero timed-out requests, longest 29.4 s. The
+   no-context half scored `2/30` where A1 scored `4/30`, on eleven requests whose prompt
+   tokens are identical one by one (2221 in both runs), so whatever moved there moved in the
+   answer. Under the matching context-arm total three facts moved: `_choice_content` was
+   delivered by A1's identical context - same single symbol, same 2046 estimated tokens, same
+   primary - and missed here, `packages/context/builder.py` converted on a request identical
+   to A1's in every recorded field (3466 prompt tokens, 3988 estimated context tokens, 3
+   symbols, primary `packages/context/builder.ContextBuilder._enforce_budget`, both days),
+   and `implement_health_flag` and `multiturn_history_cap_budget` held their scores while
+   sending one symbol fewer each. Still missed and unmoved: `select_last_task_text` (1 symbol
+   at 4049 estimated tokens of a 4096 budget, against A1's same single symbol at 3658) and all
+   three `explain_changed_files_history_cap` mechanism facts (20 symbols at 2861 estimated
+   tokens, 1235 of budget unspent, recorded primary `apps/gateway/api/models.list_models`).
+   `history.dropped_count` is 0 in all 22 records of both runs, so nothing the cap does can
+   account for the truncation-marker fact on either day: its only route into a prompt is as
+   text inside a selected symbol's source.
+
+   What F2 has to settle from deterministic evidence, and a live arm cannot: whether
+   `packages/pipeline/user_messages` is a candidate for the REFACTOR query at all, and whether
+   one 4049-token symbol leaves room for a second; whether the two `packages/pipeline/history`
+   helpers are unreachable from that query's ranking or reached and cut by the count of 20;
+   and whether A1's builder-file miss was ever reachable from the context side, which the
+   identical-request record already answers for the answer. One condition note for F5: answer
+   times rose on both halves with prompt counts unchanged, and the repository-context stage
+   summed 32.2 s against A1's 12.8 s over the same eleven requests, so A1's 11.8 s per request
+   is a historical reference and a material-latency floor has to be quoted against a same-day
+   control arm.
+
+2. **F2 - read the deterministic evidence, offline, and classify from it.** This is where
+   the five classes get assigned, one per fact, with the evidence line named for each:
+   (a) not retrieved - the symbol never entered the builder's candidate set; (b) retrieved
+   and trimmed - it entered the ranking and the `max_symbols` limit or `_enforce_budget`
+   removed it; (c) selected and thin - it reached the package as `signature` or
+   `source_preview` rather than as `source`; (d) delivered and unused - the serialized
+   prompt carried the fact's text and the answer did not use it; (e) scored wording - the
+   answer states it and the verbatim match misses it. (a) to (c) are context-side and are
+   settled here; (d) and (e) are settled against F1's recorded answers, which makes F1's
+   evidence table the input to this step rather than a parallel result. No gateway, no
+   backend, no new capability: extend the seam the changed-file probe already uses.
+   `_stage_arm()` runs
+   the real `RepositoryContextStage` over this checkout's index, and
+   `context_facts_available()` serializes that package through the real
+   `OpenAISerializer` and applies the same `score_answer` matching the live probe uses, so
+   the answer is which fact text objectively reaches the prompt. Run it on the three
+   probes that hold the five facts with `changed_modules` empty - the arm the baseline
+   measures - and record per probe: the primary symbol, the selected symbols in order,
+   which of them carry `source` rather than `source_preview`, estimated tokens against the
+   budget in force, and whether each missed fact's text appears in the serialized prompt
+   at all. That settles classes (a) to (c); only a live arm settles (d) and (e). Two
+   limits to state rather than hide: `_stage_arm` builds a bare `PipelineContext` with no
+   resolved model, so it estimates at `CHARS_PER_TOKEN` 4.0 where the live path uses the
+   alias's calibrated 3.5 (recorded under roadmap B3), and `RepositoryIndex` is AST-based,
+   so a symbol its expansion never produces is absent in a way no ranking change reaches
+   (recorded under *Deferred*). One asymmetry is worth naming before any of that, because
+   it is checkable offline and is not yet a conclusion:
+   `_promote_repository_context_stage_symbols` lists
+   `packages/pipeline/user_messages.select_last_task_text` among its targets but only
+   reorders candidates ranking already found, with no `_ensure_named_candidates` call
+   (`packages/context/builder.py:398-414`), while the history-cap and config-system
+   promotions append their targets from the index when ranking missed them
+   (`packages/context/builder.py:433-447` and `:449-463`, appending at `:492-519`).
+
+   Classified 2026-11-06, offline, at `ebb98f9`, from `C:\Users\ovidi\lap-f1-ebb98f9`: no
+   gateway, no backend, no live harness and no runtime change. What ran is the real thing - that
+   tree's index (515 modules, 9022 symbols, 19720 relationships), the real `PlanningStage`
+   intent, `RepositoryContextStage`, `ContextBuilder`, `RankingEngine`, `ContextBudget`,
+   `ContextComposer`, `OpenAISerializer`, and the harness's own `_stage_arm()`,
+   `context_facts_available()` and `score_answer` matcher - over the three probes with
+   `changed_modules` empty, in two shapes. Shape A is `_stage_arm()` as it stands: a bare
+   `PipelineContext`, no resolved model, so `_resolve_chars_per_token` falls back to 4.0 and no
+   plan is present. Shape B puts the same stage behind `ModelResolutionStage` and
+   `PlanningStage` with the alias's real `ResolvedModel` (`chars_per_token=3.5`,
+   `context_window=262144`) and the same intent budgets and 4096 maximum. Shape B reproduces
+   F1's context-arm records exactly - 4049, 3988 and 2861 estimated tokens, 1, 3 and 20 symbols
+   selected, the same three primaries and the same `REFACTOR`/`EXPLAIN`/`EXPLAIN` intents, which
+   is what licenses the classes below, and classification follows that production shape.
+   The 4.0 shape reaches the *same class for all five facts* at 3799, 3810 and 2567
+   estimated tokens, and the shapes differ only in how much text survives a budget
+   expressed in characters: the same 512-token supporting preview is 2070 characters at
+   4.0 and 1814 at 3.5.
+
+   | fact | probe | class | the evidence line, from the production-shaped replay |
+   |---|---|---|---|
+   | `select_last_task_text` | `refactor_repository_context` | (b) retrieved and trimmed | ranked (4127 candidates cleared the score floor), hoisted to candidate position 2 by `_promote_repository_context_stage_symbols`, survived `max_symbols=20`, then removed by `_enforce_budget`, which walked that 20-candidate package down to its single primary (20 in, 1 out, 4049 estimated of 4096). Text appears 0 times in the serialized prompt and in `context_facts_available()` |
+   | `packages/context/builder.py` | `explain_changed_files_contextbuilder` | (d) delivered and unused | 33 of the file's symbols entered the candidate list and 3 were selected (primary `ContextBuilder._enforce_budget`, 7168 source chars + 6817 docstring + 19 signature, then a preview and a signature-only symbol), 20 in and 3 out at 3988 estimated; the context message carries the module key 8 times and `context_facts_available()` lists the fact. A1's answer missed it, F1's scored it, on a request the replay matches field for field - so the miss was never context-side |
+   | `max_current_tool_result_tokens` | `explain_changed_files_history_cap` | (c) selected and thin | 250 owners, 116 of them in the ranked list, 114 cut at `max_symbols=20`, 2 selected (`packages/pipeline/history._build_cap_groups.find` delivered as a 1814-character `source_preview`, `.union` as signature only). `get_symbol_source` returns the 18056-character module text for both, and the literal sits at offset 5842 of it, so the delivered form stops 3628 characters short. 0 prompt occurrences |
+   | `_looks_like_cline_tool_result_message` | `explain_changed_files_history_cap` | (b) retrieved and trimmed | its own definition symbol entered the candidate list and was one of the 25 owners cut at `max_symbols=20`; 0 prompt occurrences. It is not in any promotion target list, and the history-cap promotion did not fire on this prompt at all |
+   | `[... truncated by gateway history cap ...]` | `explain_changed_files_history_cap` | (c) selected and thin | no symbol is named for it, so the ladder runs on the symbols that carry it: 111 ranked owners, 109 cut at 20, the same 2 selected in preview and signature form with the literal at module-text offset 5842, 0 prompt occurrences. Requirement satisfied: it is only "delivered" if a selected representation contains it, and none does |
+
+   The asymmetry flagged above is settled, and it is not what cost the two facts. On the
+   REFACTOR query `_query_targets_repository_context_stage` returns true, the promotion
+   passes its three targets to `_promote_named_symbols` with `appended=[]` and no
+   `_ensure_named_candidates` call - reorder only, exactly as documented - and
+   `targets_missing_from_candidates` is empty, so all three targets were already in the
+   ranked list and the append it does not have was never needed.
+
+   On the history-cap query the opposite happened: `_query_targets_history_cap` returns
+   false for "How does the gateway cap conversation history before sending it to the model?" -
+   none of its seven clauses match - so `_promote_history_cap_symbols` never ran, and
+   `ensure_named_candidates calls` is empty in all six replays of all three probes. The
+   history-cap facts are lost to the count of 20 and to preview depth, not to a promotion
+   that could have appended them; widening that gate to name one probe's helpers would be
+   making a fact appear, which F3 rules out. No fact landed in class (a) and none in (e):
+   every answer that missed a fact said nothing resembling it, so the open set is
+   context-side by observation.
+
+   Four of the five facts are open and context-side - two (b), two (c) - so **F3 is
+   authorized**. The one bounded variable it should weigh, proposed and not implemented: the
+   primary symbol's share of the unchanged budget, `ContextBuilder`'s
+   `primary_symbol_max_tokens` from 2048 to 1536 tokens. What it predicts, from the replay's
+   arithmetic rather than a hope:
+   `select_last_task_text` converts, because that fact's symbol is the one that reached the
+   package and was popped, and the pop is a fit problem - the primary is 7168 source characters
+   plus a 6817-character docstring, 4049 estimated tokens against a 4096 ceiling, so 512 tokens
+   of primary source freed is exactly the 512-token supporting preview that carries the helper.
+   Its token cost is about zero, because the ceiling is not touched: the same 4096 buys a
+   shorter primary and one more supporting symbol. It predicts no conversion for the two
+   history-cap facts, which are cut before any budget is spent, and none for the builder file,
+   which is already delivered. The alternatives that would reach those two - `max_symbols` above
+   20, or a deeper supporting pool - are separate variables that buy facts with tokens, which is
+   the ratio this phase exists to improve; they are recorded as the open choice, not taken here.
+
+   Everything above comes from `build\f2\f2_classification.py`, a disposable Git-ignored
+   analysis script (no runtime source or test was edited), and its artifacts
+   `build\f2\f2_run1.json`, `build\f2\f2_run1.txt`, `build\f2\f2_run2.json` and
+   `build\f2\f2_run2.txt`: two runs, byte identical, JSON sha256
+   `B150BE7A25BF49468ECC15E0204A60AA3D2225293061CB098B0AC8BD4B361DE1` and report sha256
+   `D81B26E401564AB82147E87D6A06D25C897661C89E4466494E91E8758D0F726D`. The commands, the
+   candidate-order dumps and the offline output are in `docs/live-gateway-runbook.md`,
+   "Phase F2 offline classification of the five A1 fact misses, 2026-11-06 (roadmap F2)". The
+   focused suites the seam touches - `tests\context\test_builder.py`,
+   `tests\context\test_ranking.py`, `tests\pipeline\test_repository_context_stage.py` and
+   `tests\observability\test_quality_harness.py` - pass 248/248 unchanged.
+
+3. **F3 - propose one change, only if F1 and F2 say the misses are context-side.** One
+   variable on the live path, inside `packages/context` or the repository-context stage.
+   It must not turn change-aware ranking on, re-tune its `+25` bonus, raise
+   `APP_REPOSITORY_CONTEXT_MAX_TOKENS` as its mechanism (that buys facts with tokens,
+   which is the ratio this phase exists to improve), add a Git call, a stage, a persisted
+   artifact or a package, or touch `apps/` or the serializer to make a fact appear. If
+   F1 and F2 land every open miss in class (d) or (e), this phase records "no change" the
+   way B5 recorded its negative result, items 4 to 6 do not run, and the milestone is
+   closed. A proposal has to name, before it is built, the fact or facts it expects to
+   convert and the token cost it expects to pay.
+
+   **Built and measured 2026-11-06.** The variable was implemented and nothing else was:
+   `ContextBuilder`'s default `primary_symbol_max_tokens`, `2048` to `1536`, at
+   `packages/context/builder.py:99`. The total budget, `max_symbols`, the 512-token
+   supporting pool, the ranking weights, the promotion rules, the serializer, the gateway
+   apps and every configuration default are untouched, and the ceiling is still 4096.
+   Predicted: `select_last_task_text` (b) to (d) at about zero net prompt tokens, no other
+   conversion. Observed offline, over the unchanged `ebb98f9` corpus in both shapes: **the
+   conversion did not happen.** The fact stays (b), its literal's count in the serialized
+   prompt stays 0, and on that probe the change only shrinks what is sent - 4049 estimated
+   context tokens to 3537, 15,319 context characters to 13,351, the delivered package still
+   the primary alone. F2's arithmetic was read wrong. `_enforce_budget` pops from the tail, so
+   it can deliver only a *prefix* of the promoted order, and the order the promotions build is
+   `RepositoryContextStage`, then `RepositoryContextStage._extract_query`, then
+   `select_last_task_text` - and the method sits in the primary's own file, so it is charged
+   that file's 6,817-character module docstring a second time. The prefix costs, measured over
+   the same index at both allowances (`build\f3\f3_prefix_costs.txt`):
+
+   | delivered prefix | at 2048 | at 1536 | fits 4096? |
+   |---|---:|---:|---|
+   | `[stage]` | 4,049 | 3,537 | yes - what both arms send |
+   | `[stage, _extract_query]` | 6,561 | 6,049 | no, in both arms |
+   | `[stage, _extract_query, select_last_task_text]` | 6,968 | 6,456 | no, in both arms |
+
+   So the helper is never the symbol the walk drops; it goes on the way past a predecessor that
+   no prefix can afford, and the walk settles back to the primary alone. The lever cannot reach
+   it at any value: with `primary_symbol_max_tokens` set to 1 token - a package carrying nothing
+   of the primary's body but its module docstring - the three-symbol prefix is still 4,921
+   tokens against the 4,096 ceiling, and the sweep in `build\f3\f3_gradient.txt` returns one
+   delivered symbol at 2048, 1792, 1536, 1280, 1024, 768 and 512 alike. What the change does
+   move is breadth on the other probes: 16 of the 22 probe/shape rows differ, across eight of
+   the eleven probes - `explain_changed_files_history_cap`, `implement_health_flag` and
+   `test_list_content` are delivered identically in both arms. Five probes gain a supporting
+   symbol (`explain_live_path`, `multiturn_history_cap_budget`, `multiturn_config_systems`,
+   `explain_changed_files_contextbuilder`, `explain_changed_files_repository_index`), eight
+   deliver a smaller package somewhere, the `cap_history` occurrence count in the
+   production-shaped multiturn history-cap context moves 14 to 18 with the wider package, and
+   across all eleven probes no expected fact is gained and none is lost.
+   `packages/context/builder.py` keeps (d), the three history-cap facts keep their F2 classes,
+   and every arm of every probe stays within 4096 with the configured ceiling unchanged. The
+   commands, the two-arm table and the hashes are in `docs/live-gateway-runbook.md`, "Phase
+   F3/F4 offline measurement of the primary-allowance candidate, 2026-11-06 (roadmap F3, F4)".
+
+4. **F4 - pin it with focused tests, in the live-path suites that already own the
+   behaviour.** `tests/context/test_builder.py` and `tests/context/test_ranking.py` for
+   selection and ordering, `tests/pipeline/test_repository_context_stage.py` for what the
+   stage sends, and `tests/observability/test_quality_harness.py`, whose offline arms run
+   the real stage. Per `TESTING.md`, a test that passes with and without the change
+   certifies nothing: record the arm that passes and the arm that fails, and run the
+   documented gates - `.venv\Scripts\python.exe -m pytest tests/context tests/pipeline
+   -q` and the live-path gate from `CLAUDE.md`,
+   `& 'C:\Program Files\Git\bin\bash.exe' scripts/precommit_test_gate.sh`.
+
+   **Pinned 2026-11-06, with four Phase B counters left standing in the way; the F4 tests were
+   removed with the reversion on 2026-11-07 (item 6), so none of the tests described in this
+   paragraph is in the tree.** Four tests were
+   added, two of them before the source was touched, and the two that carry the claim failed
+   against the unchanged 2048 behaviour and pass at 1536.
+   `tests/context/test_builder.py::TestDefaultPrimaryAllowanceAgainstTotalBudget` is the
+   behavioral one - no constant in it: at the default, over a 4096-token budget, the promoted
+   supporting symbol reaches the package, the primary stays first, and the budget result stays
+   within 4096. At 2048 it did not, and the failure named the absence rather than a number:
+   `selected=['packages/pipeline/stages/repository_context.RepositoryContextStage'],
+   estimated_tokens=3920 of 4096`. Its companion asserts the direction of the trade - one
+   allowance step above whatever the default is, taken from the signature, and the symbol is
+   crowded out again - so the first assertion cannot pass by accident.
+   `tests/pipeline/test_repository_context_stage.py::TestPrimaryAllowanceAtTheStageBoundary`
+   carries the same pair through the real stage, builder, budget engine, composer and OpenAI
+   serializer: with the helper next in the order, the trimmed primary hands it the pool and the
+   serialized provider request contains `select_last_task_text` - at 2048 it did not, with
+   `supporting_symbols=[]` at the same 3920 tokens - and with a same-file symbol in front of it
+   the request contains it at neither allowance, which is the live tree's shape and the reason
+   F3's prediction failed. That second test is a tripwire, not a certification: it passes
+   before and after, and it is the reason the conversion claim is recorded as unproven in the
+   suite that owns what the stage sends.
+   The documented context/pipeline gate `.venv\Scripts\python.exe -m pytest tests\context
+   tests\pipeline -q` passes at 817, scoped ruff and scoped mypy are clean, and the full suite
+   reads 47 failed against the documented 43 baseline. The four new failures are all in
+   `tests/observability/test_quality_harness.py`: three `test_changed_file_ab_*` counters and
+   the weight-5 negative control. They pin measurements Phase B took at the shipped allowance -
+   `symbols_promoted` of 0 and 4, a strict-subset relation between two arms' symbol sets, and a
+   negative control whose two contexts must be equal - and a second primary-allowance variable
+   moves all four, on the clean `ebb98f9` corpus as well as on this checkout's. None of them
+   reports a lost fact. Per `CLAUDE.md` they were not re-baselined, weakened, skipped or
+   edited; the live-path gate `scripts/precommit_test_gate.sh` therefore blocks on them (4
+   failed, 2519 passed, exit 1), and the candidate cannot be carried to a commit in this state.
+   This item originally also named a coverage gate script; it was never in the repository and
+   no coverage package is installed, so it was not run, and item 4 now names the live-path gate
+   instead.
+
+   **State: superseded by item 6 (rejected and reverted 2026-11-07).** At the time of
+   measurement 1536 was in the working tree, unaccepted and uncommitted. What F5 was scoped to
+   confirm - that a freed primary allowance converts a fact - did not happen offline, so a live
+   arm would have measured a smaller prompt and a wider package on other probes, not a
+   conversion. Re-baselining the four Phase B counters was neither authorized nor justified by a
+   candidate that gains no fact.
+
+5. **F5 - isolated live A/B, context on in both arms.** Current code against the
+   candidate, built from two detached worktrees of the same base so the trees differ in
+   exactly one variable, launched by `scripts/ab_launcher.py` and measured by
+   `scripts/quality_harness.py --base-url ... --model qwen38-27b --max-tokens 8192
+   --timeout 345 --repeat 3` against each arm's own log, then
+   `scripts/evaluate_quality_harness.py`. Same model, same budget, same probe set,
+   `APP_REPOSITORY_CONTEXT_CHANGED_FILES_ENABLED=false` in both arms, no shared session
+   log or `EngineeringMemory`. The current-code arm is the control: a cell that
+   disagrees with the A1 baseline is re-run or explained before the candidate is judged,
+   because run-to-run variance on the answer side is documented at this sample size. Name
+   the threshold that counts as a material latency change before measuring, the way E3
+   named its 2 ms and 5 ms lines in advance; the proposed floor, to confirm before the
+   run, is the candidate arm's mean per-request provider wait within 5% of the control
+   arm's, against the A1 context arm's 11.8 s per request (129.6 s over 11) as the
+   reference, and no request approaching the 300 s provider or 345 s client ceiling, the
+   193.8 s longest request of the baseline run being the shape to watch.
+
+   **Not run.** Both of its prerequisites failed: the offline conversion F3 predicted did not
+   happen, and the live-path gate did not pass with the candidate in the tree. No worktree,
+   gateway or backend was started for it.
+
+6. **F6 - accept or revert, and record it here.** Accept only with the context arm's
+   scored-fact count not lower, the predicted conversions actually converted, no new
+   style violation, zero errored and zero timed-out requests, and no latency movement
+   past the F5 threshold. Anything else is reverted. The record is the deliverable either
+   way: numbers, commit, configuration and the classification from F2 go into
+   `docs/live-gateway-runbook.md`, and this roadmap, `docs/STATUS.md` and `CLAUDE.md` say
+   what is now true.
+
+   **Closed 2026-11-07: rejected and reverted - Phase F is a measured negative result.** The
+   candidate (`primary_symbol_max_tokens` 2048 to 1536, item 3) failed every acceptance
+   condition it could be judged on before F5: it did not convert `select_last_task_text`, it
+   gained no expected fact across the 11 probes while changing context composition on 8 of
+   them (16 of 22 probe/shape rows), and it broke four established Phase B tests in
+   `tests/observability/test_quality_harness.py` (`test_changed_file_ab_*`), so the live-path
+   gate failed and the full suite rose from the documented 43 failures to 47. The line in
+   `packages/context/builder.py` was reverted to 2048 and the four F4 tests were removed from
+   `tests/context/test_builder.py` and `tests/pipeline/test_repository_context_stage.py`,
+   restoring both files to their pre-F3 state; none was kept, because each encoded either the
+   rejected value or the current flawed delivery as expected behaviour. The shipped runtime is
+   unchanged and `CLAUDE.md` needs no update. Reversion verification is in
+   `docs/live-gateway-runbook.md`, "Phase F3/F4 offline measurement of the primary-allowance
+   candidate", subsection *Rejection and reversion (roadmap F6)*.
+
+   What the phase found, recorded for a future milestone and not proposed here: (1) the budget
+   walk in `_enforce_budget` can deliver only a prefix of the promoted order, so a promoted
+   symbol behind an unaffordable predecessor is unreachable by any allowance; (2) a symbol in
+   the primary's own file is charged that file's module docstring a second time. Promotion
+   order, docstring accounting, `max_symbols` and preview depth are each a possible future
+   investigation that would need its own milestone, its own F2-style classification of the
+   reachable set before any prediction, and its own authorization.
+
+**Not part of this phase.** Turning change-aware ranking on or re-tuning its weight
+(closed, roadmap B5); activating anything listed in
+`docs/dormant-code-backlog.md` - capabilities, tasks, workflows, controller, execution,
+verification, modification, patches, session, bootstrap and autonomous stay dark; a true
+tokenizer in place of the calibrated `chars_per_token`; semantic or vector retrieval over
+the AST index; GitHub API integration; Git snapshot and diff persistence; and any general
+autonomous engineering loop. Those stay recorded where they already are - *Explicitly
+Deferred* and *Deferred* below - and no item above opens them by accident.
+
 #### Explicitly Deferred
 
 - true tokenizer integration
@@ -461,14 +913,16 @@ them.
 - a general autonomous engineering loop
 - wholesale activation of the dormant platform stack
 
-A1, A2, all of Phase B, C1 and A3 are complete, which closes Phase A. Phase D
-item 1's compaction is done, and Phase E items 1 to 3 - offline analysis of the
-records C1 writes, C1's validation on native Cline traffic, and its latency against
-a feature-off arm - are done with it;
-Phase D items 2 and 3 are standing
-policies rather than work left to do. The remaining execution order is the
-dormant-code and documentation sequence below, with documentation updated
-continuously.
+Phases A to E are complete, which closes the sequence agreed on 2026-10-24: A1's
+re-run and A2's launcher artifact settled the measurement base, all of Phase B is
+settled with the changed-file default and weight unchanged, C1 and A3 are on the live
+path, and Phase E's three items are done with it. Phase D items 2 and 3 are standing
+policies rather than work left to do, and Phase D item 1's bounded compaction is done
+while its policy of keeping these documents true as the path changes never closes.
+Phase F above closed 2026-11-07 as a measured negative result with no runtime change.
+Dormant packages, true tokenizers, vector search,
+GitHub integration, Git snapshot persistence and autonomous execution stay deferred,
+as recorded there and below.
 
 ### 1. Dormant-Code Inventory And Activation — first candidates DONE
 
@@ -546,14 +1000,17 @@ Done in this area:
   anaphoric prompts and promotes live history-cap/config-system symbols; the
   qwen36 live comparison scored `20/20` with context versus `2/20` without
 
-Next improvements:
+What came after that judgement:
 
 - keep running `--delta-context` live after gateway changes that touch
   repository context, delta injection, or session logging
-- next real product item is Repository Context Budgeting And Ranking (below),
-  planning-first via the `context_budget_ranking` local-agent-coding task
+- the product item that followed was Repository Context Budgeting And Ranking
+  (below), planning-first via the `context_budget_ranking` local-agent-coding
+  task. Its Phases A to E are complete, and Phase F, Repository Context Quality
+  Per Token (above), measured from 2026-11-06 at `ebb98f9`, closed 2026-11-07 as
+  a measured negative result with no runtime change
 
-### 3. Repository Context Budgeting And Ranking — REFACTOR/EXPLAIN measured
+### 3. Repository Context Budgeting And Ranking — measured, decision closed
 
 History capping works, but repository context often dominates total prompt
 tokens. `SEARCH`, `TEST`, `DEBUG`, and now `EXPLAIN` have measured
@@ -583,7 +1040,7 @@ Done in this pass:
   change is needed (numbers in `docs/live-gateway-runbook.md`, "Context-selection
   determinism, 2026-08-22")
 
-Next:
+Where those threads went:
 
 - `multiturn_history_cap_budget` was resolved in commit 6fe9283
   ("Clarify history cap budget probe facts"): two root causes —
