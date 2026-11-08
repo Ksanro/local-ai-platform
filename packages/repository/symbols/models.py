@@ -77,8 +77,15 @@ class Symbol:
             (e.g. ``"main.App.run"``).
         symbol_type: Category of the symbol.
         module: Source file path relative to the repository root.
-        lineno: 1-based line number where the symbol is defined.
+        lineno: 1-based line number where the symbol is defined (the
+            ``def``/``class`` line, never a decorator line).
         decorators: List of decorator names (empty list when none).
+        end_lineno: 1-based last line of the symbol's own source span, taken
+            from the parsed AST node.  ``None`` when the symbol was not built
+            from a node — that is the legacy, span-less case.
+        start_lineno: 1-based first line of the symbol's source span: the
+            earliest decorator line, otherwise ``lineno``.  ``None`` when
+            unknown; consumers fall back to ``lineno``.
     """
 
     id: str
@@ -88,6 +95,8 @@ class Symbol:
     module: str
     lineno: int
     decorators: list[str] = field(default_factory=list)
+    end_lineno: int | None = None
+    start_lineno: int | None = None
 
     def __post_init__(self) -> None:
         """Enforce the invariant that ``id`` equals ``qualified_name``."""

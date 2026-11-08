@@ -335,6 +335,8 @@ class PythonAstExtractor(SymbolExtractor):
             module=module_path,
             lineno=node.lineno,
             decorators=decorators,
+            start_lineno=self._span_start_lineno(node),
+            end_lineno=node.end_lineno,
         )
         symbols.append(symbol)
 
@@ -408,6 +410,8 @@ class PythonAstExtractor(SymbolExtractor):
             module=module_path,
             lineno=node.lineno,
             decorators=decorators,
+            start_lineno=self._span_start_lineno(node),
+            end_lineno=node.end_lineno,
         )
         symbols.append(symbol)
 
@@ -431,6 +435,24 @@ class PythonAstExtractor(SymbolExtractor):
                 relationships=relationships,
                 imports=imports,
             )
+
+    @staticmethod
+    def _span_start_lineno(
+        node: ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> int:
+        """First source line of a definition: its earliest decorator, else its ``def``.
+
+        Args:
+            node: The ClassDef, FunctionDef or AsyncFunctionDef AST node.
+
+        Returns:
+            The 1-based line where the definition's span begins.
+        """
+        start = node.lineno
+        for decorator in node.decorator_list:
+            if decorator.lineno < start:
+                start = decorator.lineno
+        return start
 
     def _extract_decorator_names(self, node: ast.AST) -> list[str]:
         """Extract decorator names from an AST node.

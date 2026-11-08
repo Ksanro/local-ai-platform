@@ -1324,7 +1324,7 @@ def repository_index_settings(repo_root: str | None = None) -> tuple[Path, bool,
     """
     root = Path(repo_root) if repo_root else Path.cwd()
     exclude_tests = False
-    exclude_globs = "scripts/**"
+    exclude_globs = "scripts/**,build/**"
     if repo_root is None:
         try:
             from apps.gateway.core.config import get_settings

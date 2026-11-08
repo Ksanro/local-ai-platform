@@ -15,6 +15,8 @@ Tests covering:
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from packages.context.budget import CHARS_PER_TOKEN, ContextBudget
 from packages.context.builder import ContextBuilder
 from packages.context.composer import ContextComposer
@@ -29,6 +31,7 @@ from packages.context.models import (
 )
 from packages.repository.index.models import RepositoryIndex
 from packages.repository.symbols.models import Module, Relationship, Symbol, SymbolType
+from packages.repository.symbols.python_ast import PythonAstExtractor
 
 # ------------------------------------------------------------------
 # Fixtures
@@ -98,6 +101,33 @@ def _make_index(modules: list[Module]) -> RepositoryIndex:
     )
 
 
+def _index_from_source(
+    tmp_path: Path,
+    source: str,
+    module_name: str = "mod",
+) -> RepositoryIndex:
+    """Index ``source`` through the real parser.
+
+    Symbols built this way carry ``start_lineno``/``end_lineno``, so the
+    ``RepositoryIndex`` accessors take the span-aware path instead of the
+    whole-module legacy fallback used by the hand-built fixtures above.
+    """
+    path = tmp_path / f"{module_name}.py"
+    path.write_text(source, encoding="utf-8")
+    graph = PythonAstExtractor().extract(path)
+    modules = dict(graph.modules)
+    symbols: list[Symbol] = []
+    relationships: list[Relationship] = []
+    for module in modules.values():
+        symbols.extend(module.symbols)
+        relationships.extend(module.relationships)
+    return RepositoryIndex(
+        modules=modules,
+        _symbols=symbols,
+        _relationships=relationships,
+    )
+
+
 # ------------------------------------------------------------------
 # Tests: RepositoryIndex source access APIs
 # ------------------------------------------------------------------
@@ -141,9 +171,13 @@ class TestRepositoryIndexSourceAPIs:
         assert index.get_symbol_signature("nonexistent") is None
 
     def test_get_symbol_docstring(self):
-        """Should extract the first docstring from source (module-level)."""
-        # The production code returns the first triple-quoted string found
-        # in the source, which is the module-level docstring.
+        """Legacy fallback: the module's first triple-quoted string.
+
+        A hand-built ``Symbol`` carries no ``end_lineno``, so the accessor
+        keeps returning the first triple-quoted string in the module source —
+        the module docstring, not the symbol's own.  The parsed behaviour is
+        covered by ``test_get_symbol_docstring_span``.
+        """
         source = '''"""Module docstring."""
 
 def foo():
@@ -157,6 +191,24 @@ def foo():
         result = index.get_symbol_docstring("mod.foo")
         assert result == "Module docstring."
 
+    def test_get_symbol_docstring_span(self, tmp_path):
+        """A parsed symbol reports its own docstring, never the module's."""
+        source = '''"""Module docstring."""
+
+
+def foo():
+    """Function docstring."""
+    pass
+
+
+def nodoc():
+    pass
+'''
+        index = _index_from_source(tmp_path, source)
+
+        assert index.get_symbol_docstring("mod.foo") == "Function docstring."
+        assert index.get_symbol_docstring("mod.nodoc") is None
+
     def test_get_symbol_docstring_not_found(self):
         """Should return None when no docstring exists."""
         source = "def foo():\n    pass\n"
@@ -168,7 +220,12 @@ def foo():
         assert result is None
 
     def test_get_symbol_location(self):
-        """Should return (module_path, start_line, end_line)."""
+        """Legacy fallback: ``end_line`` is the last line of the module.
+
+        Without ``end_lineno`` the accessor cannot know where the symbol
+        ends, so it reports the length of the module source.  The parsed
+        behaviour is covered by ``test_get_symbol_location_span``.
+        """
         source = "line1\nline2\nline3\n"
         sym = _make_symbol("mod.foo", "mod.py", lineno=2, source="mod.py")
         mod = _make_module("mod.py", [sym], source=source)
@@ -181,16 +238,41 @@ def foo():
         assert start_line == 2
         assert end_line == 3
 
+    def test_get_symbol_location_span(self, tmp_path):
+        """A parsed symbol's location is its own span, not the file's."""
+        source = '''"""Module docstring."""
+
+
+def foo():
+    """Function docstring."""
+    return 1
+
+
+def other():
+    pass
+'''
+        index = _index_from_source(tmp_path, source)
+
+        result = index.get_symbol_location("mod.foo")
+        assert result is not None
+        mod_path, start_line, end_line = result
+        assert mod_path == "mod"
+        assert start_line == 4
+        assert end_line == 6
+        assert end_line != len(source.splitlines())
+
     def test_get_symbol_location_not_found(self):
         """Should return None for non-existent symbol."""
         index = _make_index([])
         assert index.get_symbol_location("nonexistent") is None
 
     def test_get_symbol_decorators(self):
-        """Should extract decorators that appear after the def line.
+        """Legacy fallback: collects ``@`` markers that appear after the def.
 
-        The production code collects decorators AFTER the ``def`` line,
-        not before.  This is the documented behaviour of the accessor.
+        A hand-built ``Symbol`` carries no ``end_lineno``, so the accessor
+        still scans the source lines following the ``def`` for decorators.
+        The parsed behaviour is covered by
+        ``test_get_symbol_decorators_before_def_collected_span``.
         """
         source = '''def foo():
     @decorator1
@@ -207,7 +289,11 @@ def foo():
         assert "decorator2" in result
 
     def test_get_symbol_decorators_before_def_not_collected(self):
-        """Decorators before the def line are NOT collected by the production code."""
+        """Legacy fallback: decorators written before the def are missed.
+
+        Without ``end_lineno`` the accessor cannot tell a decorator from any
+        other line, so it only reports ``@`` markers found after the ``def``.
+        """
         source = '''@decorator1
 @decorator2(arg)
 def foo():
@@ -221,12 +307,32 @@ def foo():
         # Decorators before the def line are not collected.
         assert result is None
 
-    def test_get_symbol_full_context(self):
-        """Should return complete source context dictionary.
+    def test_get_symbol_decorators_before_def_collected_span(self, tmp_path):
+        """A parsed symbol's decorators come from the AST, before the def."""
+        source = '''"""Module docstring."""
 
-        Note: signature is the first non-empty line of source (module
-        docstring in this fixture), and docstring is the first
-        triple-quoted string.
+
+@decorator1
+@decorator2(arg)
+def foo():
+    pass
+
+
+def bare():
+    pass
+'''
+        index = _index_from_source(tmp_path, source)
+
+        assert index.get_symbol_decorators("mod.foo") == ["decorator1", "decorator2"]
+        assert index.get_symbol_decorators("mod.bare") is None
+
+    def test_get_symbol_full_context(self):
+        """Legacy fallback: the context dictionary of a span-less symbol.
+
+        ``signature`` is the first non-empty line of the module source (the
+        module docstring in this fixture), ``docstring`` is the first
+        triple-quoted string, and ``source`` is the whole module.  The parsed
+        behaviour is covered by ``test_get_symbol_full_context_span``.
         """
         source = '''"""Module docstring."""
 
@@ -246,6 +352,35 @@ def foo():
         assert result["docstring"] == "Module docstring."
         assert result["location"] is not None
         assert result["source"] == source
+
+    def test_get_symbol_full_context_span(self, tmp_path):
+        """A parsed symbol's context describes only the symbol."""
+        source = '''"""Module docstring."""
+
+
+@decorator1
+def foo(a, b):
+    """Function docstring."""
+    return a + b
+
+
+def neighbour():
+    return "neighbour body"
+'''
+        index = _index_from_source(tmp_path, source)
+        symbol = index.find("mod.foo")[0]
+
+        result = index.get_symbol_full_context("mod.foo")
+        assert result["signature"] == "def foo(a, b):"
+        assert result["docstring"] == "Function docstring."
+        assert result["decorators"] == ["decorator1"]
+        assert result["location"] == ("mod", symbol.lineno, symbol.end_lineno)
+        assert result["source"] == (
+            "@decorator1\ndef foo(a, b):\n    \"\"\"Function docstring.\"\"\"\n"
+            "    return a + b\n"
+        )
+        assert "neighbour body" not in result["source"]
+        assert "Module docstring" not in result["source"]
 
 
 # ------------------------------------------------------------------

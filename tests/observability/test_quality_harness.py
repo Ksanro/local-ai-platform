@@ -1971,10 +1971,15 @@ def test_changed_file_ab_benefit_case_gains_the_file_the_question_asks_about(
     is the file the prompt is *about*, so the bonus is not trading one answer for another
     the way the eviction pair does.  Measured at 4096 tokens: with the signal off, the
     token ``model`` name-matches a models-listing endpoint, that takes the primary, and
-    the context meets ``cap_history`` only where it is called - the function's own
-    definition is not sent at all.  With ``packages/pipeline/history`` injected dirty at
-    the shipped ``+25``, the budget buys the file and the mechanism the question asks for
-    arrives in the prompt.
+    none of the four facts arrives.  With ``packages/pipeline/history`` injected dirty at
+    the shipped ``+25``, the budget buys the file and three of the four arrive.
+
+    The off arm once met ``cap_history`` only where it is called - inside another
+    symbol's whole-module source, which is file-header text the Phase G span fix no
+    longer delivers.  The fourth fact, the truncation marker, sits in
+    ``_truncate_message_content``: the on arm selects that symbol but delivers it without
+    its body, because the 512-token supporting preview pool is one budget shared across
+    supporting symbols and it is spent before this one.
 
     A gain has to be measured on both sides, because a gain that also costs something is
     the eviction case under another name: every fact the off arm could support must still
@@ -1983,12 +1988,13 @@ def test_changed_file_ab_benefit_case_gains_the_file_the_question_asks_about(
     case = resolve_changed_file_case("gains_the_changed_file", CHANGED_FILE_PROBES)
     outcome = _real_arms(checked_out_index, case)
 
-    # Premise: the off arm can say that history is capped, and cannot say how.
+    # Premise: the off arm cannot reach the cap at all.  Its one former fact was
+    # header leakage from whole-file source; the span fix removed it (Phase G).
     assert outcome.error == ""
     assert outcome.baseline_status == "built"
     assert outcome.baseline_primary == case.expected_primary == HISTORY_CAP_PRIMARY
     assert outcome.max_context_tokens == CHANGED_FILE_AB_BUDGET_TOKENS
-    assert outcome.baseline_facts == (HISTORY_CAP_FACTS[0].label,)
+    assert outcome.baseline_facts == ()
 
     # The changed arm leads with the changed file.  `ok` here means the primary moved
     # where the case documents it moves, which is not what `ok` means for a survival case
@@ -1999,22 +2005,30 @@ def test_changed_file_ab_benefit_case_gains_the_file_the_question_asks_about(
     assert outcome.changed_primary == case.expected_changed_primary
     assert outcome.changed_primary.startswith(f"{HISTORY_CAP_DIRTY_MODULE}.")
 
-    # The gain itself, in both directions: nothing the off arm had is lost, and the three
+    # The gain itself, in both directions: nothing the off arm had is lost, and the
     # facts that live inside the cap arrive.
+    #
+    # Only the first three HISTORY_CAP_FACTS labels reach the changed arm.  The fourth,
+    # the "[... truncated by gateway history cap ...]" marker, sits in
+    # `_truncate_message_content`: that symbol IS selected by the changed arm, but it is
+    # delivered without its body, because the supporting preview budget is one 512-token
+    # pool shared across the supporting symbols and it is spent before this one.
+    # Follow-up: preview allocation, not the span fix.
     assert outcome.changed_facts == tuple(
-        expected.label for expected in HISTORY_CAP_FACTS
+        expected.label for expected in HISTORY_CAP_FACTS[:3]
     )
     assert outcome.facts_lost == ()
     assert set(outcome.baseline_facts) < set(outcome.changed_facts)
     assert outcome.context_differs is True
     assert outcome.primary_promoted is True
-    assert outcome.symbols_promoted == 4
-    assert outcome.changed_symbols < outcome.baseline_symbols
+    assert outcome.symbols_promoted == 9
+    assert outcome.changed_symbols == outcome.baseline_symbols == 20
 
     # Symbol by symbol, since a fact can survive a reorder.  The changed file contributes
     # two symbols even with the signal off, because `history` and `conversation` reach the
-    # gate as path tokens; neither of them is the function asked about.  The signal trades
-    # thirteen symbols of nine other modules for the four definitions that are the cap.
+    # gate as path tokens; neither of them is the function asked about.  With span
+    # sources (Phase G) the signal trades nine symbols of four other modules for nine
+    # definitions of the history module, the cap among them.
     stage_kwargs: dict[str, object] = {
         "context_delta_injection": False,
         "max_context_tokens": CHANGED_FILE_AB_BUDGET_TOKENS,
@@ -2038,12 +2052,17 @@ def test_changed_file_ab_benefit_case_gains_the_file_the_question_asks_about(
             "_build_cap_groups",
             "_cap_current_tool_result",
             "_estimate_tokens",
+            "_get_last_user_message",
+            "_looks_like_cline_tool_result_message",
+            "_message_token_count",
+            "_trailing_assistant_count",
+            "_truncate_message_content",
         )
     }
     off_target = [name for name in off if _module_of(name) == HISTORY_CAP_DIRTY_MODULE]
     on_target = [name for name in on if _module_of(name) == HISTORY_CAP_DIRTY_MODULE]
     assert len(off_target) == 2
-    assert len(on_target) == 6
+    assert len(on_target) == 11
     assert case.named_in_query() is False
 
 
@@ -2110,21 +2129,45 @@ def test_changed_file_ab_negative_control_moves_the_primary_and_loses_nothing(
     the query named instead of replacing them, so all three facts are still in the
     text the changed arm would have sent and both arms should score 3/3.  It stays
     registered as the negative control precisely because the pair above does not tie.
+
+    With the Phase G span sources, ``+5`` reorders the same symbols (ContextBudget 8 -> 3)
+    but adds or drops none.
     """
     case = resolve_changed_file_case("named_in_query", CHANGED_FILE_PROBES)
     held = _real_arms(checked_out_index, case, weight=5)
     swapped = _real_arms(checked_out_index, case)
     labels = tuple(expected.label for expected in CONTEXT_BUILDER_BUDGET_FACTS)
 
+    stage_kwargs: dict[str, object] = {
+        "context_delta_injection": False,
+        "max_context_tokens": CHANGED_FILE_AB_BUDGET_TOKENS,
+    }
+    with unittest.mock.patch.object(RankingConfig, "WEIGHT_CHANGED_FILE", 5):
+        held_off, _ = _stage_arm(
+            checked_out_index, case.query, frozenset(), stage_kwargs=stage_kwargs
+        )
+        held_on, _ = _stage_arm(
+            checked_out_index,
+            case.query,
+            frozenset({case.dirty_module}),
+            stage_kwargs=stage_kwargs,
+        )
+
     assert case.names_primary and case.named_in_query()
-    assert held.context_differs is False
+    # The pair still cannot separate two answers: the same symbols are sent, only the
+    # order differs, so coverage is what the control is about rather than `context_differs`.
+    assert set(held_off) == set(held_on)
     assert held.baseline_primary == held.changed_primary == case.expected_primary
+    assert held.facts_lost == ()
+    assert held.baseline_facts == held.changed_facts == labels
 
     assert swapped.baseline_primary == case.expected_primary
     assert swapped.changed_primary != case.expected_primary
     assert changed_file_verdict(swapped) == "SWAP"
-    assert swapped.symbols_promoted == 2
-    assert swapped.changed_symbols > swapped.baseline_symbols
+    # With span sources (Phase G) the shipped +25 hands the primary to ContextBudget by
+    # reordering the same twenty symbols: none is promoted in from outside the off arm.
+    assert swapped.symbols_promoted == 0
+    assert swapped.changed_symbols == swapped.baseline_symbols == 20
     assert swapped.facts_lost == ()
     assert swapped.baseline_facts == swapped.changed_facts == labels
 
