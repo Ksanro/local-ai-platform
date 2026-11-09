@@ -3,7 +3,20 @@
 This file is the current runtime snapshot. It intentionally describes only
 what matters for the live gateway path and calls out dormant code explicitly.
 
-Last reviewed: 2026-11-07 (documentation-only; no runtime fact in this file changed). Phases
+Last reviewed: 2026-11-09 (Phase G, Per-Symbol Source Delivery. Two runtime changes are on
+the live path:
+
+- `bc87179`: `RepositoryIndex` hands `ContextBuilder` each symbol's own source span
+  (decorators through `end_lineno`) instead of its whole module.
+- `67a7f7f`: each delivered module's top-level import lines are added once, to its first
+  delivered candidate.
+
+Measured live at `67a7f7f` with A1's configuration: `26/30` expected facts with context in
+both of two runs, against `2/30` without it. A1 measured `25/30`. Every probe matches or
+beats `bc87179`. `explain_changed_files_history_cap` is `0/4`, the open item. Evidence:
+`docs/roadmap.md` Phase G and `docs/live-gateway-runbook.md`, *Phase G*.)
+
+Previous review: 2026-11-07 (documentation-only; no runtime fact in this file changed). Phases
 A to E of the 2026-10-24 sequence remain complete. Phase F, Repository Context Quality Per
 Token, reproduced the current controlled baseline (F1), classified offline the five facts its
 context arm did not deliver (F2), and tested one bounded candidate - the primary symbol's
@@ -11,7 +24,7 @@ share of the unchanged 4096-token budget (F3, F4). The candidate failed its offl
 prediction and the live-path gate, so it was rejected and reverted, and F5 was not run.
 No Phase F runtime change was accepted: `ContextBuilder`'s `primary_symbol_max_tokens`
 default remains 2048. Detailed evidence is in `docs/roadmap.md`, Phase F, and
-`docs/live-gateway-runbook.md`, the Phase F1, F2 and F3/F4 sections.
+`docs/live-gateway-runbook.md`, the Phase F1, F2 and F3/F4 sections.)
 
 Previous review: 2026-10-31 (two things, one pass. Roadmap Phase A item 3 is closed: history capping now
 estimates message tokens with the resolved model's `chars_per_token` (`qwen38-27b`: `3.5`) instead of the
@@ -197,6 +210,14 @@ request metadata still winning. Delta injection (`APP_CONTEXT_DELTA_INJECTION=tr
 `context.max_tokens` so context size is measurable apart from provider prompt tokens. Test files are indexed
 (`APP_REPOSITORY_EXCLUDE_TESTS=false`) for TEST-mode retrieval of the real validation files, penalized for ordinary
 non-test queries, and credited by a test-target signal and descriptive filename tokens for test-seeking queries.
+
+Since `bc87179`, each selected symbol's text is its own source span: earliest decorator line through `end_lineno`,
+from `Symbol.start_lineno`/`end_lineno`. Its docstring and location come from that span too. A symbol indexed without
+an end line falls back to the old whole-module answer. The primary symbol gets up to `primary_symbol_max_tokens`
+(2048) of that span, and supporting symbols share a 512-token preview pool, rank-first. Two query branches widen the
+pool: history-cap queries get 2048 with a 128-token cap per symbol, and multi-module comparisons get 2048 with a 512
+cap. Since `67a7f7f`, the first candidate delivered from each module also carries that module's top-level
+`import`/`from` lines, once per request. They sit outside that candidate's cap and are charged by `_enforce_budget`.
 
 Change-aware ranking is opt-in: `APP_REPOSITORY_CONTEXT_CHANGED_FILES_ENABLED=false`. Enabled, startup takes one
 read-only Git snapshot through `packages.repository.git_changes` - no new Git command, nothing persisted - reduced to
@@ -622,10 +643,11 @@ environment uses whatever Python uv discovers, against `requires-python = ">=3.1
 - Repository context can dominate prompt size; history capping alone is not the
   full latency lever. Configurable repository-context budget enforcement and
   targeted retrieval promotions now exist. The current measured baseline is the
-  2026-10-24 controlled `--compare-context` run on the vLLM `qwen3.8-flash-next`
-  backend at commit `0371d64`: `25/30` expected facts with context versus `4/30`
-  without it, style `11/11` in both arms, 33109 prompt tokens against 2221, on the
-  full 11-probe set. Historical measurements on the earlier 8-probe set - the
+  2026-11-09 Phase G run on the vLLM `qwen3.8-flash-next` backend at `67a7f7f`:
+  `26/30` expected facts with context in both of two runs versus `2/30` without
+  it, 33777 prompt tokens against 2221, on the full 11-probe set. The
+  2026-10-24 A1 run at `0371d64` (`25/30` versus `4/30`, style `11/11`, 33109
+  against 2221) remains the record of what it measured. Historical measurements on the earlier 8-probe set - the
   2026-10-10 qwen38-27b/SGLang full baseline (the backend that alias pointed at
   before the move to vLLM) clean at `20/20` with style `8/8`, and the qwen36
   `--compare-context` run at `20/20` with context versus `2/20` without - remain
@@ -638,6 +660,11 @@ environment uses whatever Python uv discovers, against `requires-python = ">=3.1
   Token, which closed 2026-11-07 as a measured negative result with no runtime change.
   Promotion order and same-file module-docstring accounting in the budget pass are
   recorded there only as possible future investigations, each needing its own milestone.
+  Phase G then changed delivery itself (per-symbol spans, module import lines). It
+  left `explain_changed_files_history_cap` at `0/4` live: the truncation marker
+  sits 253 preview tokens deep at rank 11, past the 512-token supporting pool. G2
+  found no split of that pool that reaches it. At 11 probes the run-to-run noise
+  is about 1 fact in 30, so the next step is a larger probe set, not more tuning.
 - The model often includes reasoning/preamble despite terse system prompts; the
   quality harness now records deterministic style violations separately from
   required-fact score.

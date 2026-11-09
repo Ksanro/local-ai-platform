@@ -2,7 +2,12 @@
 
 This roadmap is based on the current live gateway, not on dormant scaffolding.
 
-Last reviewed: 2026-11-07 (Phase F closed as a measured negative result: the F3 candidate,
+Last reviewed: 2026-11-09 (Phase G, Per-Symbol Source Delivery, opened and closed. `bc87179`
+delivers each symbol's own source span instead of its whole module. G2 found no allocation of
+the supporting pool that wins. `67a7f7f` adds each delivered module's top-level import lines
+once. Live: `26/30` twice with context, against A1's `25/30`. See Phase G.)
+
+Previous review: 2026-11-07 (Phase F closed as a measured negative result: the F3 candidate,
 `primary_symbol_max_tokens` 2048 to 1536, converted no fact, broke four Phase B tests and was
 rejected and reverted before F5; the shipped runtime is unchanged. See Phase F item 6.)
 
@@ -904,6 +909,54 @@ the AST index; GitHub API integration; Git snapshot and diff persistence; and an
 autonomous engineering loop. Those stay recorded where they already are - *Explicitly
 Deferred* and *Deferred* below - and no item above opens them by accident.
 
+#### Phase G: Per-Symbol Source Delivery
+
+Opened and closed 2026-11-08/09. It came from Phase F's finding that the budget was being
+spent on text that was not the selected symbol's. Evidence, commands and tables:
+`docs/live-gateway-runbook.md`, *Phase G: per-symbol source spans and module import lines*.
+
+1. **G1 - per-symbol spans - DONE (`bc87179`).** `RepositoryIndex`'s source, docstring and
+   location accessors now return the symbol's own span (decorators through `end_lineno`)
+   instead of its whole module.
+   - Accuracy: 9,117 of 9,117 symbols match the AST span.
+   - Over the 11 probes, offline: implementation chars `15,257 -> 55,483`; chars from
+     unrelated file text `61,969 -> 0`; implementation-contained facts `6 -> 14`.
+   - Live: `24/30` twice. `explain_live_path` fell `4/4 -> 2/4`: its two stage names had
+     come for free in `main.py`'s import lines, which the new 7,168-char primary span no
+     longer reaches.
+2. **G2 - supporting-preview allocation - closed, no winner.** Ten ways of splitting the
+   unchanged 512-token supporting pool were measured: caps, an equal share, round-robin,
+   and a docstring-aware start. None reaches the history-cap truncation marker, 253 tokens
+   deep at rank 11. Two options were not adopted:
+   - Widening `_query_targets_history_cap` to match `HISTORY_CAP_QUERY`'s wording: rejected
+     as fitting the probe rather than the code.
+   - A 2048-token pool: recorded as a diagnostic only.
+3. **G3 / I-extra - module import lines - DONE (`67a7f7f`).** Each delivered module's
+   top-level import statements ride once on its first delivered candidate, on top of the
+   cap, and are charged by `_enforce_budget`.
+   - Offline cost over the 11 probes: about 912 chars per request; 10 more symbols dropped
+     by budget enforcement in total; implementation text -0.85%.
+   - Live, two runs: `26/30` and `26/30` with context, `2/30` without. `explain_live_path`
+     is back to `4/4`, no probe regressed against `bc87179`, and context-arm prompt tokens
+     were 33,777 against `bc87179`'s 33,433.
+   - The docstring-skip arms (P, PE, PEI) were not adopted: their margin was fragile, and
+     they moved facts out of implementation text.
+
+The current controlled baseline is now `26/30` at `67a7f7f`. A1 (`25/30`, `0371d64`) stays
+the record of what it measured.
+
+Still open, not authorized here:
+
+- `explain_changed_files_history_cap` is `0/4` live, the only probe below A1. The marker
+  needs either a larger pool for this query or a docstring-aware preview start (G2
+  diagnostic: pool 2048, cap 128, docstring-aware gives 4/4 offline at +41% implementation
+  text).
+- The two runs differ from A1 by about 1 fact in 30, which is this probe set's noise
+  floor. The next step is to expand the probe set (item 2 below) before tuning the builder
+  any further.
+- Dedup of the duplicated docstring text: G2's arm E measured 255-1,306 tokens per probe
+  of span text already in `Docstring:`.
+
 #### Explicitly Deferred
 
 - true tokenizer integration
@@ -920,6 +973,8 @@ path, and Phase E's three items are done with it. Phase D items 2 and 3 are stan
 policies rather than work left to do, and Phase D item 1's bounded compaction is done
 while its policy of keeping these documents true as the path changes never closes.
 Phase F above closed 2026-11-07 as a measured negative result with no runtime change.
+Phase G closed 2026-11-09 with two runtime changes, per-symbol spans and module import lines,
+and a new controlled baseline of `26/30`.
 Dormant packages, true tokenizers, vector search,
 GitHub integration, Git snapshot persistence and autonomous execution stay deferred,
 as recorded there and below.
@@ -1008,7 +1063,10 @@ What came after that judgement:
   (below), planning-first via the `context_budget_ranking` local-agent-coding
   task. Its Phases A to E are complete, and Phase F, Repository Context Quality
   Per Token (above), measured from 2026-11-06 at `ebb98f9`, closed 2026-11-07 as
-  a measured negative result with no runtime change
+  a measured negative result with no runtime change. Phase G (above) shipped
+  per-symbol spans and module import lines and measured `26/30` live at
+  `67a7f7f`. The next step in this area is expanding the probe set: at 11
+  probes, a difference of about 1 fact in 30 is noise
 
 ### 3. Repository Context Budgeting And Ranking — measured, decision closed
 

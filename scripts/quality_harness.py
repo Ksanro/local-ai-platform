@@ -492,10 +492,13 @@ PROBES: tuple[QualityProbe, ...] = (
         # the file under edit is what the budget buys, and the mechanism -
         # `max_current_tool_result_tokens`, `_looks_like_cline_tool_result_message` and
         # the truncation marker - is in front of the model.  Measured offline on the
-        # checked-out index, the arm with the flag off can be answered from 1 fact of the
-        # 4 and the arm with it on from all 4, so the two prompts are not equal in what
-        # they let a model say.  This is the case that answers the question the negative
-        # control cannot: whether the signal ever helps an answer.
+        # checked-out index before per-symbol spans, the arm with the flag off could be
+        # answered from 1 fact of the 4 and the arm with it on from all 4; since
+        # `bc87179` it is 0 of 4 and 3 of 4 - the marker sits deep in
+        # `_truncate_message_content`, which the 512-token supporting pool no longer
+        # reaches (Phase G2, `docs/roadmap.md`).  Either way the two prompts are not
+        # equal in what they let a model say.  This is the case that answers the
+        # question the negative control cannot: whether the signal ever helps an answer.
         id="explain_changed_files_history_cap",
         intent="EXPLAIN",
         prompt=HISTORY_CAP_QUERY,

@@ -1162,7 +1162,7 @@ every pair indexed the same tree to the same numbers:
 | pair | probe | the one dirty file | indexed module key | offline verdict and facts |
 |---|---|---|---|---|
 | eviction / guard | `explain_changed_files_repository_index` | `packages/repository/index/models.py` | `packages/repository/index/models` | SWAP, `3/3 -> 3/3`, `facts_lost` empty |
-| gain | `explain_changed_files_history_cap` | `packages/pipeline/history.py` | `packages/pipeline/history` | MOVE, `1/4 -> 4/4`, `facts_lost` empty |
+| gain | `explain_changed_files_history_cap` | `packages/pipeline/history.py` | `packages/pipeline/history` | MOVE, `1/4 -> 4/4`, `facts_lost` empty (whole-module delivery; since `bc87179`'s per-symbol spans the same pair is `0/4 -> 3/4` offline - see *Phase G*) |
 | negative control | `explain_changed_files_contextbuilder` | `packages/context/budget.py` | `packages/context/budget` | SWAP, `3/3 -> 3/3`, `facts_lost` empty |
 
 Before each pair ran, `--changed-file-probe --repo-root ..\lap-ab-b3-57bd045` reproduced
@@ -3038,6 +3038,126 @@ predecessor is unreachable by any allowance; and a symbol in the primary's own f
 that file's module docstring a second time. Promotion order, docstring accounting, `max_symbols`
 and preview depth would each need their own milestone, an F2-style classification of the
 reachable set before any prediction, and their own authorization.
+
+### Phase G: per-symbol source spans and module import lines, 2026-11-08/09 (roadmap Phase G)
+
+Roadmap Phase G changed what one delivered symbol carries, then repaired the one regression
+that change caused. Two runtime commits: `bc87179` (spans) and `67a7f7f` (import lines). Every
+offline measurement below ran from the main checkout with the gateway's own index settings
+(`exclude_tests=False`, `exclude_globs="scripts/**,build/**"`), at the production budget shape
+(4096-token ceiling, `chars_per_token=3.5`), through the real `RepositoryContextStage`. Each
+alternative arm was injected by patching `ContextBuilder` in
+`packages/pipeline/stages/repository_context.py` with a scratch subclass. Before any arm was
+measured, a fidelity gate required the subclass running the shipped behaviour to serialize
+byte-identically to the unpatched stage on all 12 runs (11 probes plus the changed-file arm
+of `explain_changed_files_history_cap`). Every matrix ran twice to the same SHA-256. Scripts
+and raw output are under the Git-ignored `build\phase_g_spans\`,
+`build\phase_g_preview_allocation\`, `build\phase_g3_imports\`, `build\phase_g_live\` and
+`build\phase_g_iextra_live\`.
+
+**G1 - spans (`bc87179`).** Before this commit, `RepositoryIndex.get_symbol_source`, the
+docstring accessor and the location accessor answered with the symbol's whole module, so a
+supporting preview usually began at the module header, and the primary window began with
+module text that was not the symbol's own. `Symbol` now records `start_lineno` (earliest
+decorator) and `end_lineno`. The accessors return that span, the signature line, the span's
+own docstring, `(path, lineno, end_lineno)` and the extractor's decorators. A symbol without
+`end_lineno` keeps the legacy whole-module answer. Results:
+
+| measure | before | after |
+| --- | --- | --- |
+| span accuracy | - | 9,117 of 9,117 symbols match the AST span (0 ambiguous) |
+| implementation chars, 11 probes | 15,257 | 55,483 |
+| chars from unrelated file text | 61,969 | 0 |
+| implementation-contained facts | 6 | 14 |
+
+`tests/observability/test_quality_harness.py` was re-baselined for counts and lists only, with
+no expected fact lost. For example, the benefit case now promotes 9 symbols and carries 3 of
+the 4 history-cap facts in its changed arm.
+
+Live at `bc87179`, two `--compare-context` runs from the `lap-g-bc87179` worktree on
+`127.0.0.1:8011`, with the A1 configuration `scripts/ab_launcher.py` renders for the `off` arm:
+
+- Context on: `24/30` in both runs. Context off: `2/30`.
+- `refactor_repository_context` gained one fact.
+- `explain_changed_files_history_cap` went `1/4 -> 0/4`.
+- `explain_live_path` went `4/4 -> 2/4`, missing `ModelResolutionStage` and `PlanningStage`.
+
+An offline trace of that request located the cause. The primary is
+`apps/gateway/main.lifespan`, an 8,723-char span cut at the 7,168-char window (2048 tokens at
+3.5). Both stage names sit just past the cut (offsets 7,167 and 7,208). Whole-module delivery
+had carried them for free in `main.py`'s import lines 40-41.
+
+**G2 - supporting-preview allocation: no winner.** Ten arms held the supporting pool, ceiling
+and order fixed, and changed only how the pool is split:
+
+- per-symbol caps of 64 to 512 tokens
+- an equal share
+- round-robin
+- a docstring-aware start with caps
+
+None restored the history-cap truncation marker. It sits in `_truncate_message_content`,
+253 preview tokens deep, at rank 11 of 20. `HISTORY_CAP_QUERY` misses
+`_query_targets_history_cap`, so it takes the plain 512-token, uncapped pool, and no split of
+512 tokens funds ten symbols plus that one. Two other options were measured and not adopted:
+
+- Widening `_query_targets_history_cap` to match this probe's wording: rejected as fitting the
+  probe rather than the code.
+- A 2048-token pool: labelled diagnostic, not a candidate, because it breaks "pool unchanged".
+
+Full table: `build\phase_g_preview_allocation\report.md`.
+
+**G3 - restoring module import lines.** Arms compared:
+
+- docstring-skip variants of the primary window (P, PE)
+- the same with import lines added (PEI)
+- I-extra: each delivered module's top-level `Import`/`ImportFrom` statements, once, on its
+  first delivered candidate, on top of the cap and charged by `_enforce_budget`
+
+Only I-extra passed every rule. P/PE moved facts out of implementation text and held
+`explain_live_path` by a 162-char margin. I-extra's offline cost over the 11 probes:
+
+| measure | value |
+| --- | --- |
+| implementation chars | -0.85% |
+| import-block chars | +10,028 (about 912 per request) |
+| symbols dropped by budget enforcement | 42 -> 52 |
+| max estimated tokens | 4,048 of 4,096 |
+
+`67a7f7f` implements it in `ContextBuilder._enrich_with_source_data` and
+`_module_import_block`. Equivalence: on the modified tree, production output matched the
+scratch I-extra arm on 12/12 runs. It matched the pre-change recording on 8/12. The other 4
+differ only because `packages/context/builder.py` and the new test file are themselves indexed,
+and the same facts come through in all 4.
+
+**Live confirmation, 2026-11-09.** The `lap-g-bc87179` worktree with the I-extra diff applied
+(the committed `67a7f7f` moves `import ast` to module level; no other difference), the same
+environment, gateway index `modules=517 symbols=9101 relationships=19917`, two runs
+(08:35-08:48 and 08:48-09:00), driven by `build\phase_g_iextra_live\run_all.ps1`:
+
+| | A1 `0371d64` | F1 `ebb98f9` | G `bc87179` (x2) | I-extra (x2) |
+| --- | --- | --- | --- | --- |
+| context on | 25/30 | 25/30 | 24, 24 | **26, 26** |
+| context off | 4/30 | 2/30 | 2, 2 | 2, 2 |
+| `explain_live_path` | 4/4 | 4/4 | 2/4, 2/4 | **4/4, 4/4** |
+| `explain_changed_files_history_cap` | 1/4 | 1/4 | 0/4, 0/4 | 0/4, 0/4 |
+| context-arm prompt tokens | 33,109 | 32,716 | 33,433 | 33,777 |
+
+Across the two I-extra runs:
+
+- No probe scored lower than at `bc87179`.
+- Nothing errored, and the harness's stderr was empty.
+- Both runs scored identically, probe by probe.
+
+`explain_live_path` itself fell from 3,635 to 3,483 prompt tokens.
+`explain_changed_files_history_cap` (0/4) is the open item; G2 shows the existing pool cannot
+buy it.
+
+Gates at `67a7f7f`:
+
+- Live gate: 2567 passed.
+- `--full`: 43 failed, 5123 passed, 3 skipped (baseline 43).
+- Ruff on the changed files: clean.
+- mypy (live-path scope): no issues in 46 source files.
 
 ## Interpreting long runs, timeouts, and failed execution
 

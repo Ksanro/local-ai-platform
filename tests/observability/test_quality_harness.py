@@ -2011,9 +2011,12 @@ def test_changed_file_ab_benefit_case_gains_the_file_the_question_asks_about(
     # Only the first three HISTORY_CAP_FACTS labels reach the changed arm.  The fourth,
     # the "[... truncated by gateway history cap ...]" marker, sits in
     # `_truncate_message_content`: that symbol IS selected by the changed arm, but it is
-    # delivered without its body, because the supporting preview budget is one 512-token
-    # pool shared across the supporting symbols and it is spent before this one.
-    # Follow-up: preview allocation, not the span fix.
+    # delivered without its body, because this query takes the default supporting
+    # preview budget - one 512-token pool shared across the supporting symbols - and
+    # it is spent before this one (rank 11 of 20).  The sibling history-cap branch of
+    # `_supporting_source_budget_for_query` reserves 2048 tokens with a 128-token cap,
+    # but `HISTORY_CAP_QUERY` does not match it.  Phase G2 measured re-allocations of
+    # the 512-token pool and found none that reaches the marker (`docs/roadmap.md`).
     assert outcome.changed_facts == tuple(
         expected.label for expected in HISTORY_CAP_FACTS[:3]
     )

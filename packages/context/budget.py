@@ -70,9 +70,10 @@ from packages.context.models import ContextBudgetResult, ContextCandidate
 # Constants
 # ------------------------------------------------------------------
 
-# Character-to-token ratio for estimation.
-# For English text and Python code, approximately 4 characters per token.
-# This is a rough heuristic — future tokenizer integration will improve accuracy.
+# Default character-to-token ratio for estimation, used only when no per-model
+# ratio is supplied.  The live path passes the resolved model's
+# ``ModelDefinition.chars_per_token`` (qwen38-27b: 3.5) since roadmap A3, so this
+# is a fallback, not the platform-wide ratio.  A true tokenizer stays deferred.
 CHARS_PER_TOKEN: float = 4.0
 
 
