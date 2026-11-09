@@ -21,9 +21,10 @@ ContextBudget
       v
 ContextResult
 
-The Builder depends only on the public ``RepositoryIndex`` API.  It
-never accesses the filesystem, parses source code, or touches AST
-objects.
+The Builder depends only on the public ``RepositoryIndex`` API.  It never accesses
+the filesystem; the only source it reads is the text the index already holds in
+memory (``Module.source``), which it parses once per enrichment call to recover a
+module's import lines.
 
 Current behaviour
 -----------------
@@ -55,6 +56,20 @@ For SUPPORTING symbols the builder provides:
 This replaces the previous identifier-only context with engineering-grade
 source context that substantially improves LLM answer quality.
 
+Module import lines (Phase G3, arm I-extra)
+-------------------------------------------
+
+Whole-file source used to carry a module's ``import`` lines for free; per-symbol
+spans do not, which cost ``explain_live_path`` the two stage names the gateway
+registers (measured offline at ``bc87179``: 4/4 -> 2/4).  Enrichment therefore
+prepends, once per module, that module's top-level ``Import``/``ImportFrom``
+statements - original source text, in file order, deduplicated, joined with
+newlines and terminated by one newline - to the first candidate delivered from
+that module, primary or supporting, on top of its existing cap.  The block is
+charged by ``_enforce_budget`` like any other delivered text.  Import statements
+nested in a function, class or ``if`` block are not module level and are not
+delivered.
+
 Future extensions (semantic search, DSPARK, memory, Git awareness)
 will replace the default ranking strategy without changing the public
 API.
@@ -62,6 +77,7 @@ API.
 
 from __future__ import annotations
 
+import ast
 import os
 import re
 
@@ -902,6 +918,10 @@ class ContextBuilder:
             else self._supporting_symbol_max_tokens
         )
 
+        # Modules whose import block has already gone out in THIS call.  The block
+        # is a delivery detail of one request, so it is never cached across calls.
+        import_block_modules: set[str] = set()
+
         for i, candidate in enumerate(candidates):
             is_primary = candidate.qualified_name == primary_qualified_name
 
@@ -979,7 +999,64 @@ class ContextBuilder:
                     # Still count lines even if no preview.
                     candidate.source_lines = len(source.splitlines()) if source else 0
 
+            # Phase G3, arm I-extra: a module's import lines ride along with the
+            # first candidate delivered from it, on top of that candidate's cap.
+            # See ``_module_import_block`` for the layout and the why.
+            delivered_text = candidate.source if is_primary else candidate.source_preview
+            if delivered_text and candidate.module not in import_block_modules:
+                import_block_modules.add(candidate.module)
+                block = self._module_import_block(candidate.module)
+                if block:
+                    if is_primary:
+                        candidate.source = block + candidate.source
+                    else:
+                        candidate.source_preview = block + candidate.source_preview
+
         return candidates
+
+    def _module_import_block(self, module: str) -> str:
+        """Top-level ``import`` / ``from`` statements of one indexed module.
+
+        Reads only the text the index already holds (``Module.source``) and parses
+        it to take the statement nodes that are direct children of the module, so
+        anything nested - inside a function or class body, an ``if TYPE_CHECKING:``
+        or ``try:`` block - is excluded.  Statements keep their original text and
+        file order; exact duplicates are dropped.  The result is those statements
+        joined with newlines and terminated by one newline, which is the layout
+        ``build/phase_g3_imports/g3_lib.py`` measured with; ``""`` when the module
+        is not indexed, carries no source, or does not parse.
+
+        Recomputed for every enrichment call and never cached across requests: the
+        block belongs to the request that paid for it.
+        """
+        record = self._index.modules.get(module)
+        if record is None and module.endswith(".py"):
+            record = self._index.modules.get(module[:-3])
+        source = getattr(record, "source", "") or ""
+        if not source:
+            return ""
+        try:
+            tree = ast.parse(source)
+        except (SyntaxError, ValueError):  # unreadable module contributes nothing
+            return ""
+        starts = [0]
+        for offset, char in enumerate(source):
+            if char == "\n":
+                starts.append(offset + 1)
+        seen: set[str] = set()
+        statements: list[str] = []
+        for node in tree.body:
+            if not isinstance(node, (ast.Import, ast.ImportFrom)):
+                continue
+            begin = starts[node.lineno - 1] if node.lineno - 1 < len(starts) else 0
+            end_line = node.end_lineno or node.lineno
+            finish = starts[end_line] if end_line < len(starts) else len(source)
+            chunk = source[begin:finish].rstrip("\n")
+            if chunk.strip() in seen:
+                continue
+            seen.add(chunk.strip())
+            statements.append(chunk)
+        return ("\n".join(statements) + "\n") if statements else ""
 
     def _primary_source_budget_for_query(self, query: ContextQuery) -> int:
         """Reserve more room for supporting files in explicit comparisons."""
