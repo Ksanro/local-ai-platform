@@ -3240,8 +3240,8 @@ tokens, and all five landed in class (d), delivered and unused; each now carries
 (`build\phase_h1_ladder\raw_replay.py`), and `prompt_tokens` and answers matched the live run:
 
 - `debug_vllm_stream_prefix`: both helper names are delivered, and the backend's `reasoning`
-  field names both correctly. The visible content ends with `finish_reason=stop` where the
-  model starts writing the think-block tag and produces `<|im_start|>`.
+  field names both correctly. The visible content is cut where the model starts writing the
+  think-block tag (see "Stop-token investigation" below).
 - `test_vllm_think_block_strip` (since replaced): the content was empty after 198 completion
   tokens, ending the same way while still in reasoning. Its expected fact was also wrong: the
   prompt asks for the streaming test and the fact named the non-streaming one.
@@ -3250,15 +3250,43 @@ tokens, and all five landed in class (d), delivered and unused; each now carries
 - `_hash_user_turns`: delivered as signature only, behind its caller `conversation_key`, which
   the answer named.
 
-The `<|im_start|>` stop is **observed, not explained**. This repository does not configure it
-as a stop sequence: `apps/gateway/api/chat.py` forwards request-level `stop` values unchanged,
-and the live alias uses the `openai` provider, so `packages/providers/vllm.py`'s sanitizer is
-not on this path. Whether the stop comes from backend launch arguments, the tokenizer
-configuration or `generation_config` has not been inspected, and no serving setting was
-changed. `debug_vllm_stream_prefix` stays in the set as an end-to-end probe with two
-generation-side misses. `test_vllm_think_block_strip` was replaced in place by
-`test_vllm_auth_error_mapping`, which asks about the live-path vLLM provider without touching
-think tags.
+`debug_vllm_stream_prefix` stays in the set as an end-to-end probe. `test_vllm_think_block_strip`
+was replaced in place by `test_vllm_auth_error_mapping`, which asks about the live-path vLLM
+provider without asking about think tags.
+
+**Stop-token investigation, 2026-11-10 (roadmap Phase H item 2).** Read-only: requests and
+`/tokenize`/`/detokenize` calls against the backend, no serving change. The H1 prompts were
+rebuilt by the offline replay and sent with `"skip_special_tokens": false,
+"return_token_ids": true` (`build\stoptoken\replay_tokens.py`):
+
+| request | completion tokens | stray `<\|im_start\|>` (248045) | last token |
+| --- | --- | --- | --- |
+| `debug_vllm_stream_prefix` | 240 | at 237 | `<\|im_end\|>` (248046) |
+| `test_vllm_think_block_strip` (replaced) | 198 | at 194 | `<\|im_end\|>` (248046) |
+| `test_history_group_capping_guard` (control) | 207 | none | `<\|im_end\|>` (248046) |
+
+All three have `finish_reason=stop` and `stop_reason=null`: generation ends on the normal
+end-of-turn token, not on a stop string, and the stop configuration needs no change. Single
+special tokens on this tokenizer include `<|endoftext|>` 248044, `<|im_start|>` 248045,
+`<|im_end|>` 248046, `<think>` 248068, `</think>` 248069, `<tool_call>` 248058,
+`<tool_response>` 248066, `<|file_sep|>` 248065 and `<|repo_name|>` 248064.
+`/tokenize` on the full serialized requests (`build\stoptoken\prompt_tokens.py`) shows the
+literal tags in injected source arriving as those tokens: `debug_vllm_stream_prefix` carries
+2 `<think>` and 1 `</think>` from the context besides the template's own, the replaced probe
+3 and 3, the control none.
+
+A/B with one variable, the tags in the serialized messages defused by a zero-width space
+(`build\stoptoken\defuse_ab.py`):
+
+| probe | as is | defused |
+| --- | --- | --- |
+| `debug_vllm_stream_prefix` | 240 tokens, cut at the stray tag, 1/3 | 325 tokens, complete, 3/3 |
+| `test_vllm_think_block_strip` | 198 tokens, empty content | 708 tokens, complete, names the streaming test |
+
+No stray `<|im_start|>` was generated in either defused arm. The zero-width character
+appeared in the defused answer's quoted tag, which is why it is a diagnostic only. Backend
+launch arguments and `generation_config` were not inspected. The proposed fix is roadmap
+Phase H item 3 (H2).
 
 Artifacts (Git-ignored):
 
@@ -3270,6 +3298,8 @@ Artifacts (Git-ignored):
 - `build\phase_h1_replace\`: the replacement probe's single live run
 - `build\phase_h1_final\`: the recorded baseline, `run_all.ps1`,
   `quality_compare_run{1,2}.json`, `sessions_h1_final.jsonl`, `gateway_out.txt`
+- `build\stoptoken\`: the stop-token investigation, `replay_tokens.py`, `prompt_tokens.py`,
+  `defuse_ab.py` and their JSON
 
 ## Interpreting long runs, timeouts, and failed execution
 

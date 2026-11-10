@@ -4,8 +4,9 @@ This roadmap is based on the current live gateway, not on dormant scaffolding.
 
 Last reviewed: 2026-11-10 (Phase H1, probe-set expansion, closed. `PROBES` grows to 25
 probes and 66 facts with no runtime change. Live at `4d98e13`, twice: `53/66` with context,
-`3/66` without; the original 11 still score `26/30`. A generation-side stop on `<|im_start|>`
-is recorded as an open, unverified investigation. See Phase H.)
+`3/66` without; the original 11 still score `26/30`. The answer cut on think-tag questions is
+explained: literal chat-template tags in injected source reach the model as control tokens.
+H2, escaping them in the context block, is proposed. See Phase H.)
 
 Previous review: 2026-11-09 (Phase G, Per-Symbol Source Delivery, opened and closed. `bc87179`
 delivers each symbol's own source span instead of its whole module. G2 found no allocation of
@@ -977,32 +978,91 @@ expansion*.
      and `3/66` without**, identical answers across the runs. The original 11 reproduce
      Phase G's `26/30` at the same 33,777 prompt tokens.
    - `test_vllm_think_block_strip` was replaced by `test_vllm_auth_error_mapping`: it
-     expected the non-streaming test for a streaming question, and its think-tag subject
-     triggered the generation-side stop below. Same slot, same 2-fact weight.
+     expected the non-streaming test for a streaming question, and its context carried
+     literal think tags that end the answer early (item 2 below). Same slot, same 2-fact
+     weight.
    - Every context-on miss is now annotated in the probe definitions with its measured
      cause. The five that the first launch left unexplained were all class (d), delivered
-     and unused; three of them were lost on the generation side, not the context side.
-   - `debug_vllm_stream_prefix` stays as an end-to-end probe with two generation-side
-     misses, not as a retrieval-only measurement.
+     and unused; three of them were delivered and then lost to the tag defect in item 2,
+     not to retrieval. Two are `debug_vllm_stream_prefix`'s, still in the set; the third
+     belonged to `test_vllm_think_block_strip`, replaced since, so the current set has two
+     such misses (as `docs/STATUS.md` records).
+   - `debug_vllm_stream_prefix` stays as an end-to-end probe whose two misses come from
+     that defect, not as a retrieval-only measurement.
 
 The current controlled baseline is now `53/66` at `4d98e13` (the original 11's `26/30` is
 contained in it).
 
+2. **Investigation - why think-tag answers were cut - DONE 2026-11-10, read-only.** The
+   reading first recorded for H1 ("the backend stops on `<|im_start|>`") had the mechanism
+   wrong. Measured against the backend with `skip_special_tokens=false` and
+   `return_token_ids=true` (runbook, *Phase H1*, "Stop-token investigation"):
+   - Generation ends on `<|im_end|>` (id 248046), the model's normal end-of-turn token, with
+     `stop_reason=null`; a complete control answer ends on the same token. The stop
+     configuration behaves correctly and needs no change.
+   - The anomaly is a stray `<|im_start|>` (248045) mid-answer, followed by one or two tokens
+     and the end of turn.
+   - Cause: on this tokenizer `<think>`, `</think>`, `<|im_start|>`, `<|im_end|>`,
+     `<tool_call>`, `<|file_sep|>` and the rest of the `<|...|>` family are single special
+     tokens, and literal occurrences in message text are parsed as such. Injected source from
+     `packages/providers/vllm.py` and its tests therefore puts real reasoning-control tokens
+     into the prompt: 3 stray tags on `debug_vllm_stream_prefix`, 6 on
+     `test_vllm_think_block_strip`, 0 on a clean control.
+   - Causality, one variable: the same prompts with those tags defused (a zero-width space
+     inside each) completed normally - `debug_vllm_stream_prefix` 1/3 -> 3/3, the replaced
+     probe from an empty answer to a complete one naming the streaming test - and no stray
+     `<|im_start|>` was generated. The zero-width form leaked into the answer's quoted code,
+     so it is a diagnostic, not a fix.
+   - Same mechanism, not tested: repository text containing `<|im_start|>system` would be
+     read as a turn boundary, so injected context can forge chat structure. Client messages
+     (for example Cline tool results carrying file text) pass through the same tokenizer.
+   - Backend launch arguments and `generation_config` were not inspected; they are no longer
+     needed to explain the cut, only to confirm `<|im_end|>` is the configured end token.
+3. **H2 - escape chat-template tags in injected repository context - PROPOSED, not
+   authorized.** Needs a decision, then implementation and live measurement as its own
+   commit.
+   - *Problem.* Repository text the gateway injects can contain strings the backend's
+     tokenizer parses as control tokens. It derails answers today (measured above) and can
+     forge turn structure in principle. In this repository 3 indexed files carry such
+     strings (`packages/providers/vllm.py`, `tests/providers/test_vllm_provider.py`,
+     `tests/providers/test_openai_provider.py`); any user repository that handles chat
+     templates, tokenizers or agent transcripts will carry more.
+   - *Seam.* `OpenAISerializer._build_repository_context` in
+     `packages/serializers/openai.py`, which renders every delivered symbol's source,
+     preview and docstring into the repository-context block. Escaping there touches only
+     gateway-authored text: client messages, the model's own output and the history cap
+     are unchanged.
+   - *What to match.* The gateway has no tokenizer (true tokenizer integration is
+     deferred), so the set cannot be read from the model. Proposed: one fixed pattern for
+     the ChatML/Qwen families - `<|name|>` with a lowercase/underscore name, plus `<think>`,
+     `</think>`, `<tool_call>`, `</tool_call>`, `<tool_response>`, `</tool_response>` - kept
+     in one constant next to the tokenizer measurement that justifies it. A per-model
+     `models_config` override is possible later; not proposed now.
+   - *How to escape.* Visibly and deterministically, so the model can still name the tag and
+     a reader can see the change - for example `<think>` -> `<\think>` and `<|im_start|>` ->
+     `<\|im_start|>` - with one fixed line in the context header saying tags are shown
+     escaped. Measured: `<\think>` tokenizes as 4 ordinary tokens. Not zero-width
+     characters, which were measured to leak invisibly into quoted code. The exact form is
+     the one open design choice; H2 should compare at most two visible forms and keep the
+     one whose escape leaks least into answers.
+   - *Tests.* Serializer unit tests: a delivered source containing each tag renders with no
+     raw tag and with the escaped form; text outside the repository-context block is byte
+     for byte unchanged; text without tags is unchanged. Backend regression (scratch,
+     live): `/tokenize` of the serialized request shows only the chat template's own
+     special tokens, an answer discussing `<think>` tags completes, and an ordinary answer
+     still ends on `<|im_end|>`.
+   - *Measurement.* The H1 set twice under the H1 configuration. Prediction:
+     `debug_vllm_stream_prefix` 1/3 -> 3/3, every other probe unchanged in score (prompts
+     drawing on the three files above grow by a few tokens), so `53/66` -> `55/66` if the
+     prediction holds. A score drop on any other probe rejects the form under test.
+   - *Not in H2.* Escaping client-supplied messages, which changes what the user sent and
+     needs its own decision; any serving or stop-list change.
+
 Still open, not authorized here:
 
-- **Generation-side stop on `<|im_start|>` - investigation open.** On questions about
-  think-block tags, the model starts writing the tag, emits `<|im_start|>`, and the backend
-  returns `finish_reason=stop`, which cuts or empties the visible answer while its reasoning
-  already holds the right facts. This is observed and suspected, not explained: the gateway
-  does not configure that token as a stop sequence and forwards request `stop` values
-  unchanged, so the source is unverified pending inspection of the backend launch arguments,
-  tokenizer configuration and `generation_config`. `<|im_start|>` is a structural ChatML
-  token, so removing it from the stop set could let message-boundary tokens leak or produce
-  malformed generations. Before any change, add a regression that shows an ordinary answer
-  discussing `<think>` tags completes while genuine message-boundary generation still
-  terminates. No serving setting changes inside H1.
 - The Phase G items above (`explain_changed_files_history_cap` at `0/4`, docstring dedup)
   are unchanged.
+- H2 above, pending a decision.
 
 #### Explicitly Deferred
 

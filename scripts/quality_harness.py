@@ -565,8 +565,9 @@ PROBES: tuple[QualityProbe, ...] = (
         # The supporting-symbol-implementation case: one fact reaches the prompt only
         # inside the body of a supporting helper, with the primary carrying none of it.
         # Kept as an end-to-end probe, not a retrieval-only one: its two helper facts
-        # reach the prompt and the reasoning, and are lost on the generation side (see
-        # the annotation below and roadmap Phase H).
+        # reach the prompt and the reasoning, and are lost because the delivered source's
+        # literal think tags reach the model as control tokens (see the annotation below
+        # and roadmap Phase H).
         id="debug_vllm_stream_prefix",
         intent="DEBUG",
         prompt=(
@@ -586,9 +587,12 @@ PROBES: tuple[QualityProbe, ...] = (
             # 2026-11-10, 4d98e13): 20 symbols at 1,886 of 2,048 tokens, this helper as
             # signature at rank 12 and `_sanitize_pending_stream_chunks` as its full
             # 624-character span at rank 2.  The backend's reasoning field names both
-            # correctly; the answer stops at `finish_reason=stop` where the model starts
-            # writing the think-block tag and emits `<|im_start|>`, a stop token, so the
-            # loss is generation-side, not context-side.
+            # correctly.  The answer is cut where the model starts writing the think-block
+            # tag: it emits a stray `<|im_start|>`, then the normal end-of-turn
+            # `<|im_end|>` (`finish_reason=stop`, `stop_reason=null`).  Cause, measured
+            # 2026-11-10: the literal `<think>`/`</think>` in the delivered vLLM source are
+            # tokenized as real control tokens; with them defused the same prompt answers
+            # 3/3.  Retrieval delivered the facts; the context's rendering lost them.
             fact("_should_decide_stream_prefix"),
             fact("_sanitize_pending_stream_chunks"),
         ),
@@ -613,11 +617,10 @@ PROBES: tuple[QualityProbe, ...] = (
     ),
     QualityProbe(
         # Replaces `test_vllm_think_block_strip` (Phase H1 live, 2026-11-10): that probe
-        # asked for the streaming test but expected the non-streaming one, and any
-        # question about think-block tags led the model to emit `<|im_start|>`, a
-        # backend stop token, which cut the reply - a generation-side effect, not a
-        # measure of repository context.  This one stays on the live-path vLLM provider
-        # without touching think tags.
+        # asked for the streaming test but expected the non-streaming one, and its
+        # context carried literal think tags that reach the model as control tokens,
+        # which ended the reply with an empty answer (roadmap Phase H).  This one stays
+        # on the live-path vLLM provider without asking about think tags.
         id="test_vllm_auth_error_mapping",
         intent="TEST",
         prompt=(
