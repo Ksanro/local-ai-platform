@@ -2,7 +2,12 @@
 
 This roadmap is based on the current live gateway, not on dormant scaffolding.
 
-Last reviewed: 2026-11-09 (Phase G, Per-Symbol Source Delivery, opened and closed. `bc87179`
+Last reviewed: 2026-11-10 (Phase H1, probe-set expansion, closed. `PROBES` grows to 25
+probes and 66 facts with no runtime change. Live at `4d98e13`, twice: `53/66` with context,
+`3/66` without; the original 11 still score `26/30`. A generation-side stop on `<|im_start|>`
+is recorded as an open, unverified investigation. See Phase H.)
+
+Previous review: 2026-11-09 (Phase G, Per-Symbol Source Delivery, opened and closed. `bc87179`
 delivers each symbol's own source span instead of its whole module. G2 found no allocation of
 the supporting pool that wins. `67a7f7f` adds each delivered module's top-level import lines
 once. Live: `26/30` twice with context, against A1's `25/30`. See Phase G.)
@@ -957,6 +962,48 @@ Still open, not authorized here:
 - Dedup of the duplicated docstring text: G2's arm E measured 255-1,306 tokens per probe
   of span text already in `Docstring:`.
 
+#### Phase H: Probe-Set Expansion
+
+Opened 2026-11-09 from Phase G's finding that one fact in 30 was the noise floor. Evidence,
+configuration and artifacts: `docs/live-gateway-runbook.md`, *Phase H1: probe-set
+expansion*.
+
+1. **H1 - expand the probe set - DONE.** `PROBES` grows from 11 probes / 30 facts to 25
+   probes / 66 facts. The 11 originals are unchanged and still first, and the 14 new probes
+   (`EXPANSION_PROBE_IDS`) cover every live intent at least twice, include two multi-turn
+   probes, and carry 2-4 facts each, none stated by its own question. Harness and tests only;
+   no runtime change.
+   - Live at `4d98e13`, current registry, two runs: **`53/66` and `53/66` with context, `3/66`
+     and `3/66` without**, identical answers across the runs. The original 11 reproduce
+     Phase G's `26/30` at the same 33,777 prompt tokens.
+   - `test_vllm_think_block_strip` was replaced by `test_vllm_auth_error_mapping`: it
+     expected the non-streaming test for a streaming question, and its think-tag subject
+     triggered the generation-side stop below. Same slot, same 2-fact weight.
+   - Every context-on miss is now annotated in the probe definitions with its measured
+     cause. The five that the first launch left unexplained were all class (d), delivered
+     and unused; three of them were lost on the generation side, not the context side.
+   - `debug_vllm_stream_prefix` stays as an end-to-end probe with two generation-side
+     misses, not as a retrieval-only measurement.
+
+The current controlled baseline is now `53/66` at `4d98e13` (the original 11's `26/30` is
+contained in it).
+
+Still open, not authorized here:
+
+- **Generation-side stop on `<|im_start|>` - investigation open.** On questions about
+  think-block tags, the model starts writing the tag, emits `<|im_start|>`, and the backend
+  returns `finish_reason=stop`, which cuts or empties the visible answer while its reasoning
+  already holds the right facts. This is observed and suspected, not explained: the gateway
+  does not configure that token as a stop sequence and forwards request `stop` values
+  unchanged, so the source is unverified pending inspection of the backend launch arguments,
+  tokenizer configuration and `generation_config`. `<|im_start|>` is a structural ChatML
+  token, so removing it from the stop set could let message-boundary tokens leak or produce
+  malformed generations. Before any change, add a regression that shows an ordinary answer
+  discussing `<think>` tags completes while genuine message-boundary generation still
+  terminates. No serving setting changes inside H1.
+- The Phase G items above (`explain_changed_files_history_cap` at `0/4`, docstring dedup)
+  are unchanged.
+
 #### Explicitly Deferred
 
 - true tokenizer integration
@@ -975,6 +1022,8 @@ while its policy of keeping these documents true as the path changes never close
 Phase F above closed 2026-11-07 as a measured negative result with no runtime change.
 Phase G closed 2026-11-09 with two runtime changes, per-symbol spans and module import lines,
 and a new controlled baseline of `26/30`.
+Phase H1 closed 2026-11-10 with the probe set expanded to 66 facts and a controlled
+baseline of `53/66`, with no runtime change.
 Dormant packages, true tokenizers, vector search,
 GitHub integration, Git snapshot persistence and autonomous execution stay deferred,
 as recorded there and below.
@@ -1019,8 +1068,8 @@ facts for `+30888` prompt tokens, style clean in both arms. On the earlier 8-pro
 without, including the 2 multi-turn probes, and the qwen38-27b/SGLang full baseline of
 2026-10-10 (the backend that alias pointed at before it moved to vLLM) came in clean at
 `20/20` with style `8/8`; those two stay measurements of the set they were taken on.
-`PROBES` now has 11 entries and 30 expected facts, the three added ones
-being `explain_changed_files_contextbuilder`,
+`PROBES` had 11 entries and 30 expected facts before Phase H1 (25 and 66 now), the three
+added then being `explain_changed_files_contextbuilder`,
 `explain_changed_files_repository_index` and
 `explain_changed_files_history_cap` - the scored halves of the change-aware
 ranking decision under Git Integration below.
@@ -1065,8 +1114,9 @@ What came after that judgement:
   Per Token (above), measured from 2026-11-06 at `ebb98f9`, closed 2026-11-07 as
   a measured negative result with no runtime change. Phase G (above) shipped
   per-symbol spans and module import lines and measured `26/30` live at
-  `67a7f7f`. The next step in this area is expanding the probe set: at 11
-  probes, a difference of about 1 fact in 30 is noise
+  `67a7f7f`. Phase H1 (above) then expanded the probe set to 25 probes and 66
+  facts, measured `53/66` with context against `3/66` without, twice, at
+  `4d98e13`
 
 ### 3. Repository Context Budgeting And Ranking — measured, decision closed
 

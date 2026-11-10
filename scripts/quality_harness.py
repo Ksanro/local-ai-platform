@@ -504,7 +504,320 @@ PROBES: tuple[QualityProbe, ...] = (
         prompt=HISTORY_CAP_QUERY,
         expect=HISTORY_CAP_FACTS,
     ),
+    # ---------------------------------------------------------------------
+    # Phase H1 expansion.  Eleven probes decided a change by one fact out of
+    # thirty, which is the size of every difference Phase G measured, so these
+    # entries widen the denominator rather than replace it.  None of the 11 above
+    # is touched: the earlier runs stay comparable by probe id.
+    # ---------------------------------------------------------------------
+    QualityProbe(
+        id="implement_runtime_debug_route_path",
+        intent="IMPLEMENT",
+        prompt=(
+            "Implementation task. I want to read over HTTP which model aliases the "
+            "gateway has, how they were routed, and whether context injection is on, "
+            "without asking for a completion. What exact path do I call, which helper in "
+            "that endpoint's module builds the per-model entries, and which helper adds "
+            "the section drawn from stored session records?"
+        ),
+        expect=(
+            fact("/runtime-context"),
+            fact("_model_entries"),
+            # Known delivery gap: measured absent.  20 symbols from 6 modules were
+            # delivered at the IMPLEMENT budget of 4,096 tokens and this helper's
+            # definition was not among them - rank, not the cut: the primary's own span
+            # is 428 characters against a 7,168-character window.
+            fact("_gateway_session_summary"),
+        ),
+    ),
+    QualityProbe(
+        id="implement_settings_singleton_accessor",
+        intent="IMPLEMENT",
+        prompt=(
+            "Implementation task. To give one retrieval intent its own context budget, "
+            "which file declares the gateway's APP_-prefixed settings, which property on "
+            "that class turns the raw budget string into the mapping the stage reads, and "
+            "which helper does that property call to parse the string?"
+        ),
+        expect=(
+            fact("apps/gateway/core/config.py", "apps/gateway/core/config"),
+            fact("repository_context_intent_budget_map"),
+            fact("parse_intent_budget_map"),
+        ),
+    ),
+    QualityProbe(
+        # Both facts land in implementation text, but `ProviderConnectionError` also
+        # rides in on the primary module's import block, so this pair is not the
+        # supporting-symbol-only case - `debug_vllm_stream_prefix` below is.
+        id="debug_provider_exception_status",
+        intent="DEBUG",
+        prompt=(
+            "A client saw HTTP 503 from the gateway for a request that never reached the "
+            "model. Which chat-endpoint helper decides that status, and which provider "
+            "exception class is the one it maps to 503?"
+        ),
+        expect=(
+            fact("_status_for_exception"),
+            fact("ProviderConnectionError"),
+        ),
+    ),
+    QualityProbe(
+        # The supporting-symbol-implementation case: one fact reaches the prompt only
+        # inside the body of a supporting helper, with the primary carrying none of it.
+        # Kept as an end-to-end probe, not a retrieval-only one: its two helper facts
+        # reach the prompt and the reasoning, and are lost on the generation side (see
+        # the annotation below and roadmap Phase H).
+        id="debug_vllm_stream_prefix",
+        intent="DEBUG",
+        prompt=(
+            "A streamed reply still shows an empty reasoning block before the answer. In "
+            "the vLLM provider, which compiled pattern recognizes that empty block, which "
+            "helper decides that enough of the streamed prefix has arrived to make the "
+            "sanitize-or-flush call, and which helper rewrites chunks that were already "
+            "buffered while it waited?"
+        ),
+        expect=(
+            # The supporting-symbol case: this name is not a symbol, so it reaches the
+            # prompt only inside the implementation text of the supporting helper that
+            # reads it - not from its name, signature, or docstring, and not from the
+            # primary's delivered text at all.
+            fact("EMPTY_THINK_BLOCK_RE"),
+            # Measured delivered and unused, both of the next two (Phase H1 live,
+            # 2026-11-10, 4d98e13): 20 symbols at 1,886 of 2,048 tokens, this helper as
+            # signature at rank 12 and `_sanitize_pending_stream_chunks` as its full
+            # 624-character span at rank 2.  The backend's reasoning field names both
+            # correctly; the answer stops at `finish_reason=stop` where the model starts
+            # writing the think-block tag and emits `<|im_start|>`, a stop token, so the
+            # loss is generation-side, not context-side.
+            fact("_should_decide_stream_prefix"),
+            fact("_sanitize_pending_stream_chunks"),
+        ),
+    ),
+    QualityProbe(
+        id="test_history_group_capping_guard",
+        intent="TEST",
+        prompt=(
+            "Which regression test in tests/pipeline/test_history.py proves that a large "
+            "current tool result does not drop history that still fits, and which parameter "
+            "of the trimming function states the budget that result has to fit in?"
+        ),
+        expect=(
+            fact("test_large_current_does_not_drop_fitting_history"),
+            # Measured delivered and unused, thinly (Phase H1 live, 2026-11-10,
+            # 4d98e13): 12 symbols at 2,035 of 2,048 tokens, and the name occurs once in
+            # the prompt, as a keyword argument inside one supporting test's preview.
+            # `cap_history`'s own signature was not delivered; the answer named
+            # `max_history_tokens`, which the primary test passes to `cap_history`.
+            fact("max_current_tool_result_tokens"),
+        ),
+    ),
+    QualityProbe(
+        # Replaces `test_vllm_think_block_strip` (Phase H1 live, 2026-11-10): that probe
+        # asked for the streaming test but expected the non-streaming one, and any
+        # question about think-block tags led the model to emit `<|im_start|>`, a
+        # backend stop token, which cut the reply - a generation-side effect, not a
+        # measure of repository context.  This one stays on the live-path vLLM provider
+        # without touching think tags.
+        id="test_vllm_auth_error_mapping",
+        intent="TEST",
+        prompt=(
+            "Which regression test proves the non-streaming vLLM provider turns an HTTP "
+            "401 from the backend into a credentials failure, and which provider "
+            "exception class does that failure raise?"
+        ),
+        expect=(
+            fact("test_chat_401_authentication_error"),
+            fact("ProviderAuthenticationError"),
+        ),
+    ),
+    QualityProbe(
+        id="search_delta_sentinel_value",
+        intent="SEARCH",
+        prompt=(
+            "In packages/context/delta.py, which class remembers which symbols a "
+            "conversation has already been shown, which function digests the earlier user "
+            "turns into the key that memory is looked up by, and which module-level "
+            "constant supplies the value used when there is no earlier turn at all?"
+        ),
+        expect=(
+            fact("SentSymbolTracker"),
+            # Measured delivered and unused (Phase H1 live, 2026-11-10, 4d98e13): 7
+            # symbols at 1,979 of 2,048 tokens, this helper as signature only at rank 6,
+            # behind its caller `conversation_key` at rank 5.  The answer named the
+            # caller, which the prompt's "digests ... into the key" wording admits.
+            fact("_hash_user_turns"),
+            # Known delivery gap: measured absent.  The constant is read inside
+            # `_hash_user_turns`, and at the SEARCH budget of 2,048 tokens only its call
+            # site was selected - rank, not the cut.
+            fact("_SENTINEL_KEY"),
+        ),
+    ),
+    QualityProbe(
+        id="search_file_activity_two_modules",
+        intent="SEARCH",
+        prompt=(
+            "In packages/pipeline/file_activity.py and packages/pipeline/cline_activity.py: "
+            "which function coerces whatever came back from a boundary into the shape a "
+            "session record carries, and which class turns untrusted path text into a "
+            "repository-relative file?"
+        ),
+        expect=(
+            # Known delivery gap: measured absent.  The two module paths put the builder on
+            # its multi-module branch, where only 2 symbols were delivered at the SEARCH
+            # budget of 2,048 tokens - rank, not the cut: the primary's span is 818
+            # characters against that branch's 1,792-character window.
+            fact("sanitize_file_activity"),
+            fact("RepositoryPathNormalizer"),
+        ),
+    ),
+    QualityProbe(
+        # The two-module case, and the import-line case at once: the question names three
+        # `.py` paths, so the builder takes its multi-module branch, and one fact reaches
+        # the prompt only inside the module import lines `67a7f7f` ships.
+        id="explain_runtime_context_two_modules",
+        intent="EXPLAIN",
+        prompt=(
+            "The read-only endpoint in apps/gateway/api/runtime_context.py mixes results "
+            "from two observability modules, packages/observability/quality_history.py and "
+            "packages/observability/session_log_history.py. Which dataclass carries the "
+            "missing-fact rows of the most recent quality runs, and which memory query did "
+            "the session-log side have to use because the generic recent() call is not "
+            "workflow-aware?"
+        ),
+        expect=(
+            fact("RecentMissingFacts"),
+            fact("find_by_workflow"),
+        ),
+    ),
+    QualityProbe(
+        id="explain_changed_file_promotion_two_modules",
+        intent="EXPLAIN",
+        prompt=(
+            "Both apps/gateway/api/chat.py and "
+            "packages/pipeline/stages/repository_context.py report whether the "
+            "changed-file bonus changed what was sent. Which stage function computes "
+            "those counters, which endpoint helper copies them onto the ASGI scope, and "
+            "which module-level constant supplies the values when no comparison was "
+            "built?"
+        ),
+        expect=(
+            fact("changed_file_promotion_counts"),
+            fact("INERT_PROMOTION"),
+            # Known delivery gap: measured absent.  Naming two modules puts the builder
+            # on its multi-module branch, where the primary window is 3,584 chars and
+            # only 3 symbols are delivered at the EXPLAIN budget of 4,096 tokens; the
+            # helper's own span was not selected, so the reason is rank plus that cut.
+            fact("_surface_session_metadata"),
+        ),
+    ),
+    QualityProbe(
+        # The long-span case: the primary here is `RepositoryContextStage`, whose own
+        # decorator-to-`end_lineno` span measures 34,445 characters while the primary
+        # window at 2,048 tokens is 7,168.  Two facts land before that cut; the third is
+        # the module-level function that never enters the delivered prefix at all.
+        id="refactor_changed_file_promotion_counts",
+        intent="REFACTOR",
+        prompt=(
+            "Refactor investigation only. In the repository-context stage module: which "
+            "function compares the ranked candidates against the no-bonus counterfactual "
+            "to produce the promotion counters, which constructor flag decides whether "
+            "that comparison is built at all, and which module-level constant holds the "
+            "values written when it is not?"
+        ),
+        expect=(
+            fact("changed_files_comparison_enabled"),
+            fact("INERT_PROMOTION"),
+            # Known delivery gap: measured absent.  7 symbols were delivered at the
+            # REFACTOR budget of 4,096 tokens and none of them is this function; inside
+            # the primary's own 34,445-character span the same name appears only past
+            # the 7,168-character window, so rank and cut both account for it.
+            fact("changed_file_promotion_counts"),
+        ),
+    ),
+    QualityProbe(
+        id="refactor_changed_files_signal",
+        intent="REFACTOR",
+        prompt=(
+            "Refactor investigation only. In packages/repository/changed_files.py, which "
+            "class is the source the stage polls for modified module keys, which protocol "
+            "does that class satisfy, and which of its properties counts the changes it "
+            "refused because they live outside the repository root?"
+        ),
+        expect=(
+            fact("ChangedFilesSignal"),
+            fact("ChangedModuleSource"),
+            fact("outside_root_count"),
+        ),
+    ),
+    QualityProbe(
+        # Multi-turn over the activity parser: one constant reaches the prompt through the
+        # module import lines `67a7f7f` ships, the other through a symbol's body.
+        id="multiturn_cline_envelope_tools",
+        intent="DEBUG",
+        history=(
+            turn("user", "The gateway tracks which files a Cline session touched."),
+            turn(
+                "assistant",
+                "Yes - the activity parser recognizes tool-call envelopes in user "
+                "messages and reduces them to per-file outcomes.",
+            ),
+        ),
+        prompt=(
+            "Which module-level constant lists the envelope tool names that count, and "
+            "which method of the header object says it claims exactly one file?"
+        ),
+        expect=(
+            fact("CLINE_ENVELOPE_TOOLS"),
+            fact("names_file"),
+        ),
+    ),
+    QualityProbe(
+        # Multi-turn over a long span: `_build_record` measures 10,761 characters, so the
+        # method name reaches the prompt as a field while its body stays out of reach.
+        id="multiturn_session_record_builder",
+        intent="EXPLAIN",
+        history=(
+            turn("user", "Every chat completion ends up as one JSONL record."),
+            turn(
+                "assistant",
+                "The session-log middleware assembles it from the numbers the endpoint "
+                "left on the ASGI scope.",
+            ),
+        ),
+        prompt=(
+            "In apps/gateway/session_log.py, which class owns the append-only handle the "
+            "record is written through, which method of the middleware assembles the dict "
+            "that gets appended, and which helper produces the timestamp string inside it?"
+        ),
+        expect=(
+            fact("SessionLogger"),
+            fact("_build_record"),
+            fact("_utc_timestamp"),
+        ),
+    ),
 )
+
+#: The ids Phase H1 appended, in registration order.  The 11 probes above are the
+#: history every published score was measured on, so they are pinned by position and
+#: by id; this tuple is the tail, and the content checks in
+#: ``tests/observability/test_quality_harness.py`` run against it alone.
+EXPANSION_PROBE_IDS: tuple[str, ...] = (
+    "implement_runtime_debug_route_path",
+    "implement_settings_singleton_accessor",
+    "debug_provider_exception_status",
+    "debug_vllm_stream_prefix",
+    "test_history_group_capping_guard",
+    "test_vllm_auth_error_mapping",
+    "search_delta_sentinel_value",
+    "search_file_activity_two_modules",
+    "explain_runtime_context_two_modules",
+    "explain_changed_file_promotion_two_modules",
+    "refactor_changed_file_promotion_counts",
+    "refactor_changed_files_signal",
+    "multiturn_cline_envelope_tools",
+    "multiturn_session_record_builder",
+)
+
 
 DELTA_CONTEXT_PROBE = DeltaContextProbe(
     id="delta_history_cap_followup",

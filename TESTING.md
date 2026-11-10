@@ -174,12 +174,16 @@ Run deterministic answer-quality probes:
 
 Read the `TOTAL` line. `--compare-context` changes exactly one variable per
 probe: repository context on versus off through the same gateway/provider path.
-The current fixed probe set has 11 probes and 30 total expected facts
-(`total_maximum` is `30`) - the original 6 single-turn probes, 2 multi-turn probes
-(`multiturn_history_cap_budget`, `multiturn_config_systems`) that send prior
-user/assistant turns before the scored final prompt, and the 3
-`explain_changed_files_*` probes that carry the change-aware ranking decision.
-The current baseline is the controlled `--compare-context` run completed
+The current fixed probe set has 25 probes and 66 total expected facts
+(`total_maximum` is `66`). The first 11 (30 facts) are the original 6 single-turn probes,
+2 multi-turn probes (`multiturn_history_cap_budget`, `multiturn_config_systems`) that send
+prior user/assistant turns before the scored final prompt, and the 3
+`explain_changed_files_*` probes that carry the change-aware ranking decision. Phase H1
+appended 14 more (`EXPANSION_PROBE_IDS`, 36 facts). The current baseline over all 66 is
+`53/66` with context against `3/66` without, in both of two runs at `4d98e13` (configuration
+and artifacts: `docs/live-gateway-runbook.md`, *Phase H1*). Within it the original 11 still
+score `26/30`, matching Phase G at `67a7f7f`.
+The 30-fact baseline before Phase G was the controlled `--compare-context` run completed
 2026-10-24 at gateway commit `0371d64`, taken from a detached worktree with
 changed-file ranking off against `qwen3.8-flash-next` on the vLLM backend:
 `25/30` with repository context against `4/30` without it, style `11/11` ok in both

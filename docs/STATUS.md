@@ -3,7 +3,15 @@
 This file is the current runtime snapshot. It intentionally describes only
 what matters for the live gateway path and calls out dormant code explicitly.
 
-Last reviewed: 2026-11-09 (Phase G, Per-Symbol Source Delivery. Two runtime changes are on
+Last reviewed: 2026-11-10 (Phase H1, probe-set expansion; no runtime change. `PROBES` now
+has 25 probes and 66 expected facts. Measured live at `4d98e13`, two runs from a worktree with
+changed-file ranking off: `53/66` with context in both, `3/66` without; the original 11 probes
+still score `26/30` at the same 33,777 prompt tokens. Open, unverified: on think-tag questions
+the backend stops at a model-emitted `<|im_start|>` (`finish_reason=stop`), cutting answers
+whose reasoning had the facts; no serving setting was changed. Evidence: `docs/roadmap.md`
+Phase H and `docs/live-gateway-runbook.md`, *Phase H1*.)
+
+Previous review: 2026-11-09 (Phase G, Per-Symbol Source Delivery. Two runtime changes are on
 the live path:
 
 - `bc87179`: `RepositoryIndex` hands `ContextBuilder` each symbol's own source span
@@ -664,7 +672,11 @@ environment uses whatever Python uv discovers, against `requires-python = ">=3.1
   left `explain_changed_files_history_cap` at `0/4` live: the truncation marker
   sits 253 preview tokens deep at rank 11, past the 512-token supporting pool. G2
   found no split of that pool that reaches it. At 11 probes the run-to-run noise
-  is about 1 fact in 30, so the next step is a larger probe set, not more tuning.
+  was about 1 fact in 30, so Phase H1 expanded the set to 25 probes and 66 facts:
+  the current measured baseline is `53/66` with context versus `3/66` without, in
+  both of two runs at `4d98e13` (74132 context-arm prompt tokens). Three of its 13
+  context-on misses are lost on the generation side (an unexplained backend stop on
+  `<|im_start|>`), not the context side; see roadmap Phase H.
 - The model often includes reasoning/preamble despite terse system prompts; the
   quality harness now records deterministic style violations separately from
   required-fact score.

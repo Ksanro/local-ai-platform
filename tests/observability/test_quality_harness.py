@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import subprocess
 import sys
 import unittest.mock
 from pathlib import Path
@@ -21,6 +22,7 @@ from scripts.quality_harness import (
     DEFAULT_MAX_TOKENS,
     DEFAULT_TIMEOUT,
     DELTA_CONTEXT_PROBE,
+    EXPANSION_PROBE_IDS,
     HISTORY_CAP_CHANGED_PRIMARY,
     HISTORY_CAP_DIRTY_MODULE,
     HISTORY_CAP_FACTS,
@@ -41,6 +43,7 @@ from scripts.quality_harness import (
     QualityResult,
     _compute_truncation_risk,
     _configured_reasoning_models,
+    _normalized,
     _read_session_log_records,
     _read_session_log_records_with_retry,
     _record_for_last_user,
@@ -270,12 +273,14 @@ def test_probe_set_fixed_maximum_is_documented() -> None:
     than merely reordering it; 30 since ``explain_changed_files_history_cap`` joined it
     as the scored half of the case on the other side of that ledger, where the changed
     file is the file the prompt asks about and the bonus buys the mechanism the answer
-    needs.  The ``20/20`` figures in ``docs/`` are historical
-    runs against the earlier set, not a ceiling.
+    needs; and 66 since Phase H1 appended 14 more probes over the same 11, because at
+    30 facts the run-to-run noise of about one fact was the same size as every
+    difference Phase G had measured.  The ``20/20`` and ``26/30`` figures in ``docs/``
+    are historical runs against the earlier set, not a ceiling.
     """
     total_maximum = sum(len(probe.expect) for probe in PROBES)
 
-    assert total_maximum == 30
+    assert total_maximum == 66
 
 
 def test_debug_streaming_preview_probe_keeps_choice_content_fact() -> None:
@@ -797,14 +802,16 @@ class TestExistingBehaviorUnchanged:
         ``explain_changed_files_contextbuilder`` took this from 20 to 23,
         ``explain_changed_files_repository_index`` took it to 26, and
         ``explain_changed_files_history_cap`` - the first pair registered on the side
-        where the bonus *adds* context - takes it to 30.
+        where the bonus *adds* context - takes it to 30.  Phase H1's 14 appended probes
+        take it to 66 without moving any of those four.
         """
         total_maximum = sum(len(probe.expect) for probe in PROBES)
-        assert total_maximum == 30
+        assert total_maximum == 66
 
     def test_probe_tuple_length_unchanged(self) -> None:
-        """PROBES must stay pinned; the changed-file A/B pairs made it 11."""
-        assert len(PROBES) == 11
+        """PROBES must stay pinned; the changed-file A/B pairs made it 11, and the
+        Phase H1 expansion - 14 more probes over the same 11 - makes it 25."""
+        assert len(PROBES) == 25
 
 
 class TestParseArgsProbe:
@@ -2395,3 +2402,168 @@ def test_changed_file_sweep_mode_is_informational(tmp_path, monkeypatch, capsys)
 
     assert code == 0
     assert "CHANGED-FILE FLIP WEIGHT" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# Phase H1: the expanded probe set
+# ---------------------------------------------------------------------------
+
+#: The probe ids registered before Phase H1, in registration order.  Phase H1
+#: appends, so this stays the prefix of ``PROBES`` and every earlier result remains
+#: comparable by probe id.
+ORIGINAL_PROBE_IDS: tuple[str, ...] = (
+    "search_answer_preview",
+    "debug_streaming_preview",
+    "test_list_content",
+    "explain_live_path",
+    "refactor_repository_context",
+    "implement_health_flag",
+    "multiturn_history_cap_budget",
+    "multiturn_config_systems",
+    "explain_changed_files_contextbuilder",
+    "explain_changed_files_repository_index",
+    "explain_changed_files_history_cap",
+)
+
+#: The intents the live gateway detects or accepts as a ``context_intent`` override.
+LIVE_INTENTS: frozenset[str] = frozenset(
+    {"SEARCH", "DEBUG", "TEST", "IMPLEMENT", "REFACTOR", "EXPLAIN"}
+)
+
+
+def tracked_python_sources() -> dict[str, str]:
+    """Every tracked ``*.py`` file, listed by Git and read here, keyed by path.
+
+    A fact has to be code text rather than prose, so the source set is whatever Git
+    tracks - ``git ls-files -- '*.py'`` - and not a hand-kept directory list that
+    drifts when the live path moves.  A failed Git run and an unreadable listed file
+    both raise: a content check that quietly skipped a file would be a content check
+    against a smaller repository than the one the gateway indexes.
+    """
+    repo_root = Path(__file__).resolve().parents[2]
+    completed = subprocess.run(
+        ["git", "ls-files", "--", "*.py"],
+        cwd=str(repo_root),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 0, f"git ls-files failed: {completed.stderr.strip()}"
+    sources: dict[str, str] = {}
+    for relative in completed.stdout.splitlines():
+        relative = relative.strip()
+        if not relative:
+            continue
+        sources[relative.replace("\\", "/")] = (repo_root / relative).read_text(
+            encoding="utf-8"
+        )
+    assert sources, "git ls-files listed no tracked .py files"
+    return sources
+
+
+def expansion_probes() -> list[QualityProbe]:
+    """The Phase H1 entries, selected by the constant rather than by position."""
+    selected = [probe for probe in PROBES if probe.id in EXPANSION_PROBE_IDS]
+
+    assert len(selected) == len(EXPANSION_PROBE_IDS)
+    return selected
+
+
+def test_probe_ids_are_unique() -> None:
+    """One id per probe, so ``--probe`` cannot select one probe twice."""
+    probe_ids = [probe.id for probe in PROBES]
+
+    assert len(probe_ids) == len(set(probe_ids))
+
+
+def test_original_probes_are_the_first_entries_in_their_original_order() -> None:
+    """The 11 probes every measurement so far ran are untouched and still first.
+
+    Phase H1 appends: no earlier prompt, fact, intent, or position moves, because the
+    published ``25/30``, ``24/30`` and ``26/30`` runs are compared by probe id.
+    """
+    assert tuple(probe.id for probe in PROBES[: len(ORIGINAL_PROBE_IDS)]) == ORIGINAL_PROBE_IDS
+
+
+def test_expansion_probe_ids_name_exactly_the_appended_probes() -> None:
+    """``EXPANSION_PROBE_IDS`` is the appended tail of ``PROBES`` and nothing else."""
+    assert list(EXPANSION_PROBE_IDS) == [
+        probe.id for probe in PROBES[len(ORIGINAL_PROBE_IDS) :]
+    ]
+
+
+
+def test_every_expansion_probe_has_a_valid_intent() -> None:
+    """Each new probe declares one of the six intents the stage budgets key on."""
+    for probe in expansion_probes():
+        assert probe.intent in LIVE_INTENTS, probe.id
+
+
+def test_every_expansion_probe_carries_between_two_and_four_facts() -> None:
+    """Two facts is the least that separates an answer from a guess, and four is the
+    most one reply can carry without turning the probe into a recitation test."""
+    for probe in expansion_probes():
+        assert 2 <= len(probe.expect) <= 4, probe.id
+
+
+def test_expansion_probe_facts_exist_in_tracked_source() -> None:
+    """Every fact label and variant is code text somewhere in the repository.
+
+    The matcher is a case-insensitive substring test over normalized text, so this
+    is the same comparison a live answer is scored with, run against the tracked
+    source instead of against a reply.
+    """
+    sources = {name: _normalized(text) for name, text in tracked_python_sources().items()}
+
+    for probe in expansion_probes():
+        for expected in probe.expect:
+            for variant in expected.variants:
+                needle = _normalized(variant)
+                matching = [name for name, text in sources.items() if needle in text]
+                assert matching, f"{probe.id}: {expected.label!r} variant {variant!r} is nowhere"
+
+
+def test_expansion_probe_facts_are_not_leaked_by_their_own_question() -> None:
+    """No fact text appears in the probe's prompt or in any history turn.
+
+    A fact the question already states is answered by copying, which measures the
+    model's reading rather than the context that reached it - the distinction the
+    expanded set exists to keep sharp.
+    """
+    for probe in expansion_probes():
+        asked = _normalized(probe.prompt) + "\n" + "\n".join(
+            _normalized(str(turn.get("content", ""))) for turn in probe.history
+        )
+        for expected in probe.expect:
+            for variant in expected.variants:
+                assert _normalized(variant) not in asked, (
+                    f"{probe.id}: {expected.label!r} variant {variant!r} is in the question"
+                )
+
+
+def test_expansion_probe_ids_resolve_offline() -> None:
+    """Each new id is selectable through ``--probe`` without sending a request."""
+    for probe_id in EXPANSION_PROBE_IDS:
+        selected = _resolve_probes(parse_args(["--probe", probe_id]).probe)
+
+        assert tuple(probe.id for probe in selected) == (probe_id,)
+
+
+def test_expansion_set_covers_every_live_intent_at_least_twice() -> None:
+    """Two probes per intent, so one noisy reply cannot decide an intent's trend."""
+    by_intent: dict[str, int] = {}
+    for probe in expansion_probes():
+        by_intent[probe.intent] = by_intent.get(probe.intent, 0) + 1
+
+    assert set(by_intent) == set(LIVE_INTENTS)
+    assert min(by_intent.values()) >= 2
+
+
+def test_expansion_set_adds_multi_turn_probes() -> None:
+    """The expansion brings its own history-bearing probes."""
+    multi_turn = [probe.id for probe in expansion_probes() if probe.history]
+
+    assert len(multi_turn) >= 2
+    for probe_id in multi_turn:
+        probe = next(item for item in PROBES if item.id == probe_id)
+        assert len(probe.history) >= 2

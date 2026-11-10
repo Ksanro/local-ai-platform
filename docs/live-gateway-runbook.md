@@ -3159,6 +3159,118 @@ Gates at `67a7f7f`:
 - Ruff on the changed files: clean.
 - mypy (live-path scope): no issues in 46 source files.
 
+### Phase H1: probe-set expansion, 2026-11-09/10 (roadmap Phase H)
+
+Roadmap Phase H1 grew `PROBES` from 11 probes and 30 facts to 25 probes and 66 facts, so that
+one fact stops deciding a change. No runtime code changed: the diff is
+`scripts/quality_harness.py` and `tests/observability/test_quality_harness.py` only. The 11
+original probes keep their ids, prompts, facts and positions; the 14 new ones are the tail
+named by `EXPANSION_PROBE_IDS`.
+
+**Configuration.** Worktree `C:\Users\ovidi\lap-g-bc87179` (the name is historical: it is
+checked out at `4d98e13`, with the same uncommitted H1 harness diff as `main`, and holds no
+`.env` and no `build\`). Gateway on `127.0.0.1:8011`, gateway index
+`modules=517 symbols=9113 relationships=19938`. Environment, as set by
+`build\phase_h1_final\run_all.ps1`:
+
+```text
+APP_MODELS_CONFIG=[{"model":"qwen38-27b","backend_model":"qwen3.8-flash-next","provider":"openai",
+  "base_url":"http://100.106.236.88:18300/v1","context_window":262144,"max_output_tokens":8192,
+  "chars_per_token":3.5}]
+APP_DEFAULT_MODEL=qwen38-27b  APP_DEFAULT_PROVIDER=openai  DEFAULT_MODEL=qwen38-27b
+APP_REPOSITORY_PATH=C:\Users\ovidi\lap-g-bc87179
+APP_REPOSITORY_EXCLUDE_GLOBS=scripts/**,build/**  APP_REPOSITORY_EXCLUDE_TESTS=false
+APP_REPOSITORY_CONTEXT_ENABLED=true  APP_REPOSITORY_CONTEXT_MAX_TOKENS=4096
+APP_REPOSITORY_CONTEXT_INTENT_BUDGETS=SEARCH:2048,TEST:2048,DEBUG:2048,REFACTOR:4096,IMPLEMENT:4096,EXPLAIN:4096
+APP_REPOSITORY_CONTEXT_CHANGED_FILES_ENABLED=false  APP_REPOSITORY_CONTEXT_CHANGED_FILES_COMPARISON_ENABLED=true
+APP_REPOSITORY_CONTEXT_CHANGED_FILES_TTL_SECONDS=0
+APP_CONTEXT_DELTA_INJECTION=true  APP_CONTEXT_DELTA_CACHE_SIZE=256  APP_CONTEXT_INTENT_RULES={}
+APP_HISTORY_CAP_ENABLED=true  APP_HISTORY_CAP_TOKENS=3000
+RELATIONSHIP_RANKING_ENABLED=true  RELATIONSHIP_EXPANSION_ENABLED=true  REQUEST_TIMEOUT=300
+APP_SESSION_LOG_ENABLED=true
+```
+
+Harness, run twice per launch: `uv run python scripts\quality_harness.py --base-url
+http://127.0.0.1:8011/v1 --model qwen38-27b --max-tokens 8192 --timeout 345
+--reasoning-model qwen38-27b --compare-context --json`.
+
+**Repetitions and scores.**
+
+| launch | registry | exclude globs | runs | context on | context off |
+| --- | --- | --- | --- | --- | --- |
+| `build\phase_h1_live\` (2026-11-09 23:41 - 00:32) | with `test_vllm_think_block_strip` | `scripts/**` | 2 | 51/66, 51/66 | 3/66, 3/66 |
+| `build\phase_h1_replace\` (2026-11-10) | `test_vllm_auth_error_mapping` only, `--probe` | `scripts/**` | 1 | 2/2 | 0/2 |
+| `build\phase_h1_final\` (2026-11-10 10:40 - 11:29) | current, 25 probes | `scripts/**,build/**` | 2 | **53/66, 53/66** | **3/66, 3/66** |
+
+In every launch the runs within it returned identical answers on all 50 requests, nothing errored, and
+the harness's stderr was empty. In the final launch the original 11 scored `26/30` with 33,777
+context-arm prompt tokens, matching Phase G's `67a7f7f` record exactly. The gateway index
+was the same in all launches, so the glob change was a configuration correction with no
+measured effect. Context-arm prompt tokens for all 25 probes: 74,132; the context-off arm
+hit the 8,192-token output cap on 2 probes.
+
+The 14 expansion probes, final launch (both runs identical):
+
+| probe | intent | context on | context off | prompt tokens |
+| --- | --- | --- | --- | --- |
+| `implement_runtime_debug_route_path` | IMPLEMENT | 2/3 | 0/3 | 3,524 |
+| `implement_settings_singleton_accessor` | IMPLEMENT | 3/3 | 0/3 | 3,081 |
+| `debug_provider_exception_status` | DEBUG | 2/2 | 0/2 | 2,074 |
+| `debug_vllm_stream_prefix` | DEBUG | 1/3 | 0/3 | 2,482 |
+| `test_history_group_capping_guard` | TEST | 1/2 | 0/2 | 2,470 |
+| `test_vllm_auth_error_mapping` | TEST | 2/2 | 0/2 | 2,645 |
+| `search_delta_sentinel_value` | SEARCH | 1/3 | 0/3 | 2,035 |
+| `search_file_activity_two_modules` | SEARCH | 1/2 | 0/2 | 1,722 |
+| `explain_runtime_context_two_modules` | EXPLAIN | 2/2 | 0/2 | 3,620 |
+| `explain_changed_file_promotion_two_modules` | EXPLAIN | 2/3 | 0/3 | 3,307 |
+| `refactor_changed_file_promotion_counts` | REFACTOR | 2/3 | 0/3 | 3,553 |
+| `refactor_changed_files_signal` | REFACTOR | 3/3 | 0/3 | 3,831 |
+| `multiturn_cline_envelope_tools` | DEBUG | 2/2 | 0/2 | 2,360 |
+| `multiturn_session_record_builder` | EXPLAIN | 3/3 | 1/3 | 3,651 |
+
+**Miss classification.** Of the 13 context-on misses in the final launch, four are
+`explain_changed_files_history_cap` (open since Phase G) and five were annotated "known
+delivery gap: measured absent" in the probe definitions before any live run, all missing as
+annotated. The other four, together with the replaced probe's
+`test_chat_strips_leading_empty_think_block`, were the five misses the first launch left
+unannotated. They were put on the F2 ladder offline (`build\phase_h1_ladder\ladder.py`).
+That replay reproduced each live session record's primary, symbol count and estimated
+tokens, and all five landed in class (d), delivered and unused; each now carries a
+"measured delivered and unused" annotation. The replayed prompts were then sent straight to the backend
+(`build\phase_h1_ladder\raw_replay.py`), and `prompt_tokens` and answers matched the live run:
+
+- `debug_vllm_stream_prefix`: both helper names are delivered, and the backend's `reasoning`
+  field names both correctly. The visible content ends with `finish_reason=stop` where the
+  model starts writing the think-block tag and produces `<|im_start|>`.
+- `test_vllm_think_block_strip` (since replaced): the content was empty after 198 completion
+  tokens, ending the same way while still in reasoning. Its expected fact was also wrong: the
+  prompt asks for the streaming test and the fact named the non-streaming one.
+- `max_current_tool_result_tokens`: one occurrence, a keyword argument in a supporting test
+  preview; `cap_history`'s own signature was not delivered.
+- `_hash_user_turns`: delivered as signature only, behind its caller `conversation_key`, which
+  the answer named.
+
+The `<|im_start|>` stop is **observed, not explained**. This repository does not configure it
+as a stop sequence: `apps/gateway/api/chat.py` forwards request-level `stop` values unchanged,
+and the live alias uses the `openai` provider, so `packages/providers/vllm.py`'s sanitizer is
+not on this path. Whether the stop comes from backend launch arguments, the tokenizer
+configuration or `generation_config` has not been inspected, and no serving setting was
+changed. `debug_vllm_stream_prefix` stays in the set as an end-to-end probe with two
+generation-side misses. `test_vllm_think_block_strip` was replaced in place by
+`test_vllm_auth_error_mapping`, which asks about the live-path vLLM provider without touching
+think tags.
+
+Artifacts (Git-ignored):
+
+- `build\phase_h1_probes\`: probe design and offline validation (`h1_validate.py`)
+- `build\phase_h1_live\`: first launch, `run_all.ps1`, `quality_compare_run{1,2}.json`,
+  `sessions_h1_live_off.jsonl`, `gateway_out.txt`
+- `build\phase_h1_ladder\`: `ladder.py`/`ladder.json`, `raw_replay.py`/`raw_replay.json`,
+  `check_new.py`
+- `build\phase_h1_replace\`: the replacement probe's single live run
+- `build\phase_h1_final\`: the recorded baseline, `run_all.ps1`,
+  `quality_compare_run{1,2}.json`, `sessions_h1_final.jsonl`, `gateway_out.txt`
+
 ## Interpreting long runs, timeouts, and failed execution
 
 Three independent timeout layers can each produce a failure report. Identify
