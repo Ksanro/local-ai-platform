@@ -61,6 +61,10 @@ Serialization Rules
 - User and assistant messages are copied unchanged.
 - The serializer never modifies user input.
 - Deterministic: identical input always produces identical output.
+- Chat-template control tags in the repository-context text (``<think>``,
+  ``<|im_start|>`` and their families) are escaped before that text joins the
+  system message, because the backend's tokenizer parses them as control
+  tokens even inside message text. Client messages are not touched.
 
 Constraints
 -----------
@@ -91,6 +95,7 @@ Public API
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from packages.context.context_package import ContextPackage
@@ -99,6 +104,44 @@ from packages.serializers.exceptions import SerializationFormatError
 from packages.serializers.models import ProviderRequest
 from packages.serializers.registry import register
 from packages.serializers.types import ProviderType
+
+#: The opening ``<`` of a chat-template control tag: ``<think>``/``</think>``,
+#: ``<tool_call>``/``</tool_call>``, ``<tool_response>``/``</tool_response>``, and
+#: the ``<|name|>`` family (``<|im_start|>``, ``<|im_end|>``, ``<|endoftext|>``,
+#: ``<|file_sep|>`` ...).  On the live Qwen tokenizer each of these is one special
+#: token, and a literal one inside message text is parsed as that token, so
+#: repository source that merely mentions a tag injects a real control token
+#: (measured 2026-11-10, roadmap Phase H).  The gateway has no tokenizer, so the
+#: set is a fixed pattern; the ``<|name|>`` alphabet is deliberately broad to cover
+#: other chat templates.  Only the ``<`` is matched: the escape is inserted there.
+_CHAT_TEMPLATE_TAG_OPEN_RE = re.compile(
+    r"<(?=/?(?:think|tool_call|tool_response)>|\|[A-Za-z0-9_.:-]+\|>)"
+)
+
+#: What replaces the matched ``<``: the HTML entity, giving ``&lt;think>``,
+#: ``&lt;/think>`` and ``&lt;|im_start|>``, which tokenize as ordinary text on the
+#: live backend.  Chosen over a backslash form (``<\think>``) by measurement
+#: (roadmap Phase H, H2): the backslash form leaked into a quoted answer and left
+#: ``debug_vllm_stream_prefix`` at 1/3, where this form scored 3/3 without leaking.
+_CHAT_TAG_OPEN_ESCAPE = "&lt;"
+
+#: Prepended to the repository context only when an escape occurred.  It must not
+#: contain a raw tag itself.
+_CHAT_TAG_LEGEND = (
+    "Note: chat-template control tags in the repository text below have their "
+    "opening angle bracket written as the HTML entity &lt; so they stay plain "
+    "text; read each one as the same tag with an ordinary opening angle bracket."
+)
+
+
+def escape_chat_template_tags(text: str) -> tuple[str, int]:
+    """Escape every chat-template control tag in ``text``.
+
+    Returns the escaped text and how many tags were escaped.  Text without such
+    a tag is returned unchanged, including ordinary angle-bracket text such as
+    ``a < b``, ``List<int>`` or ``<div>``.
+    """
+    return _CHAT_TEMPLATE_TAG_OPEN_RE.subn(lambda _m: _CHAT_TAG_OPEN_ESCAPE, text)
 
 
 class OpenAISerializer(ProviderSerializer):
@@ -408,9 +451,16 @@ class OpenAISerializer(ProviderSerializer):
                 f"{summary.symbol_count} symbols"
             )
 
+        # Escape chat-template tags in this gateway-authored text only, before it
+        # is combined with the client's system messages.  The legend is added
+        # only when something was escaped, so other prompts stay byte-identical.
+        content, escaped = escape_chat_template_tags("\n".join(parts))
+        if escaped:
+            content = _CHAT_TAG_LEGEND + "\n" + content
+
         return {
             "role": "user",
-            "content": "\n".join(parts),
+            "content": content,
         }
 
     @staticmethod

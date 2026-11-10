@@ -593,6 +593,7 @@ PROBES: tuple[QualityProbe, ...] = (
             # 2026-11-10: the literal `<think>`/`</think>` in the delivered vLLM source are
             # tokenized as real control tokens; with them defused the same prompt answers
             # 3/3.  Retrieval delivered the facts; the context's rendering lost them.
+            # Fixed by H2 (tags escaped in the repository context): 3/3 live, twice.
             fact("_should_decide_stream_prefix"),
             fact("_sanitize_pending_stream_chunks"),
         ),

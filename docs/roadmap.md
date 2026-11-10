@@ -2,11 +2,12 @@
 
 This roadmap is based on the current live gateway, not on dormant scaffolding.
 
-Last reviewed: 2026-11-10 (Phase H1, probe-set expansion, closed. `PROBES` grows to 25
-probes and 66 facts with no runtime change. Live at `4d98e13`, twice: `53/66` with context,
-`3/66` without; the original 11 still score `26/30`. The answer cut on think-tag questions is
-explained: literal chat-template tags in injected source reach the model as control tokens.
-H2, escaping them in the context block, is proposed. See Phase H.)
+Last reviewed: 2026-11-10 (Phase H closed. H1 grew `PROBES` to 25 probes and 66 facts and
+measured `53/66` with context, `3/66` without. The answer cut on think-tag questions was traced
+to literal chat-template tags in injected source reaching the model as control tokens, and H2
+now escapes them in the repository-context block as `&lt;think>`, chosen over `<\think>` by
+measurement. Live, twice: `55/66` with context, `3/66` without; the original 11 still score
+`26/30`. See Phase H.)
 
 Previous review: 2026-11-09 (Phase G, Per-Symbol Source Delivery, opened and closed. `bc87179`
 delivers each symbol's own source span instead of its whole module. G2 found no allocation of
@@ -1018,51 +1019,49 @@ contained in it).
      (for example Cline tool results carrying file text) pass through the same tokenizer.
    - Backend launch arguments and `generation_config` were not inspected; they are no longer
      needed to explain the cut, only to confirm `<|im_end|>` is the configured end token.
-3. **H2 - escape chat-template tags in injected repository context - PROPOSED, not
-   authorized.** Needs a decision, then implementation and live measurement as its own
-   commit.
-   - *Problem.* Repository text the gateway injects can contain strings the backend's
-     tokenizer parses as control tokens. It derails answers today (measured above) and can
-     forge turn structure in principle. In this repository 3 indexed files carry such
-     strings (`packages/providers/vllm.py`, `tests/providers/test_vllm_provider.py`,
-     `tests/providers/test_openai_provider.py`); any user repository that handles chat
-     templates, tokenizers or agent transcripts will carry more.
-   - *Seam.* `OpenAISerializer._build_repository_context` in
-     `packages/serializers/openai.py`, which renders every delivered symbol's source,
-     preview and docstring into the repository-context block. Escaping there touches only
-     gateway-authored text: client messages, the model's own output and the history cap
-     are unchanged.
-   - *What to match.* The gateway has no tokenizer (true tokenizer integration is
-     deferred), so the set cannot be read from the model. Proposed: one fixed pattern for
-     the ChatML/Qwen families - `<|name|>` with a lowercase/underscore name, plus `<think>`,
-     `</think>`, `<tool_call>`, `</tool_call>`, `<tool_response>`, `</tool_response>` - kept
-     in one constant next to the tokenizer measurement that justifies it. A per-model
-     `models_config` override is possible later; not proposed now.
-   - *How to escape.* Visibly and deterministically, so the model can still name the tag and
-     a reader can see the change - for example `<think>` -> `<\think>` and `<|im_start|>` ->
-     `<\|im_start|>` - with one fixed line in the context header saying tags are shown
-     escaped. Measured: `<\think>` tokenizes as 4 ordinary tokens. Not zero-width
-     characters, which were measured to leak invisibly into quoted code. The exact form is
-     the one open design choice; H2 should compare at most two visible forms and keep the
-     one whose escape leaks least into answers.
-   - *Tests.* Serializer unit tests: a delivered source containing each tag renders with no
-     raw tag and with the escaped form; text outside the repository-context block is byte
-     for byte unchanged; text without tags is unchanged. Backend regression (scratch,
-     live): `/tokenize` of the serialized request shows only the chat template's own
-     special tokens, an answer discussing `<think>` tags completes, and an ordinary answer
-     still ends on `<|im_end|>`.
-   - *Measurement.* The H1 set twice under the H1 configuration. Prediction:
-     `debug_vllm_stream_prefix` 1/3 -> 3/3, every other probe unchanged in score (prompts
-     drawing on the three files above grow by a few tokens), so `53/66` -> `55/66` if the
-     prediction holds. A score drop on any other probe rejects the form under test.
-   - *Not in H2.* Escaping client-supplied messages, which changes what the user sent and
-     needs its own decision; any serving or stop-list change.
+3. **H2 - escape chat-template tags in injected repository context - DONE 2026-11-10.**
+   Evidence: runbook, *Phase H2*.
+   - *Change.* `OpenAISerializer._build_repository_context` escapes the opening `<` of every
+     chat-template control tag in the text it builds, before that text is combined with the
+     client's system messages. Matched: `<think>`, `<tool_call>`, `<tool_response>` and
+     their closing forms, and `<|name|>` with `name` from `[A-Za-z0-9_.:-]+`. Client
+     system, user, assistant and tool messages are untouched; so is any serving setting.
+   - *Legend.* One fixed line at the head of the repository context, added only when at
+     least one tag was escaped and itself containing no raw tag, so every other prompt is
+     byte-identical to before.
+   - *Form, chosen by measurement.* Two visible forms were compared on the prompts the
+     escaping changes, straight against the backend in production request shape:
+
+     | criterion | backslash `<\think>` | HTML `&lt;think>` |
+     | --- | --- | --- |
+     | special-token ids from repository text | 0 | 0 |
+     | reconstruction when asked to quote the tag | fails | fails |
+     | escape text in an ordinary answer | leaked once (`"<\think>...<\/think>"`) | none |
+     | `debug_vllm_stream_prefix` | 1/3, stray `<\|im_start\|>` | 3/3 |
+
+     The forms did not measure equally, so the stated preference for the backslash form
+     on a tie did not apply. Reconstruction also fails with no escaping at all: when the
+     model writes a think tag in its own answer, the backend's reasoning parser takes
+     everything up to the last `</think>` as reasoning. That is a serving-side limit,
+     outside H2.
+   - *Live, two runs under the H1 configuration:* `55/66` and `55/66` with context, `3/66`
+     and `3/66` without, identical answers across the runs, no escape text in any answer.
+     The prediction held exactly: `debug_vllm_stream_prefix` 1/3 -> 3/3, no probe lower.
+     Three prompts changed against H1 (that probe, `test_vllm_auth_error_mapping` and
+     `debug_streaming_preview`, each by 38-58 tokens); every other prompt was
+     byte-identical.
+
+The current controlled baseline is now `55/66`, measured with H2 applied on top of `b2135b3`.
 
 Still open, not authorized here:
 
 - The Phase G items above (`explain_changed_files_history_cap` at `0/4`, docstring dedup)
   are unchanged.
-- H2 above, pending a decision.
+- Client-supplied messages (for example Cline tool results carrying file text) still reach
+  the tokenizer unescaped. Escaping them changes what the user sent and needs its own
+  decision.
+- An answer cannot carry a literal think tag on this backend (reasoning-parser split above).
+  Any change there is a serving decision, separate from the gateway.
 
 #### Explicitly Deferred
 

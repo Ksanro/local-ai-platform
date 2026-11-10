@@ -3285,8 +3285,7 @@ A/B with one variable, the tags in the serialized messages defused by a zero-wid
 
 No stray `<|im_start|>` was generated in either defused arm. The zero-width character
 appeared in the defused answer's quoted tag, which is why it is a diagnostic only. Backend
-launch arguments and `generation_config` were not inspected. The proposed fix is roadmap
-Phase H item 3 (H2).
+launch arguments and `generation_config` were not inspected. The fix is Phase H2, below.
 
 Artifacts (Git-ignored):
 
@@ -3300,6 +3299,63 @@ Artifacts (Git-ignored):
   `quality_compare_run{1,2}.json`, `sessions_h1_final.jsonl`, `gateway_out.txt`
 - `build\stoptoken\`: the stop-token investigation, `replay_tokens.py`, `prompt_tokens.py`,
   `defuse_ab.py` and their JSON
+
+
+### Phase H2: escaping chat-template tags in repository context, 2026-11-10 (roadmap Phase H item 3)
+
+`packages/serializers/openai.py` now escapes the opening `<` of chat-template control tags
+in the repository-context text `_build_repository_context` builds, and prepends a one-line
+legend only when it escaped something. Pattern: `<` followed by `think>`, `tool_call>`,
+`tool_response>` (each optionally with `/`), or `|name|>` with `name` in `[A-Za-z0-9_.:-]+`.
+Client messages are not touched. Tests: `tests/serializers/test_chat_tag_escape.py` (30
+cases: every tag shape, multiple occurrences, ordinary angle-bracket text, already-escaped
+text, legend presence and absence, and unchanged client system, user, assistant and tool
+messages).
+
+**Form selection** (`build\h2_escape\`). `tokenize_forms.py`: every tag in both candidate
+forms tokenizes with zero special ids (3-8 ordinary tokens per tag). `compare_forms.py`
+found the escaping changes 2 of the 25 probe prompts offline and sent each, plus a
+reconstruction prompt, in three arms (none, backslash, HTML) in production request shape;
+`second_sample.py` added the replaced think-block question:
+
+| arm | special ids from repo text | `debug_vllm_stream_prefix` | `test_vllm_auth_error_mapping` | think-block question | quote the pattern |
+| --- | --- | --- | --- | --- | --- |
+| none | 3 | 1/3, cut | 2/2 | empty | empty |
+| backslash `<\think>` | 0 | 1/3, cut at stray `<\|im_start\|>` | 2/2 | 2/2, quotes `<\think>` (leak) | fails |
+| HTML `&lt;think>` | 0 | **3/3** | 2/2 | 0/2, content starts mid-answer | fails |
+
+The prompts also carry 2 special ids from the harness's own system prompt (`<tool_call>` and
+`</tool_call>`), which is a client message and stays unescaped by design. HTML was chosen on
+the leak and probe criteria. The two reconstruction failures and the HTML think-block result
+share a serving-side cause: when the model writes a think tag in its own answer, the
+backend's reasoning parser routes everything up to the last `</think>` into `reasoning`.
+
+**Live, two runs.** Worktree `C:\Users\ovidi\lap-g-bc87179` detached at `b2135b3` with the
+H2 diff applied, the H1 configuration (`build\phase_h2_live\run_all.ps1`, identical to
+`build\phase_h1_final\run_all.ps1` except for output paths), gateway index
+`modules=518 symbols=9125 relationships=19968`, runs 12:43-13:08 and 13:08-13:32:
+
+| | H1 final (`4d98e13`) | H2 run 1 | H2 run 2 |
+| --- | --- | --- | --- |
+| context on | 53/66 | **55/66** | **55/66** |
+| context off | 3/66 | 3/66 | 3/66 |
+| original 11, context on | 26/30 | 26/30 | 26/30 |
+| `debug_vllm_stream_prefix` | 1/3 | 3/3 | 3/3 |
+| context-arm prompt tokens | 74,132 | 74,280 | 74,280 |
+
+The two runs returned identical answers, probe by probe, with no errors, empty stderr, and no
+`&lt;` or backslash escape in any answer. Prompts changed against H1 on three probes:
+`debug_vllm_stream_prefix` (+52 tokens), `test_vllm_auth_error_mapping` (+58) and
+`debug_streaming_preview` (+38, score 3/3 unchanged); all others were byte-identical.
+
+Gates with H2 on `main`: live gate 2607 passed; `--full` 43 failed, 5163 passed, 3 skipped
+(baseline 43); ruff clean on the changed files; mypy clean on the live-path scope plus
+`packages/serializers/openai.py`.
+
+Artifacts (Git-ignored): `build\h2_escape\` (`tokenize_forms.py`, `compare_forms.py` and
+`.json`, `second_sample.py`, `second_sample.json` with special tokens shown,
+`second_sample_prod.json` in production shape) and `build\phase_h2_live\` (`run_all.ps1`,
+`quality_compare_run{1,2}.json`, `sessions_h2_live.jsonl`, `gateway_out.txt`).
 
 ## Interpreting long runs, timeouts, and failed execution
 

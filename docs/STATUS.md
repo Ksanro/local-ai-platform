@@ -3,7 +3,13 @@
 This file is the current runtime snapshot. It intentionally describes only
 what matters for the live gateway path and calls out dormant code explicitly.
 
-Last reviewed: 2026-11-10 (Phase H1, probe-set expansion; no runtime change. `PROBES` now
+Last reviewed: 2026-11-10 (Phase H2: the repository-context block now escapes chat-template
+control tags - `<think>` becomes `&lt;think>`, `<|im_start|>` becomes `&lt;|im_start|>` - with
+a one-line legend only when something was escaped; client messages are untouched. Live, two
+runs: `55/66` with context, `3/66` without. Evidence: `docs/roadmap.md` Phase H item 3 and
+`docs/live-gateway-runbook.md`, *Phase H2*.)
+
+Previous review: 2026-11-10 (Phase H1, probe-set expansion; no runtime change. `PROBES` now
 has 25 probes and 66 expected facts. Measured live at `4d98e13`, two runs from a worktree with
 changed-file ranking off: `53/66` with context in both, `3/66` without; the original 11 probes
 still score `26/30` at the same 33,777 prompt tokens. Found the same day: literal chat-template
@@ -673,12 +679,11 @@ environment uses whatever Python uv discovers, against `requires-python = ">=3.1
   left `explain_changed_files_history_cap` at `0/4` live: the truncation marker
   sits 253 preview tokens deep at rank 11, past the 512-token supporting pool. G2
   found no split of that pool that reaches it. At 11 probes the run-to-run noise
-  was about 1 fact in 30, so Phase H1 expanded the set to 25 probes and 66 facts:
-  the current measured baseline is `53/66` with context versus `3/66` without, in
-  both of two runs at `4d98e13` (74132 context-arm prompt tokens). Two of its 13
-  context-on misses (both on `debug_vllm_stream_prefix`) are delivered and then lost
-  because literal think tags in the injected source reach the model as control tokens;
-  roadmap Phase H item 3 (H2) proposes escaping them.
+  was about 1 fact in 30, so Phase H1 expanded the set to 25 probes and 66 facts
+  (`53/66` with context versus `3/66` without at `4d98e13`). Two of those misses came
+  from literal think tags in injected source reaching the model as control tokens;
+  Phase H2 escapes them, and the current measured baseline is `55/66` with context
+  versus `3/66` without, in both of two runs (74280 context-arm prompt tokens).
 - The model often includes reasoning/preamble despite terse system prompts; the
   quality harness now records deterministic style violations separately from
   required-fact score.
