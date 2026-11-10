@@ -1057,9 +1057,15 @@ Still open, not authorized here:
 
 - The Phase G items above (`explain_changed_files_history_cap` at `0/4`, docstring dedup)
   are unchanged.
-- Client-supplied messages (for example Cline tool results carrying file text) still reach
-  the tokenizer unescaped. Escaping them changes what the user sent and needs its own
-  decision.
+- Client-supplied messages still reach the tokenizer unescaped, by decision (2026-11-10).
+  Read-only measurement of Cline's stored sessions (55, September to November, current
+  backend): 27 carry chat-template tags, 217 in all, every one in a tool result (file reads
+  197, command output 12, code search 8) and none in typed text, Cline's system prompt or
+  model output. Until then Cline called the backend directly, so no gateway change reached
+  it; it now routes through the gateway (runbook, *Cline routed through the gateway*).
+  Escaping tool results stays off: Cline edits by exact text match, so any candidate must
+  first prove that edits touching these tags still match and preserve exact bytes, and only
+  failures measured through the gateway justify trying one.
 - An answer cannot carry a literal think tag on this backend (reasoning-parser split above).
   Any change there is a serving decision, separate from the gateway.
 

@@ -3357,6 +3357,38 @@ Artifacts (Git-ignored): `build\h2_escape\` (`tokenize_forms.py`, `compare_forms
 `second_sample_prod.json` in production shape) and `build\phase_h2_live\` (`run_all.ps1`,
 `quality_compare_run{1,2}.json`, `sessions_h2_live.jsonl`, `gateway_out.txt`).
 
+### Cline routed through the gateway, 2026-11-10
+
+Before this date Cline's OpenAI-compatible provider pointed straight at the backend
+(`http://100.106.236.88:18300/v1`, model `qwen3.8-flash-next`), so repository context and
+H2 never reached Cline work. Cline now uses:
+
+- Base URL: `http://127.0.0.1:8001/v1`
+- Model ID: `qwen38-27b` (Plan and Act)
+
+The gateway was started with the *Start Gateway* command above. `/health` answered `ok`
+with repository context enabled, `/v1/models` listed `qwen38-27b`, and
+`/debug/runtime-context` reported `routing_mode = models_config` and
+`repository_context_max_tokens = 4096`.
+
+Check, two Cline tasks on this repository at `a8b918a`:
+
+- Read-only question about `escape_chat_template_tags`: 2 gateway requests, both with
+  context assembled around that function, and a correct answer. Cline's session records the
+  model as `qwen38-27b`.
+- One-line comment inserted at the top of `docs/STATUS.md`, then reverted by hand: 6
+  gateway requests, all with context assembled and no errors; Cline's edit reported success
+  and its `git diff` showed only the added lines. Cline's editor rewrote the file with LF
+  endings while the edit stood, which `core.autocrlf` hides; the revert restored CRLF.
+  The planner classed the edit prompt (`... 'gateway routing test'`) as `TEST`, so the
+  injected context was test code unrelated to the edit.
+
+Session-log path: `.env` overrides the shell, so this gateway wrote its records to
+`logs/implement_budget_A_4096_20260801.jsonl`, not the `logs/sessions.jsonl` set above.
+Set `APP_SESSION_LOG_PATH` in `.env` to change it.
+
+Tool results from Cline stay unescaped (roadmap Phase H, *Still open*).
+
 ## Interpreting long runs, timeouts, and failed execution
 
 Three independent timeout layers can each produce a failure report. Identify
