@@ -172,6 +172,21 @@ Run deterministic answer-quality probes:
 .\uv.exe run python scripts\quality_harness.py --delta-context --session-log-path logs\sessions.jsonl
 ```
 
+Offline, before any live run, replay every probe through `PlanningStage` and
+`RepositoryContextStage` (the controlled H1 configuration, no gateway or backend) and
+compare against the replay of the current baseline commit:
+
+```powershell
+git worktree add --detach C:\Users\ovidi\lap-replay-<commit> <commit>
+.\uv.exe run python scripts\probe_replay.py --index-root C:\Users\ovidi\lap-replay-<commit> --out build\probe_replay\<commit>.json
+.\uv.exe run python scripts\probe_replay.py --compare build\probe_replay\a23faa2.json build\probe_replay\<commit>.json
+```
+
+It counts the expected facts present in the injected context (`56/66` at `a23faa2`), not
+answers, and `--compare` exits 1 if any probe has fewer facts present than in the base.
+Run it from the checkout holding the change; index a clean worktree, so untracked files
+do not enter the index. A change still needs two live runs to be accepted.
+
 Read the `TOTAL` line. `--compare-context` changes exactly one variable per
 probe: repository context on versus off through the same gateway/provider path.
 The current fixed probe set has 25 probes and 66 total expected facts
