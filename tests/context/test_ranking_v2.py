@@ -1046,3 +1046,51 @@ class TestMinimumCandidateScore:
         # The relevant candidate should have positive score
         assert len(ranked) > 0
         assert ranked[0].score >= RankingConfig.MINIMUM_CANDIDATE_SCORE
+
+
+# ------------------------------------------------------------------
+# Short query tokens and substring rules
+# ------------------------------------------------------------------
+
+_SUBSTRING_REASONS = {
+    RankingReason.PARTIAL_SYMBOL_NAME,
+    RankingReason.MODULE_MATCH,
+    RankingReason.TOKEN_MATCH,
+    RankingReason.MODULE_TOKEN_MATCH,
+}
+
+
+class TestShortTokenSubstring:
+    """A token shorter than MIN_SUBSTRING_TOKEN_LENGTH must not match as a substring.
+
+    Regression: Cline's ``hi`` scored ``apply_hive_mapping`` (``hi`` in ``hive``)
+    as a partial name match and made it the primary symbol for a greeting.
+    """
+
+    def test_two_letter_token_does_not_partially_match(self) -> None:
+        candidate = _make_candidate("atlas.apply_hive_mapping", "atlas")
+
+        _score, reasons = score_candidate(candidate, ["hi"])
+
+        assert not _SUBSTRING_REASONS & set(reasons)
+
+    def test_two_letter_token_does_not_match_module_path(self) -> None:
+        candidate = _make_candidate("copy", "packages/pipeline/history")
+
+        _score, reasons = score_candidate(candidate, ["hi", "py"])
+
+        assert not _SUBSTRING_REASONS & set(reasons)
+
+    def test_two_letter_token_still_matches_exactly(self) -> None:
+        candidate = _make_candidate("models.Record.id", "models")
+
+        _score, reasons = score_candidate(candidate, ["id"])
+
+        assert RankingReason.EXACT_SYMBOL_NAME in reasons
+
+    def test_three_letter_token_still_matches_as_substring(self) -> None:
+        candidate = _make_candidate("config.load_environment", "config")
+
+        _score, reasons = score_candidate(candidate, ["env"])
+
+        assert RankingReason.PARTIAL_SYMBOL_NAME in reasons

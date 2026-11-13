@@ -572,6 +572,13 @@ def score_candidate_v2(
     name_segments = _extract_name_segments(candidate.qualified_name)
     last_segment = _last_segment(candidate.qualified_name)
     module = candidate.module
+    # Tokens long enough to mean something as a substring.  The exact rules
+    # below still see every token.
+    substring_tokens = [
+        token
+        for token in query_tokens
+        if len(token) >= RankingConfig.MIN_SUBSTRING_TOKEN_LENGTH
+    ]
 
     # ================================================================
     # PHASE 1: Name-matching rules (mutually exclusive, highest wins)
@@ -626,7 +633,7 @@ def score_candidate_v2(
     # (case-insensitive), and no exact match was found.
     partial = False
     if not exact_symbol and not exact_qualified:
-        for token in query_tokens:
+        for token in substring_tokens:
             for seg in name_segments:
                 if token in seg.lower():
                     partial = True
@@ -639,7 +646,7 @@ def score_candidate_v2(
     # Only fires if no name rule matched.
     module_match = False
     if not exact_symbol and not exact_qualified and not partial:
-        for token in query_tokens:
+        for token in substring_tokens:
             if token in module.lower():
                 module_match = True
                 break
@@ -665,7 +672,7 @@ def score_candidate_v2(
     # A query token appears anywhere in the qualified name
     # (case-insensitive). Accumulates per unique matching token.
     token_match_count = 0
-    for token in query_tokens:
+    for token in substring_tokens:
         if token in candidate.qualified_name.lower():
             token_match_count += 1
     if token_match_count > 0:
@@ -676,7 +683,7 @@ def score_candidate_v2(
     # because filenames often carry the user's strongest retrieval intent.
     module_token_match_count = 0
     module_lower = module.lower()
-    for token in query_tokens:
+    for token in substring_tokens:
         if token in module_lower:
             module_token_match_count += 1
     if module_token_match_count >= 2:

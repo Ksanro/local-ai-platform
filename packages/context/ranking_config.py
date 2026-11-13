@@ -170,6 +170,13 @@ class RankingConfig:
     """Module token overlap: a query token appears anywhere in the module
     path (case-insensitive). Accumulates per unique matching token."""
 
+    MIN_SUBSTRING_TOKEN_LENGTH: int = 3
+    """Shortest query token the *substring* rules may use: partial symbol
+    name, module match, and the two token-overlap bonuses.  A shorter token
+    still scores through the exact rules (a segment or qualified name equal
+    to it), but is too short to mean anything as a substring - ``hi`` is
+    inside ``apply_hive_mapping``, ``this`` and ``architecture``."""
+
     # Name prefix bonus
     WEIGHT_PUBLIC_NAME_BONUS: int = 5
     """Public name bonus: the symbol name does not start with "_".
