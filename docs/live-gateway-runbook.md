@@ -3389,6 +3389,55 @@ Set `APP_SESSION_LOG_PATH` in `.env` to change it.
 
 Tool results from Cline stay unescaped (roadmap Phase H, *Still open*).
 
+### Short-token substring matching, greetings, and gitignored files, 2026-11-13
+
+A Cline `hi` on the live gateway (`logs/cline_sessions.jsonl`) was planned `DEFAULT`, got
+20 symbols / 3,111 context tokens (9,663 prompt tokens, 13.6 s), primary
+`extract_data_atlas.apply_hive_mapping`, and Cline answered by offering to work on that
+script. Three causes, three commits:
+
+- `dbce13a` - `PythonAstExtractor` walked `rglob("*.py")` without the scanner's ignore
+  rules, so the gitignored local `extract_data_atlas.py` was indexed. It now applies the
+  root `.gitignore` and the default ignored directories to each file and its parents. On the
+  main checkout that drops 166 untracked files (164 under `build/`); a clean worktree, which
+  is what every measurement below indexes, is unaffected (no tracked `.py` is ignored).
+- `dbce13a` - `RepositoryContextStage` takes the empty path without ranking when the query
+  is only a greeting or thanks (`is_conversational_only`), logging `reason=non_task`. No
+  probe is classified as one.
+- `a23faa2` - the four substring rules in `score_candidate_v2` (partial name, module match,
+  both token-overlap bonuses) skip query tokens shorter than
+  `RankingConfig.MIN_SUBSTRING_TOKEN_LENGTH` (3). Exact matches still use every token.
+  `hi` had matched `hive`, `py` `copy`, `no` `diagnostics`.
+
+**Offline**, all 25 probes through `PlanningStage` + `RepositoryContextStage` on a clean
+worktree index with the H1 settings: 22 of 25 probes send identical symbols; facts present
+in the injected context 57 -> 56 of 66 (minimum 4 also 56). The lost fact is
+`search_file_activity_two_modules`'s `RepositoryPathNormalizer`, which reached the prompt only
+because `py` (from `file_activity.py`) matched `_ConversationActivity.copy`; it is the hit
+H2's live `1/2` on that probe rested on. Predicted live: `54/66`.
+
+**Live, two runs.** Worktree `C:\Users\ovidi\lap-i-a23faa2` detached at `a23faa2`, the H1
+configuration (`build\short_token_live\run_all.ps1`, the H2 script with paths changed and
+context-on only, since the off arm does not depend on ranking), gateway index
+`modules=518 symbols=9144 relationships=20031`, runs 23:18-23:24 and 23:24-23:29:
+
+| | H2 (`b2135b3` + H2) | run 1 | run 2 |
+| --- | --- | --- | --- |
+| context on | 55/66 | **54/66** | **54/66** |
+| original 11, context on | 26/30 | 26/30 | 26/30 |
+| `search_file_activity_two_modules` | 1/2 | 0/2 | 0/2 |
+| context-arm prompt tokens | 74,280 | 74,423 | 74,423 |
+
+The prediction held exactly: that probe is the only difference, no probe higher or lower
+otherwise. The two runs returned identical answers on all 25 probes, with no errors, no
+style violations and empty stderr.
+
+Gates on `main` at `a23faa2`: live gate 2635 passed; `--full` 43 failed, 5191 passed,
+3 skipped (baseline 43); ruff clean on the changed files; mypy clean on the live-path scope.
+
+Artifacts (Git-ignored): `build\short_token_live\` (`run_all.ps1`, `quality_run{1,2}.json`,
+`sessions_short_token_live.jsonl`, `gateway_out.txt`).
+
 ## Interpreting long runs, timeouts, and failed execution
 
 Three independent timeout layers can each produce a failure report. Identify

@@ -180,10 +180,13 @@ The current fixed probe set has 25 probes and 66 total expected facts
 prior user/assistant turns before the scored final prompt, and the 3
 `explain_changed_files_*` probes that carry the change-aware ranking decision. Phase H1
 appended 14 more (`EXPANSION_PROBE_IDS`, 36 facts). The current baseline over all 66 is
-`55/66` with context against `3/66` without, in both of two runs with Phase H2's tag escaping
-(configuration and artifacts: `docs/live-gateway-runbook.md`, *Phase H2*; H1's `53/66` at
-`4d98e13` is the record before it). Within it the original 11 still score `26/30`, matching
-Phase G at `67a7f7f`.
+`54/66` with context, in both of two runs at `a23faa2` (no substring matching for query tokens
+under 3 characters; configuration and artifacts: `docs/live-gateway-runbook.md`,
+*Short-token substring matching*). The one fact below H2's `55/66` is
+`search_file_activity_two_modules`, whose hit had come from `py` matching `copy`. Without
+context the score is `3/66` (H2; that arm does not depend on ranking). H1's `53/66` at
+`4d98e13` and H2's `55/66` are the records before it. Within it the original 11 still score
+`26/30`, matching Phase G at `67a7f7f`.
 The 30-fact baseline before Phase G was the controlled `--compare-context` run completed
 2026-10-24 at gateway commit `0371d64`, taken from a detached worktree with
 changed-file ranking off against `qwen3.8-flash-next` on the vLLM backend:

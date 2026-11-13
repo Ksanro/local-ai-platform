@@ -3,7 +3,14 @@
 This file is the current runtime snapshot. It intentionally describes only
 what matters for the live gateway path and calls out dormant code explicitly.
 
-Last reviewed: 2026-11-10 (Phase H2: the repository-context block now escapes chat-template
+Last reviewed: 2026-11-13 (A Cline `hi` injected 20 unrelated symbols. Fixed three ways:
+the symbol index now honours `.gitignore` and the default ignored directories; a query that is
+only a greeting or thanks gets no repository context (`reason=non_task`); and query tokens
+under 3 characters no longer match as substrings in ranking. Live, two runs at `a23faa2`:
+`54/66` with context. The one fact lost against H2 had come from `py` matching `copy`.
+Evidence: `docs/live-gateway-runbook.md`, *Short-token substring matching*.)
+
+Previous review: 2026-11-10 (Phase H2: the repository-context block now escapes chat-template
 control tags - `<think>` becomes `&lt;think>`, `<|im_start|>` becomes `&lt;|im_start|>` - with
 a one-line legend only when something was escaped; client messages are untouched. Live, two
 runs: `55/66` with context, `3/66` without. Evidence: `docs/roadmap.md` Phase H item 3 and
@@ -682,8 +689,10 @@ environment uses whatever Python uv discovers, against `requires-python = ">=3.1
   was about 1 fact in 30, so Phase H1 expanded the set to 25 probes and 66 facts
   (`53/66` with context versus `3/66` without at `4d98e13`). Two of those misses came
   from literal think tags in injected source reaching the model as control tokens;
-  Phase H2 escapes them, and the current measured baseline is `55/66` with context
-  versus `3/66` without, in both of two runs (74280 context-arm prompt tokens).
+  Phase H2 escapes them (`55/66` with context versus `3/66` without). Since `a23faa2`
+  (no substring matching for query tokens under 3 characters) the current measured
+  baseline is `54/66` with context, in both of two runs (74423 context-arm prompt
+  tokens); the lost fact had reached the prompt only through `py` matching `copy`.
 - The model often includes reasoning/preamble despite terse system prompts; the
   quality harness now records deterministic style violations separately from
   required-fact score.
