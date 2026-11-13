@@ -459,3 +459,52 @@ class TestSingleFileExtraction:
         """Extracting a directory should produce multiple modules."""
         graph = extractor.extract(_fixture_root)
         assert len(graph.modules) == 3  # main, utils, __init__
+
+
+# ------------------------------------------------------------------
+# Ignore rules
+# ------------------------------------------------------------------
+
+
+class TestIgnoreRules:
+    """The extractor must not index files the repository scanner ignores.
+
+    Regression: a gitignored local script (``extract_data_atlas.py``) was
+    indexed and its ``apply_hive_mapping`` was injected as context for a
+    plain ``hi`` request.
+    """
+
+    @staticmethod
+    def _write(path: Path, source: str) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(source, encoding="utf-8")
+
+    def test_gitignored_file_is_not_indexed(self, tmp_path: Path) -> None:
+        self._write(tmp_path / ".gitignore", "local_script.py\n")
+        self._write(tmp_path / "kept.py", "def kept():\n    pass\n")
+        self._write(tmp_path / "local_script.py", "def apply_hive_mapping():\n    pass\n")
+
+        modules = PythonAstExtractor().extract(tmp_path).modules
+
+        assert "kept" in modules
+        assert "local_script" not in modules
+
+    def test_gitignored_directory_is_not_indexed(self, tmp_path: Path) -> None:
+        self._write(tmp_path / ".gitignore", "scratch/\n")
+        self._write(tmp_path / "pkg" / "kept.py", "def kept():\n    pass\n")
+        self._write(tmp_path / "scratch" / "deep" / "probe.py", "def probe():\n    pass\n")
+
+        modules = PythonAstExtractor().extract(tmp_path).modules
+
+        assert "pkg/kept" in modules
+        assert not any(name.startswith("scratch") for name in modules)
+
+    def test_default_ignored_directory_is_not_indexed(self, tmp_path: Path) -> None:
+        # No .gitignore at all: default ignored directories still apply.
+        self._write(tmp_path / "kept.py", "def kept():\n    pass\n")
+        self._write(tmp_path / "build" / "tool.py", "def tool():\n    pass\n")
+
+        modules = PythonAstExtractor().extract(tmp_path).modules
+
+        assert "kept" in modules
+        assert "build/tool" not in modules

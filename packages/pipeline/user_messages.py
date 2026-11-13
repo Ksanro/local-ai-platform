@@ -217,6 +217,43 @@ def cline_envelope_tool(message: str) -> str:
     return tool if tool in CLINE_FILE_ACTIVITY_TOOLS else ""
 
 
+#: Words a purely conversational turn (greeting, thanks, acknowledgement) is
+#: made of.  A query qualifies only when *every* word is in this set, so any
+#: task word - "hi, fix the parser" - keeps the query on the retrieval path.
+_CONVERSATIONAL_WORDS: Final = frozenset(
+    {
+        "hi", "hello", "hey", "heya", "hiya", "yo", "howdy", "there",
+        "good", "morning", "afternoon", "evening",
+        "thanks", "thank", "you", "thx", "ty", "cheers",
+        "ok", "okay", "cool", "great", "nice", "perfect", "awesome",
+        "bye", "goodbye",
+    }
+)
+_CONVERSATIONAL_MAX_WORDS: Final = 6
+
+
+def is_conversational_only(text: str) -> bool:
+    """Return True when retrieval query text is only a greeting or thanks.
+
+    Such a turn carries no task, so ranking it can only surface noise: a
+    two-letter ``hi`` substring-matches symbols such as ``apply_hive_mapping``.
+    Empty text returns ``False`` - that case already ranks to nothing.
+
+    Args:
+        text: The retrieval query text for the turn.
+
+    Returns:
+        ``True`` when every word is conversational and there are at most
+        :data:`_CONVERSATIONAL_MAX_WORDS` of them.
+    """
+    words = re.findall(r"[a-z]+", text.lower())
+    if not words or len(words) > _CONVERSATIONAL_MAX_WORDS:
+        return False
+    if re.search(r"\d", text):
+        return False
+    return all(word in _CONVERSATIONAL_WORDS for word in words)
+
+
 def _looks_like_followup(message: str) -> bool:
     """Return True when a user turn depends on recent conversation context."""
     lowered = message.lower().strip()

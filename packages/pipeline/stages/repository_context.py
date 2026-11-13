@@ -182,7 +182,10 @@ from packages.pipeline.file_activity import (
     transcript_fingerprints,
 )
 from packages.pipeline.result import PipelineStageResult
-from packages.pipeline.user_messages import select_context_query_text
+from packages.pipeline.user_messages import (
+    is_conversational_only,
+    select_context_query_text,
+)
 from packages.repository.changed_files import ChangedModuleSource
 from packages.repository.index.models import RepositoryIndex
 from packages.serializers.factory import SerializerFactory
@@ -618,20 +621,31 @@ class RepositoryContextStage(PipelineStage):
             # on the stage result, because the degraded paths below produce no
             # result data for the gateway to read.
             context.set_metadata("changed_files_signal", changed_signal)
-            builder = ContextBuilder(
-                self._index,
-                chars_per_token=chars_per_token,
-                changed_modules=changed_modules,
-            )
-            context_result = builder.build(query)
 
-            # How many candidates the ranking pass gave the bonus to.  Zero is
-            # proof that the same request without the signal ranks identically,
-            # which is when the counterfactual is not worth building.
-            changed_bonus_count = int(getattr(context_result, "changed_bonus_count", 0) or 0)
+            # A greeting or thanks carries no task: ranking it only surfaces
+            # noise (``hi`` substring-matches ``apply_hive_mapping``), so it
+            # takes the empty path without ranking at all.
+            if is_conversational_only(query_text):
+                candidates: list[Any] = []
+                empty_reason = "non_task"
+            else:
+                builder = ContextBuilder(
+                    self._index,
+                    chars_per_token=chars_per_token,
+                    changed_modules=changed_modules,
+                )
+                context_result = builder.build(query)
 
-            # Check if ranking returned no relevant symbols.
-            candidates = getattr(context_result, "candidates", [])
+                # How many candidates the ranking pass gave the bonus to.  Zero is
+                # proof that the same request without the signal ranks identically,
+                # which is when the counterfactual is not worth building.
+                changed_bonus_count = int(
+                    getattr(context_result, "changed_bonus_count", 0) or 0
+                )
+
+                # Check if ranking returned no relevant symbols.
+                candidates = getattr(context_result, "candidates", [])
+                empty_reason = "no_relevant_symbols"
             if not candidates:
                 elapsed_ms = (time.perf_counter() - start_time) * 1000
                 # Nothing is sent on this path, so there is nothing to attribute
@@ -654,10 +668,11 @@ class RepositoryContextStage(PipelineStage):
 
                 logger.info(
                     "repository_context request_id=%s context_enabled=%s "
-                    "context_status=empty reason=no_relevant_symbols "
+                    "context_status=empty reason=%s "
                     "%s duration_ms=%.1f",
                     request_id,
                     context_enabled,
+                    empty_reason,
                     promotion_log_fields(promotion),
                     elapsed_ms,
                 )

@@ -22,6 +22,7 @@ from packages.pipeline.user_messages import (
     CLINE_NON_TOOL_PREFIXES,
     CLINE_TOOL_RESULT_PREFIXES,
     cline_envelope_tool,
+    is_conversational_only,
     looks_like_tool_result_message,
     select_context_query_text,
     select_task_texts,
@@ -176,3 +177,27 @@ def test_recognition_is_wider_than_the_compatibility_view_by_the_writers_only() 
 
     assert recognized - bookkeeping == set(WRITERS)
     assert bookkeeping == set(READERS_AND_PROBE_TOOLS)
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["hi", "Hi!", "hello there", "hey :)", "good morning", "thank you", "ok, thanks", "Thanks!!"],
+)
+def test_conversational_only_text_is_detected(text: str) -> None:
+    assert is_conversational_only(text) is True
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "",
+        "?",
+        "hi, fix the parser",
+        "explain apply_hive_mapping",
+        "thanks, now add a test",
+        "hi 2",
+        "hi hi hi hi hi hi hi",
+    ],
+)
+def test_task_text_is_not_conversational(text: str) -> None:
+    assert is_conversational_only(text) is False

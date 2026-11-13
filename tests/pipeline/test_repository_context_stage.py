@@ -903,6 +903,79 @@ class TestQueryExtraction:
 
 
 # ------------------------------------------------------------------
+# Conversational (non-task) turns
+# ------------------------------------------------------------------
+
+
+class TestConversationalTurns:
+    """A greeting or thanks must not inject repository context.
+
+    Regression: Cline's ``<task>hi</task>`` ranked ``hi`` as a substring of
+    ``apply_hive_mapping`` and injected 20 unrelated symbols.
+    """
+
+    @staticmethod
+    def _hive_index() -> RepositoryIndex:
+        return _make_index(
+            [
+                _make_symbol(
+                    "apply_hive_mapping",
+                    "atlas.apply_hive_mapping",
+                    SymbolType.FUNCTION,
+                    "atlas.py",
+                ),
+                _make_symbol("App", "main.App", SymbolType.CLASS, "main.py"),
+            ]
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "content",
+        [
+            "hi",
+            "<task>\nhi\n</task>",
+            "Hello there!",
+            "thanks",
+        ],
+    )
+    async def test_greeting_injects_no_symbols(self, content: str) -> None:
+        stage = RepositoryContextStage(index=self._hive_index())
+        context = _make_context(messages=[{"role": "user", "content": content}])
+
+        result = await stage.execute(context)
+
+        assert result.success is True
+        assert context.context_package is None
+        assert result.data is not None
+        assert result.data["symbols_selected"] == 0
+        assert "package" not in result.data
+
+    @pytest.mark.asyncio
+    async def test_greeting_logs_non_task_reason(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        stage = RepositoryContextStage(index=self._hive_index())
+        context = _make_context(messages=[{"role": "user", "content": "hi"}])
+
+        with caplog.at_level(logging.INFO):
+            await stage.execute(context)
+
+        assert "context_status=empty reason=non_task" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_greeting_with_a_task_still_gets_context(self) -> None:
+        stage = RepositoryContextStage(index=self._hive_index())
+        context = _make_context(
+            messages=[{"role": "user", "content": "hi, explain apply_hive_mapping"}]
+        )
+
+        await stage.execute(context)
+
+        assert context.context_package is not None
+        assert context.context_package.primary_symbol == "atlas.apply_hive_mapping"
+
+
+# ------------------------------------------------------------------
 # No forbidden behaviour
 # ------------------------------------------------------------------
 

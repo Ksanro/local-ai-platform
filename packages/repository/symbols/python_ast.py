@@ -14,6 +14,7 @@ import ast
 from fnmatch import fnmatch
 from pathlib import Path
 
+from packages.repository.filters import parse_gitignore, should_ignore_path
 from packages.repository.symbols.extractor import SymbolExtractor
 from packages.repository.symbols.models import (
     Language,
@@ -146,6 +147,10 @@ class PythonAstExtractor(SymbolExtractor):
         """
         all_modules: dict[str, Module] = {}
         exclude_globs = exclude_globs or []
+        # Honour the same ignore rules as the repository scanner, so a
+        # gitignored local script (or scratch directory) is never indexed
+        # and therefore never injected into a prompt as repository context.
+        ignored_patterns = parse_gitignore(root) if root.is_dir() else []
 
         for py_file in sorted(root.rglob("*.py")):
             # Skip __pycache__ and hidden directories.
@@ -159,6 +164,9 @@ class PythonAstExtractor(SymbolExtractor):
                 rel = py_file.relative_to(root)
             except ValueError:
                 rel = py_file
+
+            if self._is_ignored(rel, ignored_patterns):
+                continue
 
             # Skip test files when configured.
             if exclude_tests and self._is_test_file(py_file):
@@ -177,6 +185,29 @@ class PythonAstExtractor(SymbolExtractor):
                 continue
 
         return SymbolGraph(modules=all_modules)
+
+    @staticmethod
+    def _is_ignored(rel: Path, ignored_patterns: list[str]) -> bool:
+        """Return ``True`` if ``rel`` or any of its parent directories is ignored.
+
+        Applies :func:`should_ignore_path` (default ignored directories plus
+        root ``.gitignore`` patterns) to the file itself and to each ancestor
+        directory, matching what the repository scanner skips while walking.
+
+        Args:
+            rel: Path relative to the index root.
+            ignored_patterns: Patterns from :func:`parse_gitignore`.
+
+        Returns:
+            ``True`` if the file must not be indexed.
+        """
+        if should_ignore_path(rel, False, ignored_patterns):
+            return True
+        return any(
+            should_ignore_path(parent, True, ignored_patterns)
+            for parent in rel.parents
+            if parent.parts
+        )
 
     @staticmethod
     def _is_test_file(path: Path) -> bool:
