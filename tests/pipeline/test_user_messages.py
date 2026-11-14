@@ -16,13 +16,17 @@ from packages.pipeline.user_messages import (
     ACTIVITY_MODIFIED,
     ACTIVITY_NONE,
     ACTIVITY_READ,
+    CLINE_BOOKKEEPING_TAGS,
     CLINE_ENVELOPE_SPECS,
     CLINE_ENVELOPE_TOOLS,
     CLINE_FILE_ACTIVITY_TOOLS,
     CLINE_NON_TOOL_PREFIXES,
     CLINE_TOOL_RESULT_PREFIXES,
+    client_bookkeeping_only,
     cline_envelope_tool,
+    is_client_bookkeeping_message,
     is_conversational_only,
+    looks_like_client_envelope_message,
     looks_like_tool_result_message,
     select_context_query_text,
     select_task_texts,
@@ -201,3 +205,157 @@ def test_conversational_only_text_is_detected(text: str) -> None:
 )
 def test_task_text_is_not_conversational(text: str) -> None:
     assert is_conversational_only(text) is False
+
+
+
+# ---------------------------------------------------------------------------
+# Tagged client envelopes: the shape that reached the gateway in November
+# ---------------------------------------------------------------------------
+
+#: One user-role message of the shape ``logs/cline_sessions.jsonl`` records 200
+#: times: the notice Cline injects into the user channel once an ``ask_question``
+#: has been answered.  The attribute order, the attribute values and the length
+#: of the call id are the client's own, and the length matters - this opening tag
+#: runs 108 characters, past the window a tool header is read within, so a rule
+#: sized for a header would stop recognizing the one shape it exists for.
+HOOK_CONTEXT = (
+    '<hook_context source="ToolSuccess" tool_name="ask__question" '
+    'tool_call_id="chatcmpl-tool-b22a65e7a73d6439">\n'
+    "The user has answered the question. Continue working on their task using "
+    "that answer.\n"
+    "</hook_context>"
+)
+
+
+def test_the_tagged_view_names_only_the_envelope_the_log_showed() -> None:
+    """A tag is registered because the gateway saw it, not because it might appear.
+
+    ``tool_result`` is the obvious candidate and is deliberately not here: across
+    the whole session log no tool result ever arrived as a user message, because
+    the client sends them under ``role="tool"``, where selection never looks.
+    Registering it would be recognizing a shape this deployment has not shown.
+    """
+    assert CLINE_BOOKKEEPING_TAGS == frozenset({"hook_context"})
+
+
+def test_the_envelope_as_the_log_records_it_is_recognized() -> None:
+    assert looks_like_client_envelope_message(HOOK_CONTEXT) is True
+    assert is_client_bookkeeping_message(HOOK_CONTEXT) is True
+    # Leading whitespace is not content; the tag must still be what opens it.
+    assert looks_like_client_envelope_message("  \n" + HOOK_CONTEXT) is True
+    # Two envelopes in one message carry no more user text than one, and the rule
+    # reads the shape at both ends rather than counting what it set aside.
+    assert looks_like_client_envelope_message(HOOK_CONTEXT + "\n" + HOOK_CONTEXT) is True
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        pytest.param(HOOK_CONTEXT + "\nnow fix the parser", id="task-text-after"),
+        pytest.param("explain the parser\n" + HOOK_CONTEXT, id="task-text-before"),
+        pytest.param(HOOK_CONTEXT.replace("</hook_context>", ""), id="never-closed"),
+        pytest.param(HOOK_CONTEXT.replace("</hook_context>", "</other>"), id="other-close-tag"),
+        pytest.param("<tool_result>done</tool_result>", id="unregistered-tag"),
+        pytest.param("<HookContext>done</HookContext>", id="tag-case-sensitive"),
+        pytest.param("hook_context: the user answered", id="no-tags-at-all"),
+    ],
+)
+def test_anything_that_is_not_exactly_one_envelope_is_still_task_text(
+    message: str,
+) -> None:
+    """Both ends are anchored, and only the two ends are read.
+
+    A message that carries anything besides one whole envelope is a message the
+    user wrote, and stays selectable even when that makes it the query.  The rule
+    never looks inside a body, so no client text can make the gateway read
+    structure where it should read words.
+    """
+    assert looks_like_client_envelope_message(message) is False
+
+
+
+def test_an_envelope_is_not_what_the_history_cap_compares_against() -> None:
+    """Selection sets the envelope aside; the cap still sends it whole.
+
+    ``packages.pipeline.history`` reads :data:`CLINE_TOOL_RESULT_PREFIXES`
+    directly, and that list is unchanged by this rule on purpose: the model has
+    to see what the user answered.  Widening what the gateway *notices* must not
+    silently widen what it truncates.
+    """
+    assert looks_like_tool_result_message(HOOK_CONTEXT) is False
+    assert is_client_bookkeeping_message(HOOK_CONTEXT) is True
+
+
+def test_a_followup_turn_selects_the_task_the_envelope_continues() -> None:
+    """The point of the change: a newer bookkeeping message is not the query."""
+    task = _task("explain how retrieval query text is selected")
+    messages = [
+        {"role": "user", "content": task["content"]},
+        {"role": "user", "content": HOOK_CONTEXT},
+    ]
+
+    assert select_task_texts([task["content"], HOOK_CONTEXT]) == [
+        "explain how retrieval query text is selected"
+    ]
+    assert select_context_query_text(messages) == (
+        "explain how retrieval query text is selected"
+    )
+
+
+def test_the_latest_real_task_wins_over_an_earlier_greeting() -> None:
+    """Setting bookkeeping aside lands on the newest task text, not the oldest."""
+    messages = [
+        {"role": "user", "content": "hi"},
+        _task("investigate why the ranking budget yields one symbol"),
+        {"role": "user", "content": HOOK_CONTEXT},
+    ]
+
+    assert select_context_query_text(messages) == (
+        "investigate why the ranking budget yields one symbol"
+    )
+
+
+def test_a_turn_whose_user_text_is_all_bookkeeping_selects_nothing() -> None:
+    """The stated decision: no task text means no query text, not the client's words.
+
+    Before this rule the selection fell back to the unfiltered list, so a request
+    carrying nothing but bookkeeping still retrieved - on the client's own
+    sentence, which is how a dormant package became the primary symbol of 200
+    requests.
+    """
+    messages = [{"role": "user", "content": HOOK_CONTEXT}]
+
+    assert select_task_texts([HOOK_CONTEXT]) == []
+    assert select_context_query_text(messages) == ""
+    assert client_bookkeeping_only(messages) is True
+
+
+def test_a_reader_result_alone_selects_nothing_either() -> None:
+    """The header half of bookkeeping reaches the same decision as the tag half."""
+    envelope = _envelope("read_file")
+
+    assert select_task_texts([envelope["content"]]) == []
+    assert select_context_query_text([envelope]) == ""
+    assert client_bookkeeping_only([envelope]) is True
+
+
+def test_a_writer_result_beside_an_envelope_is_still_the_query() -> None:
+    """C1's policy is untouched: a write is measured and is still task text."""
+    writer = _envelope("write_to_file")["content"]
+    messages = [
+        {"role": "user", "content": writer},
+        {"role": "user", "content": HOOK_CONTEXT},
+    ]
+
+    assert select_context_query_text(messages) == writer
+
+
+def test_an_absence_of_user_text_is_not_bookkeeping_only() -> None:
+    """The two empty cases stay distinguishable in the record.
+
+    Nothing was set aside when there was nothing to set aside, and the stage says
+    so with a different reason.
+    """
+    assert client_bookkeeping_only([]) is False
+    assert client_bookkeeping_only([{"role": "assistant", "content": "ok"}]) is False
+    assert client_bookkeeping_only([{"role": "system", "content": "you are a helper"}]) is False

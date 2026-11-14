@@ -183,6 +183,7 @@ from packages.pipeline.file_activity import (
 )
 from packages.pipeline.result import PipelineStageResult
 from packages.pipeline.user_messages import (
+    client_bookkeeping_only,
     is_conversational_only,
     select_context_query_text,
 )
@@ -628,6 +629,16 @@ class RepositoryContextStage(PipelineStage):
             if is_conversational_only(query_text):
                 candidates: list[Any] = []
                 empty_reason = "non_task"
+            elif not query_text and client_bookkeeping_only(self._get_messages(context)):
+                # The user said nothing in this request that they wrote: every
+                # user-role message was the client's own bookkeeping, a tool
+                # result or an injected envelope, which selection sets aside.
+                # Ranking empty text composes nothing either, so the short circuit
+                # changes no outcome - what it changes is what the record states,
+                # because "there was no task text" and "nothing matched it" are
+                # different facts to read back over 200 requests.
+                candidates = []
+                empty_reason = "client_bookkeeping_only"
             else:
                 builder = ContextBuilder(
                     self._index,
@@ -695,6 +706,11 @@ class RepositoryContextStage(PipelineStage):
                         "symbols_suppressed": 0,
                         "max_context_tokens": max_context_tokens,
                         "changed_baseline_ms": 0.0,
+                        # Which empty path this was, stated for the session
+                        # record and not only for the log line: a greeting, a
+                        # turn whose whole user channel was client bookkeeping,
+                        # or a query that ranked to nothing.
+                        "empty_reason": empty_reason,
                         **promotion,
                     },
                 )

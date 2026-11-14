@@ -208,6 +208,10 @@ def _surface_session_metadata(
     # inert defaults mean "nothing here is attributable to the bonus".
     for key, value in INERT_PROMOTION.items():
         scope[f"session_{key}"] = value
+    # Why a request assembled nothing travels the same way, and is stated as ""
+    # until a stage says otherwise: the session record always carries the field,
+    # so a reader never has to tell "not empty" from "not recorded".
+    scope["session_context_empty_reason"] = ""
     # A stage that assembled nothing - no index, or a failure part-way through -
     # returns no data to read from, so the signal state it did determine travels
     # on the pipeline metadata.  Without that, a configured source would record
@@ -260,6 +264,9 @@ def _surface_session_metadata(
                 scope["session_context_status"] = (
                     "no_new_symbols" if (symbols_new == 0 and symbols_suppressed > 0) else "empty"
                 )
+                reason = pkg.get("empty_reason", "")
+                if isinstance(reason, str):
+                    scope["session_context_empty_reason"] = reason
                 scope["session_symbols_selected"] = pkg.get("symbols_selected", 0)
                 scope["session_symbols_new"] = symbols_new
                 scope["session_symbols_suppressed"] = symbols_suppressed

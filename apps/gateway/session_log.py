@@ -43,6 +43,12 @@ repository-context stage assembled for the request:
 * ``estimated_tokens`` / ``max_tokens`` — the size of the injected context and
   the budget it was fitted into.
 * ``primary_symbol`` — the symbol the context is organized around.
+* ``empty_reason`` — on an ``empty`` record, which empty path the request took:
+  ``non_task`` (a greeting or thanks, never ranked), ``client_bookkeeping_only``
+  (the user channel carried text, and all of it was the client's own bookkeeping,
+  so there was no task text to rank), or ``no_relevant_symbols`` (a real query
+  that ranked to nothing).  Empty on every record that did not take the empty
+  path, because then there is no reason to state.
 * ``changed_files_signal`` — whether the working-tree signal was usable for this
   request: ``off`` (no change-aware source configured), ``ok`` (the source
   answered, including with a perfectly clean tree), or ``unavailable`` (the
@@ -435,6 +441,9 @@ class SessionLoggerMiddleware:
             "estimated_tokens": scope.get("session_estimated_tokens", 0),
             "max_tokens": scope.get("session_context_max_tokens", 0),
             "primary_symbol": scope.get("session_primary_symbol", ""),
+            # Why an "empty" record is empty, and "" on every other path.  The
+            # stage states it on the result it returns; see the schema above.
+            "empty_reason": scope.get("session_context_empty_reason", ""),
             # Count-only view of change-aware ranking: whether the working-tree
             # bonus changed the context that was sent, measured against the same
             # request re-ranked without the bonus.  Changed file paths are never

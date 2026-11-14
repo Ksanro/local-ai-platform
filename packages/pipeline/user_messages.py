@@ -8,16 +8,25 @@ view of it instead of repeating a literal list:
 * :data:`CLINE_FILE_ACTIVITY_TOOLS` - every registered tool - is what
   ``packages.pipeline.cline_activity`` may read an activity claim from;
 * :data:`CLINE_TOOL_RESULT_PREFIXES` - the subset whose ``bookkeeping`` flag is
-  set - is what planning text selection and the history cap compare against.
+  set - is what the history cap compares against, and the header half of what
+  planning text selection sets aside.
+
+Bookkeeping also arrives tagged rather than headed, and that shape is not a tool
+call at all, so it has its own list: :data:`CLINE_BOOKKEEPING_TAGS` names the
+client envelopes that carry no user-authored text, and
+:func:`is_client_bookkeeping_message` joins the two for text selection alone.  It
+is not a fourth view of the tool registry - no tool is written down there - and it
+deliberately does not reach the history cap, which must keep sending an envelope
+whole to the model.
 
 The two views are deliberately not the same set, and the difference is policy
 rather than drift.  Roadmap C1 widened *recognition*, so that a write or a
 replace now shows up in the file-activity counters; it must not have widened
 *behavior*.  A ``[write_to_file for x.py]`` result is measured, and is still sent
 to the model whole and still selectable as task text, exactly as it was before
-C1 - see :attr:`ClineEnvelopeSpec.bookkeeping`.  One registry, two derived views,
-no duplicated parsing rule anywhere: the literal tuple that used to exist twice
-still exists exactly once, here.
+C1 - see :attr:`ClineEnvelopeSpec.bookkeeping`.  One registry, two derived views
+plus the tag list above, and no duplicated parsing rule anywhere: the literal
+tuple that used to exist twice still exists exactly once, here.
 """
 
 from __future__ import annotations
@@ -114,6 +123,27 @@ _ENVELOPE_HEAD_WINDOW: Final = 96
 #: literal ``" for "`` that separates it from its target.
 _ENVELOPE_HEAD: Final = re.compile(r"\[([a-z_]+) for ")
 
+#: Client envelopes that carry no user-authored text at all, recognized by their
+#: tag instead of by a tool header.  A tag joins this set when the gateway's own
+#: session log shows a user-role message that is nothing but that envelope, and
+#: not before: ``hook_context`` is here because ``logs/cline_sessions.jsonl``
+#: records 200 requests whose newest user message was the ``ask_question`` answer
+#: notice, which the pipeline retrieved for as though the user had written it.
+#: ``tool_result`` is deliberately absent - in the same log a tool result never
+#: arrives as user text, it arrives under ``role="tool"``.  This is the
+#: text-selection view of the client's tagged vocabulary only: it does not reach
+#: :data:`CLINE_TOOL_RESULT_PREFIXES`, which is what the history cap compares, and
+#: it claims no file activity, which is what :func:`cline_envelope_tool` reports.
+CLINE_BOOKKEEPING_TAGS: frozenset[str] = frozenset({"hook_context"})
+
+#: The opening tag of a tagged client envelope, anchored at the very start of a
+#: message and unable to cross a ``">"``, so it reads the tag and nothing of the
+#: body.  No fixed window bounds it: the ``hook_context`` envelope Cline injects
+#: names a tool call id and a tool name in its attributes, which pushes its
+#: opening tag past the 96 characters a tool header needs, and a bound sized for
+#: a header would silently stop recognizing it.
+_ENVELOPE_TAG_HEAD: Final = re.compile(r"^<([a-z_]+)[^>]*>")
+
 
 def user_message_texts(messages: object) -> list[str]:
     """Return normalized text from user-role chat messages."""
@@ -130,11 +160,23 @@ def user_message_texts(messages: object) -> list[str]:
 
 
 def select_task_texts(messages: list[str]) -> list[str]:
-    """Select user-authored task text, ignoring Cline tool-result envelopes."""
+    """Select user-authored task text, ignoring Cline bookkeeping.
+
+    Both shapes the client sends in the user channel are set aside: a tool
+    result the registry flags as bookkeeping
+    (:func:`looks_like_tool_result_message`) and a tagged envelope the client
+    injects to report what it itself did
+    (:func:`looks_like_client_envelope_message`).
+
+    When every message is bookkeeping the selection is empty rather than the
+    bookkeeping itself.  There is then no user-authored text to retrieve for,
+    and retrieving for the client's own words is what made 200 requests in
+    ``logs/cline_sessions.jsonl`` get answered out of a dormant package.
+    """
     filtered = [
         message
         for message in messages
-        if not looks_like_tool_result_message(message)
+        if not is_client_bookkeeping_message(message)
     ]
 
     task_messages: list[str] = []
@@ -147,7 +189,7 @@ def select_task_texts(messages: list[str]) -> list[str]:
     if task_messages:
         return task_messages
 
-    return filtered or messages
+    return filtered
 
 
 def select_last_task_text(messages: object) -> str:
@@ -185,6 +227,68 @@ def looks_like_tool_result_message(message: str) -> bool:
         ``True`` when the message starts with a recognized bookkeeping prefix.
     """
     return message.lstrip().startswith(CLINE_TOOL_RESULT_PREFIXES)
+
+
+def looks_like_client_envelope_message(message: str) -> bool:
+    """Return True when a user message is nothing but a tagged client envelope.
+
+    The envelope is recognized at both ends: one of
+    :data:`CLINE_BOOKKEEPING_TAGS` must open the message and the same tag must
+    close it.  Task text that carries an envelope alongside it, or merely quotes
+    one, is user-authored text and stays selectable, and nothing between the two
+    ends is parsed - the shape is the whole test, so a client cannot make the
+    gateway read a result body as structure.
+
+    Args:
+        message: One user-role message, already flattened to text.
+
+    Returns:
+        ``True`` when the message consists of exactly one bookkeeping envelope.
+    """
+    text = message.lstrip()
+    match = _ENVELOPE_TAG_HEAD.match(text)
+    if match is None:
+        return False
+    tag = match.group(1)
+    if tag not in CLINE_BOOKKEEPING_TAGS:
+        return False
+    return text.rstrip().endswith(f"</{tag}>")
+
+
+def is_client_bookkeeping_message(message: str) -> bool:
+    """Return True when a user message carries nothing the user wrote.
+
+    This is text selection's view of the client's bookkeeping, and the union of
+    the two shapes it arrives in: a tool-result header the registry flags, and a
+    tagged envelope the client injects.  It is deliberately wider than
+    :data:`CLINE_TOOL_RESULT_PREFIXES`, which the history cap compares and which
+    must keep sending an envelope whole to the model - the model has to see what
+    the user answered.
+
+    Args:
+        message: One user-role message, already flattened to text.
+
+    Returns:
+        ``True`` when the message is bookkeeping rather than task text.
+    """
+    return looks_like_tool_result_message(message) or looks_like_client_envelope_message(message)
+
+
+def client_bookkeeping_only(messages: object) -> bool:
+    """Return True when the request's user text is nothing but bookkeeping.
+
+    A request with no user-role text at all returns ``False``: there selection
+    set nothing aside, because nothing was offered.  The distinction is what the
+    repository-context stage states as its empty reason.
+
+    Args:
+        messages: The chat ``messages`` list of one request.
+
+    Returns:
+        ``True`` when at least one user message exists and none is task text.
+    """
+    texts = user_message_texts(messages)
+    return bool(texts) and not select_task_texts(texts)
 
 
 def cline_envelope_tool(message: str) -> str:
