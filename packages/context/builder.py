@@ -1138,7 +1138,49 @@ class ContextBuilder:
                     else:
                         candidate.source_preview = block + candidate.source_preview
 
+            # A definition's docstring is the first text inside its own span, so the
+            # source delivered just above already carries most of it and the
+            # serializer would print it a second time under ``Docstring:``.  The
+            # budget charges what is sent rather than what is new, so a documented
+            # symbol cost twice what it delivered: one dataclass's 4,688-character
+            # docstring spent 1,172 of a 2,048-token SEARCH budget by itself, and
+            # ``_enforce_budget`` gave up the rest of the context to pay for it.
+            # Deliver the documentation once.
+            delivered_text = candidate.source if is_primary else candidate.source_preview
+            if candidate.docstring and delivered_text:
+                candidate.docstring = self._docstring_beyond_delivered_text(
+                    candidate.docstring, delivered_text
+                )
+
         return candidates
+
+    @staticmethod
+    def _docstring_beyond_delivered_text(docstring: str, delivered: str) -> str:
+        """The part of a docstring that its own delivered source text does not say.
+
+        Comparison folds quotes and whitespace rather than matching lines: a span
+        carries the indentation of the definition and opens the documentation on the
+        same line as its opening quotes, and a docstring line can wrap twice inside
+        the source.  A span capped in the middle of its documentation still owes the
+        lines past the cut, which are the ones kept here.
+
+        Args:
+            docstring: The symbol's docstring, as indexed.
+            delivered: The source text delivered with this candidate.
+
+        Returns:
+            ``docstring`` without what ``delivered`` already carries; empty when the
+            delivered text said all of it.
+        """
+        delivered_folded = " ".join(
+            delivered.replace('"""', " ").replace("'''", " ").split()
+        )
+        kept = [
+            line
+            for line in docstring.splitlines()
+            if not line.strip() or " ".join(line.split()) not in delivered_folded
+        ]
+        return "\n".join(kept).strip()
 
     def _module_import_block(self, module: str) -> str:
         """Top-level ``import`` / ``from`` statements of one indexed module.

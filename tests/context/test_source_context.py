@@ -760,6 +760,77 @@ class AuthMiddleware:
         assert result.candidates[1].source_preview
         assert result.candidates[2].source_preview
 
+    def test_docstring_inside_its_own_delivered_span_is_not_delivered_again(
+        self, tmp_path: Path
+    ) -> None:
+        """A span starts above its documentation, so the documentation arrives once.
+
+        ``Docstring`` and ``Source`` are separate lines of the same delivery, and the
+        budget charges characters rather than distinct ones - which is how one
+        documented symbol came to spend a whole SEARCH budget on text the prompt
+        already held.
+        """
+        source = (
+            '"""Module."""\n'
+            "import os\n"
+            "\n"
+            "\n"
+            "def summarize(value: object) -> str:\n"
+            '    """Say what the summary holds.\n'
+            "\n"
+            "    It says it once, here.\n"
+            '    """\n'
+            "    return str(value)\n"
+        )
+        index = _index_from_source(tmp_path, source)
+        builder = ContextBuilder(index)
+
+        result = builder.build(ContextQuery(text="summarize", max_symbols=5, max_tokens=4096))
+        candidate = next(
+            item for item in result.candidates if item.qualified_name == "mod.summarize"
+        )
+
+        assert "Say what the summary holds." in candidate.source
+        assert candidate.docstring == ""
+
+    def test_docstring_past_a_capped_span_is_still_delivered(
+        self, tmp_path: Path
+    ) -> None:
+        """Only the lines that were sent are dropped from the documentation.
+
+        A span cut in the middle of a long docstring carries part of it, and the rest
+        is still the symbol's own statement of what it does: deduplicating must not
+        turn into truncating.
+        """
+        lines = "\n".join(
+            f"    Documentation line {row} says something the span does not."
+            for row in range(200)
+        )
+        source = (
+            '"""Module."""\n'
+            "\n"
+            "\n"
+            "def wide(value: object) -> int:\n"
+            '    """What this keeps, at length.\n'
+            "\n"
+            f"{lines}\n"
+            '    """\n'
+            "    return 0\n"
+        )
+        index = _index_from_source(tmp_path, source)
+        builder = ContextBuilder(index, primary_symbol_max_tokens=32)
+
+        result = builder.build(ContextQuery(text="wide", max_symbols=5, max_tokens=4096))
+        candidate = next(
+            item for item in result.candidates if item.qualified_name == "mod.wide"
+        )
+        documented = str(index.get_symbol_docstring("mod.wide"))
+
+        assert candidate.docstring, "the whole docstring went out with the name"
+        delivered = f"{candidate.source}\n{candidate.docstring}"
+        for line in documented.splitlines():
+            assert not line.strip() or line.strip() in delivered, line
+
     def test_promotes_candidates_from_explicitly_referenced_modules(self):
         """Queries naming files should include each referenced module early.
 
