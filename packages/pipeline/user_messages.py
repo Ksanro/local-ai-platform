@@ -144,6 +144,13 @@ CLINE_BOOKKEEPING_TAGS: frozenset[str] = frozenset({"hook_context"})
 #: a header would silently stop recognizing it.
 _ENVELOPE_TAG_HEAD: Final = re.compile(r"^<([a-z_]+)[^>]*>")
 
+#: Cline's older task wrapper: ``<task>`` must open the message, and the task
+#: runs to the *last* ``</task>``, so client guidance after it stays out.  A
+#: message that only mentions or quotes ``<task>...</task>`` is not wrapped and
+#: is selected whole: matching the tags anywhere once turned a prompt quoting
+#: them into the three-character query ``...`` for a whole Cline session.
+_TASK_WRAPPER: Final = re.compile(r"\A\s*<task>(.*)</task>", re.DOTALL)
+
 
 def user_message_texts(messages: object) -> list[str]:
     """Return normalized text from user-role chat messages."""
@@ -181,11 +188,9 @@ def select_task_texts(messages: list[str]) -> list[str]:
 
     task_messages: list[str] = []
     for message in filtered:
-        task_messages.extend(
-            match.strip()
-            for match in re.findall(r"<task>\s*(.*?)\s*</task>", message, re.DOTALL)
-            if match.strip()
-        )
+        match = _TASK_WRAPPER.match(message)
+        if match and match.group(1).strip():
+            task_messages.append(match.group(1).strip())
     if task_messages:
         return task_messages
 

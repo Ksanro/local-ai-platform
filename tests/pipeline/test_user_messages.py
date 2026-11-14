@@ -362,3 +362,29 @@ def test_an_absence_of_user_text_is_not_bookkeeping_only() -> None:
     assert client_bookkeeping_only([]) is False
     assert client_bookkeeping_only([{"role": "assistant", "content": "ok"}]) is False
     assert client_bookkeeping_only([{"role": "system", "content": "you are a helper"}]) is False
+
+
+def test_a_task_tag_quoted_inside_user_text_does_not_become_the_query() -> None:
+    """Regression: a prompt mentioning ``<task>...</task>`` was queried as ``...``.
+
+    The wrapper counts only when it opens the message; text that merely quotes
+    the tags is user-authored and selected whole.
+    """
+    text = "Fix selection: select_task_texts only extracts <task>...</task> blocks today."
+
+    assert select_context_query_text([{"role": "user", "content": text}]) == text
+
+
+def test_a_quoted_closing_tag_inside_a_real_wrapper_does_not_cut_the_task() -> None:
+    """The wrapper runs to its last closing tag, so a quoted one stays task text."""
+    message = {
+        "role": "user",
+        "content": (
+            "<task>\nExplain why <task>...</task> extraction picks '...'.\n</task>\n"
+            "# task_progress RECOMMENDED"
+        ),
+    }
+
+    assert select_context_query_text([message]) == (
+        "Explain why <task>...</task> extraction picks '...'."
+    )
