@@ -179,9 +179,13 @@ compare against the replay of the current baseline commit:
 ```powershell
 git worktree add --detach C:\Users\ovidi\lap-replay-<commit> <commit>
 .\uv.exe run python scripts\probe_replay.py --index-root C:\Users\ovidi\lap-replay-<commit> --out build\probe_replay\<commit>.json
-.\uv.exe run python scripts\probe_replay.py --compare build\probe_replay\7068d16.json build\probe_replay\<commit>.json
+.\uv.exe run python scripts\probe_replay.py --compare build\probe_replay\19dc0f6.json build\probe_replay\<commit>.json
 ```
 
+It replays `REPLAY_PROBES`: the 25 live probes plus the replay-only
+`CLIENT_ENVELOPE_PROBES` (2 probes, 8 facts), which measure a Cline follow-up turn whose
+newest user message is a `<hook_context>` envelope and have no answer to score live. At
+`19dc0f6` that is `67/74` (`59/66` on the 25, `8/8` on the pair).
 It counts the expected facts present in the injected context (`59/66` at `7068d16`, `56/66` at `a23faa2`), not
 answers, and `--compare` exits 1 if any probe has fewer facts present than in the base.
 Run it from the checkout holding the change; index a clean worktree, so untracked files

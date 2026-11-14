@@ -9,8 +9,14 @@ alphabetical tie (`1a3f8ee`), and a symbol's docstring is no longer delivered a 
 its source span already carries it (`7068d16`). Live, two runs at `7068d16`: `57/66` with
 context (`54/66` before), original 11 still `26/30`. Separately, the live `.env` history cap of
 3000 tokens dropped up to 191 of 197 messages in a long Cline session; it is now disabled in
-`.env`. Evidence: `docs/live-gateway-runbook.md`, *Named-module contributions and docstring
-delivery*.)
+`.env`. Later the same day, query selection: a Cline follow-up turn whose newest user message
+is the `<hook_context>` envelope now retrieves for the user's task (`288cb8d`, `6f7bebf`;
+before, 200 logged requests were answered out of dormant `packages/tasks`), a turn whose user
+text is all bookkeeping gets no context with `empty_reason: client_bookkeeping_only`, and a
+`<task>` wrapper counts only when it opens the message (`19dc0f6`; a prompt quoting
+`<task>...</task>` had been queried as `...`). Offline `67/74` on `REPLAY_PROBES`, the 25 live
+probes unchanged. Evidence: `docs/live-gateway-runbook.md`, *Named-module contributions and
+docstring delivery* and *Client bookkeeping and the task wrapper*.)
 
 Previous review: 2026-11-13 (A Cline `hi` injected 20 unrelated symbols. Fixed three ways:
 the symbol index now honours `.gitignore` and the default ignored directories; a query that is

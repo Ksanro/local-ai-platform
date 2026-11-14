@@ -6,7 +6,8 @@ Last reviewed: 2026-11-14 (No new phase. A module named by path contributes its
 module-level definitions in turn (`1a3f8ee`) and a docstring already inside the delivered
 span is not sent again (`7068d16`). The controlled baseline is now `57/66` with context,
 measured twice at `7068d16`; see `docs/live-gateway-runbook.md`, *Named-module contributions
-and docstring delivery*.)
+and docstring delivery*. Query selection now skips Cline's `<hook_context>` envelope and reads a
+`<task>` wrapper only when it opens the message; see *Client bookkeeping and the task wrapper*.)
 
 Previous review: 2026-11-13 (No new phase. A fix outside the roadmap, prompted by a Cline
 `hi` that injected `apply_hive_mapping`: gitignore-aware symbol index, no context for
@@ -1068,6 +1069,15 @@ The controlled baseline was `55/66`, measured with H2 applied on top of `b2135b3
 which removed the accidental `py`-in-`copy` hit `search_file_activity_two_modules` scored on.
 Since 2026-11-14 it is `57/66` at `7068d16`: named modules contribute their definitions in turn
 and docstrings are delivered once (that probe `2/2`, `search_delta_sentinel_value` `2/3`).
+
+Still open after 2026-11-14, not authorized:
+
+- Intent detection classes a task as `EXPLAIN` whenever its text contains "explain", including
+  implementation tasks (all 200 `<hook_context>` records, and the Cline tasks themselves).
+- A history cap suited to agent sessions (disabled in the live `.env`; see the runbook).
+- A message carrying task text and an envelope together is selected whole, markup included.
+- One offline replay scored the 25 probes `53/66` instead of `59/66` and did not reproduce;
+  cause unknown. Re-run once before believing a regression that drops whole test modules.
 
 Still open, not authorized here:
 

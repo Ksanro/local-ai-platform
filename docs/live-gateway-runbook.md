@@ -3502,6 +3502,57 @@ The controlled harness configuration still sets the cap to 3000, which its short
 reach. A cap suited to agent sessions (derived from the context window, or keeping the agent's
 own turns) is open and not authorized.
 
+### Client bookkeeping and the task wrapper, 2026-11-14
+
+Two query-selection bugs in `packages/pipeline/user_messages.py`, both found in
+`logs/cline_sessions.jsonl`.
+
+**The `<hook_context>` envelope became the query.** After an `ask_question` is answered, Cline
+sends a user message that is only
+`<hook_context source="ToolSuccess" tool_name="ask__question" tool_call_id="...">The user has
+answered the question. Continue working on their task using that answer.</hook_context>`.
+It matched none of `CLINE_TOOL_RESULT_PREFIXES`, and `select_task_texts` only extracted `<task>`
+blocks, which current Cline no longer sends, so the envelope was the newest user text. All 200
+such records got primary `packages/tasks/context_builder.ContextBuilderTask.name` (dormant), 20
+symbols, intent `EXPLAIN`. Diagnosed and fixed by Cline, reviewed here:
+
+- `9378cd1` - two replay-only probes (`CLIENT_ENVELOPE_PROBES`, in `REPLAY_PROBES`, not in
+  `PROBES`, whose 25/66 pins are unchanged) built from the real session shape. Both `0/4`.
+- `288cb8d` - `CLINE_BOOKKEEPING_TAGS = {"hook_context"}` (only the tag the log shows);
+  `is_client_bookkeeping_message` = the prefix rule or a whole registered envelope. Selection
+  drops both, and no longer falls back to the unfiltered list: a request whose user text is all
+  bookkeeping gets no context, recorded as `context.empty_reason: client_bookkeeping_only` (the
+  field is new in the session record; `non_task` and `no_relevant_symbols` are the other
+  values). The history cap still compares only the prefixes. Note: its commit message quotes the
+  compare as `59 -> 59; 25 of 25`; the actual output was `59 -> 67 of 74; 24 of 25`.
+- `6f7bebf` - envelope recognition read only the two ends of a message, so user text between
+  two envelopes was set aside with them; only whitespace may now sit outside whole envelopes.
+
+Offline, `--compare 7068d16.json 288cb8d.json`: `OK: facts present 59 -> 67 of 74`. Both
+probes `0/4 -> 4/4`, primary `packages/pipeline/file_activity.sanitize_file_activity`, 20 -> 6
+symbols. Of the 25 live probes only `multiturn_session_record_builder` changed (18 -> 17
+symbols, still `3/3`; it asks about `session_log.py`, which the commit edited).
+
+Live, on the 8001 gateway restarted at `288cb8d`, two hand-sent requests: task + assistant +
+envelope logged `assembled`, 10 symbols, primary `file_activity.sanitize_file_activity`;
+envelope alone logged `empty`, `empty_reason: client_bookkeeping_only`.
+
+**A quoted `<task>` tag replaced the whole query.** `select_task_texts` matched
+`<task>(.*?)</task>` anywhere in a message. The prompt for the work above said "only extracts
+`<task>...</task>`", so its query was the three characters `...`: all 264 requests of that
+Cline session (Step 1 and Step 2, 12:50Z on) logged `empty`, 0 symbols. `19dc0f6` reads the
+wrapper only when `<task>` opens the message and runs it to the last `</task>`, so Cline's
+trailing guidance stays out (the existing planning and stage tests pin that) and a quoted
+closing tag inside a real wrapper does not cut the task short. The session's first request now
+selects its full 3,825 characters. `--compare 288cb8d.json 19dc0f6.json`:
+`OK: facts present 67 -> 67 of 74; 27 of 27 probes send identical symbols`.
+
+Gates at `19dc0f6`: live gate passed in the commit hook; `--full` 43 failed, 5231 passed, 3 skipped (baseline 43);
+ruff and mypy clean on the changed files. The live 8001 gateway needs a restart to run
+`6f7bebf` and `19dc0f6`.
+
+Artifacts (Git-ignored): `build\probe_replay\{9378cd1,288cb8d,review-288cb8d,19dc0f6}.json`.
+
 ## Interpreting long runs, timeouts, and failed execution
 
 Three independent timeout layers can each produce a failure report. Identify
