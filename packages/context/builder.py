@@ -70,6 +70,16 @@ charged by ``_enforce_budget`` like any other delivered text.  Import statements
 nested in a function, class or ``if`` block are not module level and are not
 delivered.
 
+Modules named by path
+---------------------
+
+When the question points at source files by path, each of them contributes a short
+run of its own definitions to the front of the context - see
+``NAMED_MODULE_DEFINITION_RUN`` and ``_promote_referenced_modules``.  A path is not a
+name match: the file's own token is an exact segment of every qualified name inside
+it, so all of a named module's symbols score alike and the tie-break, not the
+question, was choosing the one symbol that represented the file.
+
 Future extensions (semantic search, DSPARK, memory, Git awareness)
 will replace the default ranking strategy without changing the public
 API.
@@ -107,6 +117,23 @@ class ContextBuilder:
         _chars_per_token: Characters-per-token ratio for estimation math.
         _changed_modules: Index module keys of locally modified files that
             earn the bounded working-tree bonus; empty when the signal is off.
+    """
+
+    # ------------------------------------------------------------------
+    # Named-module contribution
+    # ------------------------------------------------------------------
+
+    NAMED_MODULE_DEFINITION_RUN: int = 3
+    """Definitions each module named by path in the question contributes early.
+
+    Naming a file is not a name match: the file's own token is an exact segment of
+    every one of its symbols' qualified names, so the scores inside a named module
+    are flat and the tie-break, not the question, chooses the one symbol that stands
+    for it.  Three of the module's own definitions, read from the top of the file,
+    carry the question to the file instead of to whichever symbol is alphabetically
+    first.  It is a prefix of the ranked list, not an addition to it: the candidates
+    the run leaves alone keep their positions, so nothing else is pushed out of the
+    ``max_symbols`` window but the run itself.
     """
 
     def __init__(
@@ -310,27 +337,55 @@ class ContextBuilder:
         candidates: list[ContextCandidate],
         query_text: str,
     ) -> list[ContextCandidate]:
-        """Ensure explicitly mentioned source files are represented early."""
+        """Ensure explicitly mentioned source files are represented early.
+
+        A module path in the question is not a name match. ``file_activity`` is an
+        exact segment of the qualified name of **every** symbol in
+        ``packages/pipeline/file_activity``, so inside a named module the scores are
+        flat and the engine's tie-break - qualified name ascending - is what picks
+        the single symbol that stands for the file.  A question that names two files
+        asks one question of each of them, and one flat-scoped slot per file answers
+        neither reliably.  So each named file contributes a short run of its own
+        definitions, taken in turn - one from each named file before a second from
+        any of them - and inside a file the run is ordered by score and then by
+        position in the file, because reading a named file from the top is what the
+        scores cannot express.
+
+        Nothing else moves.  The ranked tail keeps its order behind the promoted
+        prefix, importers of the named files still follow the named files as they
+        always did, and the first named file still contributes first, so the primary
+        slot stays with the file the question named before any other.
+
+        Args:
+            candidates: Ranked candidates.
+            query_text: Raw query text.
+
+        Returns:
+            Candidates with a run of every named module's definitions near the front.
+        """
         module_refs = self._referenced_module_paths(query_text)
         if not module_refs:
             return candidates
+
+        runs = {
+            module_ref: self._named_module_definitions(candidates, module_ref)
+            for module_ref in dict.fromkeys(module_refs)
+        }
 
         promoted: list[ContextCandidate] = []
         seen_symbols: set[str] = set()
         seen_modules: set[str] = set()
 
-        for module_ref in module_refs:
-            if module_ref in seen_modules:
-                continue
-            for candidate in candidates:
-                if (
-                    candidate.module == module_ref
-                    and candidate.qualified_name not in seen_symbols
-                ):
-                    promoted.append(candidate)
-                    seen_symbols.add(candidate.qualified_name)
-                    seen_modules.add(candidate.module)
-                    break
+        for rank in range(self.NAMED_MODULE_DEFINITION_RUN):
+            for module_ref, run in runs.items():
+                if rank >= len(run):
+                    continue
+                candidate = run[rank]
+                if candidate.qualified_name in seen_symbols:
+                    continue
+                promoted.append(candidate)
+                seen_symbols.add(candidate.qualified_name)
+                seen_modules.add(candidate.module)
 
         importer_modules = self._find_importers_of_modules(module_refs)
         for importer_module in importer_modules:
@@ -352,6 +407,77 @@ class ContextBuilder:
             if candidate.qualified_name not in seen_symbols
         )
         return promoted
+
+    def _named_module_definitions(
+        self,
+        candidates: list[ContextCandidate],
+        module_ref: str,
+    ) -> list[ContextCandidate]:
+        """One named module's contribution, best score first then file position.
+
+        Module-level definitions lead because they are what a file presents: a method
+        is a detail of a definition the run already carries.  A module whose
+        candidates cannot be read that way contributes its ranked members instead, so
+        a named module is never the reason a file goes unrepresented.
+
+        Args:
+            candidates: Ranked candidates.
+            module_ref: The module path named in the question.
+
+        Returns:
+            That module's contribution, ordered by score and then by file position.
+        """
+        members = [candidate for candidate in candidates if candidate.module == module_ref]
+        definitions = [
+            candidate
+            for candidate in members
+            if self._is_module_definition(candidate, module_ref)
+        ]
+        ordered = definitions or members
+        positions = self._definition_positions(module_ref)
+        unknown = len(positions)
+        return sorted(
+            ordered,
+            key=lambda candidate: (
+                -candidate.score,
+                positions.get(candidate.qualified_name, unknown),
+            ),
+        )
+
+    @staticmethod
+    def _is_module_definition(candidate: ContextCandidate, module_ref: str) -> bool:
+        """Whether a candidate is a definition of ``module_ref``, not a member of one.
+
+        Args:
+            candidate: The candidate to read.
+            module_ref: The module path named in the question.
+
+        Returns:
+            ``True`` when the qualified name adds exactly one bare name to the
+            module key, which is what a module-level definition looks like.
+        """
+        prefix = f"{module_ref}."
+        name = candidate.qualified_name
+        if not name.startswith(prefix):
+            return False
+        return "." not in name[len(prefix) :]
+
+    def _definition_positions(self, module_ref: str) -> dict[str, int]:
+        """Line number of each symbol of one indexed module, by qualified name.
+
+        Args:
+            module_ref: The module path named in the question.
+
+        Returns:
+            ``qualified_name -> lineno``; empty when the module is not indexed, in
+            which case the contribution keeps the order it was ranked in.
+        """
+        modules = getattr(self._index, "modules", None) or {}
+        module = modules.get(module_ref)
+        symbols = getattr(module, "symbols", None) or ()
+        return {
+            symbol.qualified_name: getattr(symbol, "lineno", 0) for symbol in symbols
+        }
 
     def _promote_request_path_symbols(
         self,

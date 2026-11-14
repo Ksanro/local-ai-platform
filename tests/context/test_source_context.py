@@ -761,7 +761,13 @@ class AuthMiddleware:
         assert result.candidates[2].source_preview
 
     def test_promotes_candidates_from_explicitly_referenced_modules(self):
-        """Queries naming files should include each referenced module early."""
+        """Queries naming files should include each referenced module early.
+
+        A named module contributes a definition of itself, not one of that
+        definition's methods: a method is a detail of a symbol the run already
+        carries, and which detail reaches the context used to be decided by the
+        alphabetical tie-break rather than by the question.
+        """
         candidates = [
             ContextCandidate(
                 symbol_id="pkg/live.RepositoryContextStage._extract_query",
@@ -802,8 +808,69 @@ class AuthMiddleware:
 
         assert [candidate.qualified_name for candidate in promoted[:3]] == [
             "pkg/legacy.RepositoryContextStage._extract_query",
-            "pkg/live.RepositoryContextStage._extract_query",
+            "pkg/live.RepositoryContextStage",
             "app/main.create_app",
+        ]
+
+    def test_named_modules_each_contribute_their_definitions_in_turn(self):
+        """Two named files each put their definitions in front, in the asked order.
+
+        Scoring cannot rank the definitions of a named module against one another -
+        the module's own name is an exact segment of every one of their qualified
+        names - so without this rule one file is represented by one symbol chosen on
+        a tie, the other file's symbols follow it, and a budget sized for several
+        small contributions ends up holding the first symbol's text alone.
+        """
+        candidates = [
+            ContextCandidate(
+                symbol_id="pkg/first.OtherCounts",
+                qualified_name="pkg/first.OtherCounts",
+                module="pkg/first",
+                score=195,
+            ),
+            ContextCandidate(
+                symbol_id="pkg/first.coerce_first_value",
+                qualified_name="pkg/first.coerce_first_value",
+                module="pkg/first",
+                score=195,
+            ),
+            ContextCandidate(
+                symbol_id="pkg/second.SecondCounts",
+                qualified_name="pkg/second.SecondCounts",
+                module="pkg/second",
+                score=195,
+            ),
+            ContextCandidate(
+                symbol_id="pkg/second.normalize_second_path",
+                qualified_name="pkg/second.normalize_second_path",
+                module="pkg/second",
+                score=195,
+            ),
+        ]
+        index = _make_index([
+            _make_module("pkg/first", [
+                _make_symbol("pkg/first.coerce_first_value", "pkg/first", lineno=10),
+                _make_symbol("pkg/first.OtherCounts", "pkg/first", lineno=20,
+                             symbol_type=SymbolType.CLASS),
+            ]),
+            _make_module("pkg/second", [
+                _make_symbol("pkg/second.normalize_second_path", "pkg/second", lineno=10),
+                _make_symbol("pkg/second.SecondCounts", "pkg/second", lineno=20,
+                             symbol_type=SymbolType.CLASS),
+            ]),
+        ])
+        builder = ContextBuilder(index)
+
+        promoted = builder._promote_referenced_modules(
+            candidates,
+            "In pkg/first.py and pkg/second.py: what does each file do?",
+        )
+
+        assert [candidate.qualified_name for candidate in promoted[:4]] == [
+            "pkg/first.coerce_first_value",
+            "pkg/second.normalize_second_path",
+            "pkg/first.OtherCounts",
+            "pkg/second.SecondCounts",
         ]
 
     def test_promotes_imported_helper_for_shared_helper_refactor_queries(self):
