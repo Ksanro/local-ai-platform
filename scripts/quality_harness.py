@@ -295,6 +295,112 @@ CHANGED_FILE_AB_PAIRS: tuple[tuple[str, str], ...] = (
     ("gains_the_changed_file", "explain_changed_files_history_cap"),
 )
 
+# ------------------------------------------------- Cline follow-up turn shapes
+#: Text transcribed from the client's own session records -
+#: ``~/.cline/data/sessions/1794641390570_nq273`` and ``.../1794607025696_4wq97``
+#: - because ``logs/cline_sessions.jsonl`` shows 200 requests on 2026-11-14 whose
+#: newest user-role message was Cline's ``ask_question`` bookkeeping rather than
+#: anything the user wrote, and all 200 retrieved on that text.  The two probes
+#: below rebuild one of those requests: the task the user really sent, the
+#: assistant turn, the answer the user gave the question, and then the
+#: bookkeeping envelope as the newest user message.
+#:
+#: The task text reaches the gateway unwrapped - that is what the session log's
+#: ``last_user_message`` holds for the 164 turns of this same task - while the
+#: client's own record of the identical turn wraps it in ``<user_input
+#: mode="act">``.  Both forms are kept, and each probe uses one of them.  Line
+#: breaks inside the task were normalized to ``"\n"``; the words are the user's.
+#: The three acceptance bullets that spelled out worktree and replay command lines
+#: were shortened, so no absolute machine path is committed; every sentence that
+#: names code is verbatim.
+CLINE_TASK_TEXT: str = (
+    "Investigate and implement a bounded retrieval fix for quality probe\n"
+    "`search_file_activity_two_modules` (SEARCH intent).\n"
+    "\n"
+    "The prompt names two files by path:\n"
+    "- packages/pipeline/file_activity.py\n"
+    "- packages/pipeline/cline_activity.py\n"
+    "Expected facts: sanitize_file_activity, RepositoryPathNormalizer.\n"
+    "\n"
+    "Current state at a23faa2: the injected context holds ONE symbol\n"
+    "(packages/pipeline/file_activity.FileActivityCounts). Both facts are missing,\n"
+    "live 0/2. Before a23faa2 the probe scored 1/2 (RepositoryPathNormalizer only),\n"
+    "and only because the token \"py\" substring-matched `_ConversationActivity.copy`.\n"
+    "\n"
+    "Step 1 - diagnose, then STOP and report before changing code: explain why a\n"
+    "2048-token SEARCH budget yields one symbol. Check candidate scores against\n"
+    "RankingConfig.MINIMUM_CANDIDATE_SCORE, and how path mentions like\n"
+    "\"file_activity.py\" are tokenized (packages/context/scoring.py\n"
+    "normalise_query_text) and scored.\n"
+    "\n"
+    "Step 2 - after I confirm: prefer a general rule that a module named explicitly\n"
+    "by path in the query contributes its most relevant symbols to context.\n"
+    "\n"
+    "Constraints:\n"
+    "- Do not revert or lower RankingConfig.MIN_SUBSTRING_TOKEN_LENGTH.\n"
+    "- Do not special-case the probe text or any expected symbol name.\n"
+    "- Keep the greeting/non-task fast path (is_conversational_only).\n"
+    "- Do not raise any context budget.\n"
+    "- Add a regression test that goes through PlanningStage + RepositoryContextStage.\n"
+    "\n"
+    "Offline acceptance (see TESTING.md, probe_replay section):\n"
+    "1. Commit the change, then: git worktree add --detach ...\n"
+    "2. run scripts/probe_replay.py --index-root <clean worktree> --out <file>.json\n"
+    "3. run scripts/probe_replay.py --compare <base>.json <new>.json\n"
+    "Accept only if it prints OK (no probe lost a fact), total >= 56/66, and this\n"
+    "probe has >= 1 fact present. Paste the full --compare output.\n"
+    "\n"
+    "Gates: live gate green, --full at 43 failures, ruff on changed files, mypy\n"
+    "live-path scope. Paste real output.\n"
+    "\n"
+    "Then stop. Do not run the live harness and do not edit STATUS.md, roadmap.md or\n"
+    "the runbook; live runs and the record come after review."
+)
+
+#: The same turn as the client records it, with its own wrapper around it.
+CLINE_TASK_TEXT_WRAPPED: str = f'<user_input mode="act">{CLINE_TASK_TEXT}</user_input>'
+
+#: The assistant turn the follow-up answers - the report the user was asked to
+#: confirm, shortened to its first line.
+CLINE_ASSISTANT_REPORT: str = (
+    "## Step 1 - Diagnosis (no code changed; STOP here for your confirmation)\n\n"
+    "Changed files: none. HEAD is the replay baseline, and every probe was run "
+    "read-only from temp scripts."
+)
+
+#: The user's answer to that question, which is what the client hands back as the
+#: `ask_question` tool result immediately before the envelope.
+CLINE_QUESTION_ANSWER: str = (
+    "B, but as two separate commits, each measured on its own: Commit 1 = the "
+    "named-module breadth, then gate + replay + --compare against a clean worktree, "
+    "and report the compare output verbatim."
+)
+
+#: The bookkeeping message Cline injects as a user-role turn once an
+#: `ask_question` has been answered.  Identical in all 200 logged requests except
+#: for the `tool_call_id`.
+CLINE_HOOK_CONTEXT: str = (
+    '<hook_context source="ToolSuccess" tool_name="ask__question" '
+    'tool_call_id="chatcmpl-tool-b22a65e7a73d6439">\n'
+    "The user has answered the question. Continue working on their task using "
+    "that answer.\n"
+    "</hook_context>"
+)
+
+#: What the follow-up turn needs retrieved: the symbols the task it continues
+#: works on.  Two of them are also named in the task's own prose, which is not a
+#: leak in either direction here - `context_facts_available` serializes the
+#: package with the probe's final message (the envelope) and nothing else, so
+#: history text cannot reach the match; what is being counted is exactly which
+#: symbols the ranking engine put into the context for whichever text the
+#: selection handed it.
+CLINE_FOLLOWUP_FACTS: tuple[ExpectedFact, ...] = (
+    fact("sanitize_file_activity"),
+    fact("RepositoryPathNormalizer"),
+    fact("resolve_file_activity_events"),
+    fact("score_candidate_v2"),
+)
+
 PROBES: tuple[QualityProbe, ...] = (
     QualityProbe(
         id="search_answer_preview",
@@ -821,6 +927,67 @@ EXPANSION_PROBE_IDS: tuple[str, ...] = (
     "multiturn_cline_envelope_tools",
     "multiturn_session_record_builder",
 )
+
+# ------------------------------------------------ replay-only follow-up probes
+#: Two probes that rebuild a Cline follow-up turn from the client's own session
+#: records: the newest user-role message is the `ask_question` bookkeeping
+#: envelope, and the task that envelope continues is older history.  They
+#: reproduce the 200 requests logged on 2026-11-14.
+#:
+#: They are deliberately not part of `PROBES`.  Their final user message is
+#: bookkeeping rather than a question, so a live run has nothing to answer and a
+#: score from it would measure the model's patience rather than retrieval; what
+#: they measure is which text the stages retrieve for, and
+#: `scripts/probe_replay.py` reads that off the injected context.  Keeping them
+#: out of `PROBES` also leaves the published 25-probe, 66-fact denominator - and
+#: the tests that pin it - exactly as every earlier run measured it.
+CLIENT_ENVELOPE_PROBES: tuple[QualityProbe, ...] = (
+    QualityProbe(
+        # The shape all 200 logged requests have: one real task, then the
+        # envelope.  Retrieval has to follow the task.
+        id="cline_hook_context_answer",
+        intent="EXPLAIN",
+        history=(
+            turn("user", CLINE_TASK_TEXT),
+            turn("assistant", CLINE_ASSISTANT_REPORT),
+            {
+                "role": "tool",
+                "tool_call_id": "chatcmpl-tool-b22a65e7a73d6439",
+                "content": CLINE_QUESTION_ANSWER,
+            },
+        ),
+        prompt=CLINE_HOOK_CONTEXT,
+        expect=CLINE_FOLLOWUP_FACTS,
+    ),
+    QualityProbe(
+        # The same envelope at the end of a session that opened with a greeting,
+        # as the second recorded session does: once the bookkeeping is set aside,
+        # the text to retrieve for is the latest real task and not the first turn,
+        # and that task arrives in the wrapper the client records around it.
+        id="cline_hook_context_after_greeting",
+        intent="EXPLAIN",
+        history=(
+            turn("user", "hi"),
+            turn("assistant", "Hi. What should I work on in this repository?"),
+            turn("user", CLINE_TASK_TEXT_WRAPPED),
+            turn("assistant", CLINE_ASSISTANT_REPORT),
+            {
+                "role": "tool",
+                "tool_call_id": "chatcmpl-tool-b22a65e7a73d6439",
+                "content": CLINE_QUESTION_ANSWER,
+            },
+        ),
+        prompt=CLINE_HOOK_CONTEXT,
+        expect=CLINE_FOLLOWUP_FACTS,
+    ),
+)
+
+#: The pair's ids, derived from the probes so the two can never disagree.
+CLIENT_ENVELOPE_PROBE_IDS: tuple[str, ...] = tuple(probe.id for probe in CLIENT_ENVELOPE_PROBES)
+
+#: Everything a replay walks: the live-scored set, then the replay-only pair.
+#: Report the two apart - the second pair has no place in a 66-fact score.
+REPLAY_PROBES: tuple[QualityProbe, ...] = (*PROBES, *CLIENT_ENVELOPE_PROBES)
 
 
 DELTA_CONTEXT_PROBE = DeltaContextProbe(

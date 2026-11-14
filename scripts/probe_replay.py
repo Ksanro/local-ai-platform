@@ -1,10 +1,15 @@
 r"""Offline replay of the quality probes through the live context stages.
 
-Every probe in ``scripts/quality_harness.py`` ``PROBES`` is sent through
+Every probe in ``scripts/quality_harness.py`` ``REPLAY_PROBES`` is sent through
 ``PlanningStage`` and ``RepositoryContextStage``, built the way the gateway
 builds them and configured like the controlled live runs (H1 configuration:
 context max 4096 tokens, the per-intent budgets below, delta injection on,
 relationship ranking and expansion on, ``exclude_globs="scripts/**,build/**"``).
+``REPLAY_PROBES`` is ``PROBES`` - the set the live harness scores, and the
+66-fact denominator every published run reports - plus the replay-only pairs that
+measure a conversation shape instead of an answer, so a replay file written before
+such a pair existed simply has fewer rows; ``--compare`` reports those as
+``only in new`` and does not count them against the older set.
 No gateway, backend, or network is involved.
 
 For each probe it records the symbols sent (primary first) and how many of the
@@ -79,7 +84,7 @@ def replay(index_root: Path) -> dict[str, dict[str, Any]]:
     )
 
     rows: dict[str, dict[str, Any]] = {}
-    for probe in qh.PROBES:
+    for probe in qh.REPLAY_PROBES:
         messages = [
             {"role": "system", "content": qh.QUALITY_SYSTEM_PROMPT},
             *probe.history,
