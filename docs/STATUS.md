@@ -3,14 +3,23 @@
 This file is the current runtime snapshot. It intentionally describes only
 what matters for the live gateway path and calls out dormant code explicitly.
 
-Last reviewed: 2026-11-13 (A Cline `hi` injected 20 unrelated symbols. Fixed three ways:
+Last reviewed: 2026-11-14 (A module named by path now contributes its module-level
+definitions in turn, ordered by score then file position, instead of one symbol chosen by an
+alphabetical tie (`1a3f8ee`), and a symbol's docstring is no longer delivered a second time when
+its source span already carries it (`7068d16`). Live, two runs at `7068d16`: `57/66` with
+context (`54/66` before), original 11 still `26/30`. Separately, the live `.env` history cap of
+3000 tokens dropped up to 191 of 197 messages in a long Cline session; it is now disabled in
+`.env`. Evidence: `docs/live-gateway-runbook.md`, *Named-module contributions and docstring
+delivery*.)
+
+Previous review: 2026-11-13 (A Cline `hi` injected 20 unrelated symbols. Fixed three ways:
 the symbol index now honours `.gitignore` and the default ignored directories; a query that is
 only a greeting or thanks gets no repository context (`reason=non_task`); and query tokens
 under 3 characters no longer match as substrings in ranking. Live, two runs at `a23faa2`:
 `54/66` with context. The one fact lost against H2 had come from `py` matching `copy`.
 Evidence: `docs/live-gateway-runbook.md`, *Short-token substring matching*.)
 
-Previous review: 2026-11-10 (Phase H2: the repository-context block now escapes chat-template
+Earlier review: 2026-11-10 (Phase H2: the repository-context block now escapes chat-template
 control tags - `<think>` becomes `&lt;think>`, `<|im_start|>` becomes `&lt;|im_start|>` - with
 a one-line legend only when something was escaped; client messages are untouched. Live, two
 runs: `55/66` with context, `3/66` without. Evidence: `docs/roadmap.md` Phase H item 3 and
@@ -691,8 +700,10 @@ environment uses whatever Python uv discovers, against `requires-python = ">=3.1
   from literal think tags in injected source reaching the model as control tokens;
   Phase H2 escapes them (`55/66` with context versus `3/66` without). Since `a23faa2`
   (no substring matching for query tokens under 3 characters) the current measured
-  baseline is `54/66` with context, in both of two runs (74423 context-arm prompt
+  baseline was `54/66` with context, in both of two runs (74423 context-arm prompt
   tokens); the lost fact had reached the prompt only through `py` matching `copy`.
+  Since `7068d16` (named-module contributions, docstring delivered once) it is
+  `57/66`, in both of two runs (73999 context-arm prompt tokens).
 - The model often includes reasoning/preamble despite terse system prompts; the
   quality harness now records deterministic style violations separately from
   required-fact score.

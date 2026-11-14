@@ -3438,6 +3438,70 @@ Gates on `main` at `a23faa2`: live gate 2635 passed; `--full` 43 failed, 5191 pa
 Artifacts (Git-ignored): `build\short_token_live\` (`run_all.ps1`, `quality_run{1,2}.json`,
 `sessions_short_token_live.jsonl`, `gateway_out.txt`).
 
+### Named-module contributions and docstring delivery, 2026-11-14
+
+`search_file_activity_two_modules` names `packages/pipeline/file_activity.py` and
+`packages/pipeline/cline_activity.py` and scored `0/2` at `a23faa2` with one symbol sent.
+Diagnosed and implemented by Cline through the live gateway, verified here:
+
+- Every symbol of a module named by path gets the same score (the module segment is an exact
+  match), so `_promote_referenced_modules` hoisted one symbol per named module chosen by the
+  `qualified_name` tie-break: `file_activity.FileActivityCounts`.
+- That symbol's 4,688-char docstring was copied uncapped next to a 2,048-char span that already
+  contains its first ~1,950 chars, and `_enforce_budget` only pops from the tail. At the live
+  `chars_per_token=3.5` it cost 2,046 of the 2,048-token SEARCH budget by itself.
+
+Two commits, each measured on its own with `scripts/probe_replay.py`:
+
+- `1a3f8ee` - a named module contributes its module-level definitions, ordered by score then
+  position in the file, taken in turn across the named modules (`NAMED_MODULE_DEFINITION_RUN`
+  = 3). Scoring, ranking, budgets and `MIN_SUBSTRING_TOKEN_LENGTH` are untouched. One existing
+  expectation in `test_promotes_candidates_from_explicitly_referenced_modules` moved from a
+  method to its class, which is the rule itself. Offline compare against `a23faa2`: `OK`,
+  56 -> 59 of 66.
+- `7068d16` - `_docstring_beyond_delivered_text` drops from a candidate's docstring what its
+  own delivered text already carries; a span capped mid-docstring still sends the rest. Offline
+  compare against `1a3f8ee`: `OK`, 59 -> 59, 13 probes get more symbols in the same budget.
+
+**Live, two runs.** Worktree `C:\Users\ovidi\lap-i-7068d16` detached at `7068d16`, the same
+H1 configuration as the `a23faa2` runs (`build\fix_named_module_live\run_all.ps1`, only the
+paths changed), gateway index `modules=520 symbols=9161 relationships=20080`, runs
+13:32-13:37 and 13:37-13:41 (+02:00):
+
+| | `a23faa2` | run 1 | run 2 |
+| --- | --- | --- | --- |
+| context on | 54/66 | **57/66** | **57/66** |
+| original 11, context on | 26/30 | 26/30 | 26/30 |
+| `search_file_activity_two_modules` | 0/2 | 2/2 | 2/2 |
+| `search_delta_sentinel_value` | 1/3 | 2/3 | 2/3 |
+| context-arm prompt tokens | 74,423 | 73,999 | 73,999 |
+
+No other probe changed score. `test_history_group_capping_guard` now sends 6 symbols instead
+of 15 (two class spans fill its window) and stays `1/2` with the same miss
+(`max_current_tool_result_tokens`), so the cost-aware run Cline proposed for it is not
+justified by a measurement. Identical answers across the two runs on all 25 probes; no errors,
+no style violations, empty stderr.
+
+Gates on `main` at `7068d16`: `--full` 43 failed, 5201 passed, 3 skipped (baseline 43); live
+gate passed in the commit hook for both commits; ruff and mypy clean on the changed files.
+
+Artifacts (Git-ignored): `build\fix_named_module_live\` (`run_all.ps1`,
+`quality_run{1,2}.json`, `sessions_named_module_live.jsonl`, `gateway_out.txt`),
+`build\probe_replay\{a23faa2,1a3f8ee,7068d16}.json`.
+
+#### History cap in a long Cline session
+
+The Cline session that ran this task before (`1794607025696_4wq97`) hallucinated commits, a
+patch file and a user instruction, and edited nothing. The session log showed the history cap
+from `.env` (`APP_HISTORY_CAP_ENABLED=true`, `APP_HISTORY_CAP_TOKENS=3000`) dropping up to 191
+of 197 messages per request, so the model no longer saw its own earlier tool results. With
+`APP_HISTORY_CAP_ENABLED=false` and a restart, `/debug/runtime-context` reports
+`history_cap_enabled = False` and requests log `cap_applied: False, dropped_count: 0`; the
+rerun session (`1794641390570_nq273`, 260 messages) produced the diagnosis and commits above.
+The controlled harness configuration still sets the cap to 3000, which its short probes never
+reach. A cap suited to agent sessions (derived from the context window, or keeping the agent's
+own turns) is open and not authorized.
+
 ## Interpreting long runs, timeouts, and failed execution
 
 Three independent timeout layers can each produce a failure report. Identify

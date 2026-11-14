@@ -179,10 +179,10 @@ compare against the replay of the current baseline commit:
 ```powershell
 git worktree add --detach C:\Users\ovidi\lap-replay-<commit> <commit>
 .\uv.exe run python scripts\probe_replay.py --index-root C:\Users\ovidi\lap-replay-<commit> --out build\probe_replay\<commit>.json
-.\uv.exe run python scripts\probe_replay.py --compare build\probe_replay\a23faa2.json build\probe_replay\<commit>.json
+.\uv.exe run python scripts\probe_replay.py --compare build\probe_replay\7068d16.json build\probe_replay\<commit>.json
 ```
 
-It counts the expected facts present in the injected context (`56/66` at `a23faa2`), not
+It counts the expected facts present in the injected context (`59/66` at `7068d16`, `56/66` at `a23faa2`), not
 answers, and `--compare` exits 1 if any probe has fewer facts present than in the base.
 Run it from the checkout holding the change; index a clean worktree, so untracked files
 do not enter the index. A change still needs two live runs to be accepted.
@@ -195,9 +195,11 @@ The current fixed probe set has 25 probes and 66 total expected facts
 prior user/assistant turns before the scored final prompt, and the 3
 `explain_changed_files_*` probes that carry the change-aware ranking decision. Phase H1
 appended 14 more (`EXPANSION_PROBE_IDS`, 36 facts). The current baseline over all 66 is
-`54/66` with context, in both of two runs at `a23faa2` (no substring matching for query tokens
-under 3 characters; configuration and artifacts: `docs/live-gateway-runbook.md`,
-*Short-token substring matching*). The one fact below H2's `55/66` is
+`57/66` with context, in both of two runs at `7068d16` (a module named by path contributes its
+module-level definitions in turn, and a symbol's docstring is delivered once; configuration and
+artifacts: `docs/live-gateway-runbook.md`, *Named-module contributions and docstring delivery*).
+Before it, `54/66` at `a23faa2` (no substring matching for query tokens under 3 characters;
+*Short-token substring matching*): the one fact below H2's `55/66` was
 `search_file_activity_two_modules`, whose hit had come from `py` matching `copy`. Without
 context the score is `3/66` (H2; that arm does not depend on ranking). H1's `53/66` at
 `4d98e13` and H2's `55/66` are the records before it. Within it the original 11 still score

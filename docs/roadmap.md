@@ -2,13 +2,19 @@
 
 This roadmap is based on the current live gateway, not on dormant scaffolding.
 
-Last reviewed: 2026-11-13 (No new phase. A fix outside the roadmap, prompted by a Cline
+Last reviewed: 2026-11-14 (No new phase. A module named by path contributes its
+module-level definitions in turn (`1a3f8ee`) and a docstring already inside the delivered
+span is not sent again (`7068d16`). The controlled baseline is now `57/66` with context,
+measured twice at `7068d16`; see `docs/live-gateway-runbook.md`, *Named-module contributions
+and docstring delivery*.)
+
+Previous review: 2026-11-13 (No new phase. A fix outside the roadmap, prompted by a Cline
 `hi` that injected `apply_hive_mapping`: gitignore-aware symbol index, no context for
 greetings, no substring matching for query tokens under 3 characters. The controlled
 baseline is now `54/66` with context, measured twice at `a23faa2`; see
 `docs/live-gateway-runbook.md`, *Short-token substring matching*.)
 
-Previous review: 2026-11-10 (Phase H closed. H1 grew `PROBES` to 25 probes and 66 facts and
+Earlier review: 2026-11-10 (Phase H closed. H1 grew `PROBES` to 25 probes and 66 facts and
 measured `53/66` with context, `3/66` without. The answer cut on think-tag questions was traced
 to literal chat-template tags in injected source reaching the model as control tokens, and H2
 now escapes them in the repository-context block as `&lt;think>`, chosen over `<\think>` by
@@ -1060,6 +1066,8 @@ contained in it).
 The controlled baseline was `55/66`, measured with H2 applied on top of `b2135b3`. Since
 2026-11-13 it is `54/66` at `a23faa2`: short query tokens no longer match as substrings,
 which removed the accidental `py`-in-`copy` hit `search_file_activity_two_modules` scored on.
+Since 2026-11-14 it is `57/66` at `7068d16`: named modules contribute their definitions in turn
+and docstrings are delivered once (that probe `2/2`, `search_delta_sentinel_value` `2/3`).
 
 Still open, not authorized here:
 
