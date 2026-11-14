@@ -234,16 +234,16 @@ def looks_like_client_envelope_message(message: str) -> bool:
 
     The envelope is recognized at both ends: one of
     :data:`CLINE_BOOKKEEPING_TAGS` must open the message and the same tag must
-    close it.  Task text that carries an envelope alongside it, or merely quotes
-    one, is user-authored text and stays selectable, and nothing between the two
-    ends is parsed - the shape is the whole test, so a client cannot make the
-    gateway read a result body as structure.
+    close it, and anything outside whole envelopes must be whitespace.  Task text
+    that carries an envelope alongside it, between two of them, or merely quotes
+    one, is user-authored text and stays selectable.  An envelope body is never
+    parsed for structure; only where each envelope opens and closes is read.
 
     Args:
         message: One user-role message, already flattened to text.
 
     Returns:
-        ``True`` when the message consists of exactly one bookkeeping envelope.
+        ``True`` when the message is nothing but whole bookkeeping envelopes.
     """
     text = message.lstrip()
     match = _ENVELOPE_TAG_HEAD.match(text)
@@ -252,7 +252,13 @@ def looks_like_client_envelope_message(message: str) -> bool:
     tag = match.group(1)
     if tag not in CLINE_BOOKKEEPING_TAGS:
         return False
-    return text.rstrip().endswith(f"</{tag}>")
+    # Every envelope must be whole, and only whitespace may sit between them:
+    # text between two envelopes is text the user wrote, so checking only the
+    # two ends would set it aside with them.
+    envelope = re.compile(
+        rf"<{tag}(?:\s[^>]*)?>(?:(?!</{tag}>).)*</{tag}>", re.DOTALL
+    )
+    return not envelope.sub("", text).strip()
 
 
 def is_client_bookkeeping_message(message: str) -> bool:

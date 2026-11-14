@@ -253,6 +253,9 @@ def test_the_envelope_as_the_log_records_it_is_recognized() -> None:
     [
         pytest.param(HOOK_CONTEXT + "\nnow fix the parser", id="task-text-after"),
         pytest.param("explain the parser\n" + HOOK_CONTEXT, id="task-text-before"),
+        pytest.param(
+            HOOK_CONTEXT + "\nnow fix the parser\n" + HOOK_CONTEXT, id="task-text-between"
+        ),
         pytest.param(HOOK_CONTEXT.replace("</hook_context>", ""), id="never-closed"),
         pytest.param(HOOK_CONTEXT.replace("</hook_context>", "</other>"), id="other-close-tag"),
         pytest.param("<tool_result>done</tool_result>", id="unregistered-tag"),
