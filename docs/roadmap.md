@@ -2,7 +2,24 @@
 
 This roadmap is based on the current live gateway, not on dormant scaffolding.
 
-Last reviewed: 2026-11-15 (No new phase. Query selection was asked to extract task text from a message that
+Last reviewed: 2026-11-15 (No new phase. Intent detection treated a verb sitting inside a *question* as the
+instruction that beats an explanation request, so "Where do we add new providers in the registry? Explain
+briefly." planned as IMPLEMENT and "What should I fix first? Explain." as DEBUG, and a sequenced verb written
+as a label ("Next fix: none needed.") fired the second branch too. Both narrowed in place in
+`packages/planning/intent.py`: a marker in a sentence ending in `?` no longer resolves the collision unless
+that sentence opens by addressing the reader (`can you` / `could you` / `would you` / `will you` / `please`, so
+"Can you add a retry field and explain it?" is still IMPLEMENT), and the sequenced pattern rejects a colon
+directly after the verb. The keyword table, the priority order, the newest-message-first pass and every
+`context_intent` / custom-rule / task-marker precedence are unchanged, as is a question with no EXPLAIN keyword
+("Why does the builder add the import block?" - IMPLEMENT everywhere). Measurement: 192 real user turns over 63
+sessions in three arms, **0 flips** from `7cb03b4` and no label moved anywhere - the reach probe shows why, the
+rule fires on 45 of those turns and on none of them from a question-shaped verb; 27 `REPLAY_PROBES` through
+`PlanningStage` with no `context_intent` differ from their declared label on the same 13 probes before and
+after. Nine tests added, none changed or weakened, `tests/planning` 265 -> 274, live-path gate 2,730 passed,
+full suite 43 failures before (clean worktree of `945e2bb`, 5,277 passed) and after (5,286 passed). See
+`docs/live-gateway-runbook.md`, *A verb inside a question is not an instruction*.)
+
+Previous review: 2026-11-15 (No new phase. Query selection was asked to extract task text from a message that
 carries task text *and* a Cline `<hook_context>` envelope, and the measurement says no: the client flushes
 envelopes as their own user message, so no logged request and no recorded user turn in this deployment has
 ever carried an injected envelope beside its task, while 159 requests carry a task that *quotes* one - where

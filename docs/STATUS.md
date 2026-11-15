@@ -3,7 +3,35 @@
 This file is the current runtime snapshot. It intentionally describes only
 what matters for the live gateway path and calls out dormant code explicitly.
 
-Last reviewed: 2026-11-15 (A user message that carries task text **and** a `<hook_context>` envelope is
+Last reviewed: 2026-11-15 (Intent detection repriced a question as a task: `_match_action_before_explanation`
+counted an `_ACTION_MARKERS` verb sitting **inside a question the prompt was asking**, so "Where do we add new
+providers in the registry? Explain briefly." was IMPLEMENT(`add`), "What should I fix first? Explain." was
+DEBUG(`fix`), "Does the gateway create a new index per request? Please explain." and "Why do we add the import
+block? Explain." likewise - all five reported rows were EXPLAIN at c4dfac6 - and `_SEQUENCED_ACTION_RE` also
+fired on "Explain the diff. Next fix: none needed.", where `fix:` is a label, not an instruction. Two
+deterministic narrowing edits inside the collision logic, nothing else: `_states_work_at` asks one thing of the
+sentence holding a marker, whether it ends in `?`, and such a verb no longer resolves the collision unless the
+sentence opens by addressing the reader (`_QUESTION_OPENERS`: `can you`, `could you`, `would you`, `will you`,
+`please` - so "Can you add a retry field and explain it?" stays IMPLEMENT, and "…per request? Please explain."
+stays EXPLAIN because `please` opens the answer, not the question); and the sequenced pattern gained `(?!:)`,
+which rejects only a colon written directly after the verb. Text with no terminator after the verb counts as an
+instruction, so statements are decided exactly as before, and the keyword table, the priority order, the
+newest-message-first pass and IMPLEMENT's place in it are untouched - "Why does the builder add the import
+block?" has no EXPLAIN keyword, so the rule never runs on it: IMPLEMENT at c4dfac6, `7cb03b4` and here.
+Measured on the real transcripts (63 sessions, 192 text-bearing user turns, this session's excluded, three
+arms): turn-local DEBUG 43/57/57, DEFAULT 51/51/51, EXPLAIN 56/12/12, IMPLEMENT 12/42/42, REFACTOR 15/15/15,
+SEARCH 5/5/5, TEST 10/10/10 and **0 flips** `7cb03b4` -> candidate, with the same 0 in the request-shaped pass;
+the reach probe explains why - the rule fires on 45 of the 192 turns, on 43 of them from a verb in an
+imperative sentence, on 0 from a verb in a question and on 0 colon labels, so this is null-evidence-in-corpus,
+no-harm-in-traffic. 27 `REPLAY_PROBES` through `PlanningStage` with no `context_intent`: detected != declared on
+11 at c4dfac6, 13 at `7cb03b4`, 13 here, the same 13 probes and keywords, 0 moved. Nine new tests (eight in
+`TestQuestionSentencesInCollision`, one through the stage), `tests/planning` 265 -> 274, no existing
+expectation changed and none weakened; live-path gate 2,730 passed, full suite 43 failed / 5,277 passed before
+from a clean worktree of `945e2bb` and 43 failed / 5,286 passed after, ruff and mypy clean on the changed
+files. No gateway probe was run, by instruction. Evidence: `docs/live-gateway-runbook.md`, *A verb inside a
+question is not an instruction*.)
+
+Previous review: 2026-11-15 (A user message that carries task text **and** a `<hook_context>` envelope is
 selected whole, markup included - measured rather than "fixed". The shape is not something Cline sends:
 `@cline/agents` 0.2.0 `flushPendingHookContexts` joins the pending envelopes with `"\n\n"` and pushes them as
 **their own** user message (`displayRole: "system"`), and the composer escapes a body's `hook_context`

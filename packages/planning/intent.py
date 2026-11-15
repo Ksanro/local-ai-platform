@@ -44,6 +44,13 @@ would otherwise be EXPLAIN, so pure questions ("explain how X is
 implemented", "how do I add a provider") and prompts without an
 explanation request are classified exactly as before.
 
+Neither shape reaches inside a question the prompt is asking. A marker
+that sits in a sentence ending in ``?`` does not count unless that
+sentence opens by addressing the reader (``_QUESTION_OPENERS``: "can you
+add a retry field and explain it?" is a request), because wondering where
+work goes is not asking for it to be done; and a sequenced verb written
+as a label ("Next fix: none needed.") orders nothing.
+
 Message Order
 -------------
 
@@ -220,16 +227,35 @@ class Intent:
         (r"\bfix\b", DEBUG, "fix"),
     )
 
+    # Sentence terminators, used to find the sentence an action verb sits in.
+    _SENTENCE_TERMINATORS: tuple[str, str, str] = (".", "?", "!")
+
+    # The openings that make a question sentence a request. Such a sentence
+    # addresses the reader and asks them to do the work, so its verb counts even
+    # though it ends in "?": "can you add a retry field and explain it?" is a task.
+    # Any other sentence ending in "?" is the requester wondering - "where do we add
+    # providers?", "what should I fix first?", "does the gateway create one?" - and
+    # its verbs do not resolve an explanation collision.
+    _QUESTION_OPENERS: tuple[str, ...] = (
+        "can you",
+        "could you",
+        "would you",
+        "will you",
+        "please",
+    )
+
     # A mutation instruction sequenced after an explanation request: "explain
     # the failure, then fix the parser". Deliberately narrow - a sequencing word
     # immediately followed by an action verb, at most one polite adverb between
     # them - which is what keeps a question out of it ("How do I add a
     # provider?", "Explain it, then how do I add a provider?", "Explain what the
     # code does next."). It reads the verb, not its object: "then add nothing"
-    # counts, which is the cost of keeping the pattern bounded.
+    # counts, which is the cost of keeping the pattern bounded. A verb written as a
+    # label - "Next fix: none needed." - orders nothing, and the lookahead below
+    # rejects exactly that: a colon directly after the sequenced verb.
     _SEQUENCED_ACTION_RE = (
         r"\b(?:then|next|after\s+that|afterwards)\s+(?:please\s+|you\s+can\s+|also\s+)?"
-        r"(implement|modify|add|create|refactor|fix)\b"
+        r"(implement|modify|add|create|refactor|fix)\b(?!:)"
     )
 
     # The verbs above, mapped to (intent, reported keyword).
@@ -353,7 +379,10 @@ class Intent:
 
         A prompt that opens with the explanation and carries no such sequenced
         instruction ("explain how retry is implemented", "how do I add a field")
-        stays EXPLAIN, and so does any prompt with no action verb at all.
+        stays EXPLAIN, and so does any prompt with no action verb at all.  A verb
+        that sits inside a question the prompt is asking rather than an instruction
+        it is giving is the third case, and :meth:`_states_work_at` is how that is
+        told apart.
 
         Args:
             combined: Normalized, negation-stripped message text.
@@ -370,16 +399,49 @@ class Intent:
 
         best: tuple[int, int, str, str] | None = None
         for order, (pattern, intent, keyword) in enumerate(cls._ACTION_MARKERS):
-            match = re.search(pattern, combined)
-            if match is None or match.start() >= explanation_at:
-                continue
-            if best is None or (match.start(), order) < (best[0], best[1]):
-                best = (match.start(), order, intent, keyword)
+            for match in re.finditer(pattern, combined):
+                if match.start() >= explanation_at:
+                    break
+                if not cls._states_work_at(combined, match.start()):
+                    continue
+                if best is None or (match.start(), order) < (best[0], best[1]):
+                    best = (match.start(), order, intent, keyword)
+                break
 
         if best is not None:
             return IntentMatch(best[2], best[3])
 
         return cls._match_sequenced_action(combined, explanation_at)
+
+    @classmethod
+    def _states_work_at(cls, combined: str, start: int) -> bool:
+        """Return True when the verb at ``start`` instructs rather than wonders.
+
+        The sentence that holds the verb runs from the previous terminator to the
+        next one.  A sentence ending in ``?`` is the requester asking, not the
+        requester telling, so its verb does not resolve an explanation collision -
+        unless that sentence opens by addressing the reader, which makes the
+        question a request and its verb an instruction again.
+
+        Args:
+            combined: Normalized, negation-stripped message text.
+            start: Offset of the action verb inside ``combined``.
+
+        Returns:
+            ``False`` only when the verb sits in a sentence that ends in ``?`` and
+            opens with none of :attr:`_QUESTION_OPENERS`. Text with no terminator
+            after the verb is treated as an instruction, so every statement this
+            rule already decided is decided exactly as before.
+        """
+        ends = [combined.find(mark, start) for mark in cls._SENTENCE_TERMINATORS]
+        found = [offset for offset in ends if offset >= 0]
+        if not found:
+            return True
+        end = min(found)
+        if combined[end] != "?":
+            return True
+        begin = max(combined.rfind(mark, 0, start) for mark in cls._SENTENCE_TERMINATORS) + 1
+        return combined[begin:end].lstrip().startswith(cls._QUESTION_OPENERS)
 
     @classmethod
     def _match_sequenced_action(cls, combined: str, explanation_at: int) -> IntentMatch | None:
@@ -390,7 +452,9 @@ class Intent:
         though the explanation comes first. Only a sequencing word directly
         followed by an action verb qualifies, which is what leaves questions
         ("How do I add a provider?", "explain it, then how do I add one") on
-        EXPLAIN.
+        EXPLAIN. A verb written as a label - "Next fix: none needed." - names a
+        slot rather than ordering work, and the pattern rejects a colon written
+        directly after the verb.
 
         Args:
             combined: Normalized, negation-stripped message text.

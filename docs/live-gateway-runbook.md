@@ -3923,6 +3923,191 @@ left alone; nothing was committed or pushed.
 `build\probe_replay\mixed-envelope{,-final}.json`,
 `build\{mix,dilution,live_mixed}_out.txt`.
 
+### A verb inside a question is not an instruction, 2026-11-15
+
+`_match_action_before_explanation` (roadmap: *Actionable tasks that contain "explain"*,
+`7cb03b4`) resolves an EXPLAIN collision by looking for an action marker before the
+first EXPLAIN keyword. It counted that marker wherever it sat, including inside a
+question the prompt was asking, so five shapes were repriced as work requests:
+
+| prompt | c4dfac6 | `7cb03b4` | candidate |
+| --- | --- | --- | --- |
+| Where do we add new providers in the registry? Explain briefly. | EXPLAIN | IMPLEMENT (`add`) | EXPLAIN |
+| What should I fix first? Explain. | EXPLAIN | DEBUG (`fix`) | EXPLAIN |
+| Does the gateway create a new index per request? Please explain. | EXPLAIN | IMPLEMENT (`create`) | EXPLAIN |
+| Why do we add the import block? Explain. | EXPLAIN | IMPLEMENT (`add`) | EXPLAIN |
+| Explain the diff. Next fix: none needed. | EXPLAIN | DEBUG (`fix`) | EXPLAIN |
+| Can you add a retry field and explain it? | EXPLAIN | IMPLEMENT (`add`) | IMPLEMENT (`add`) |
+
+**The rule, in two parts, both inside the collision logic.**
+
+1. `_states_work_at` asks one question of the sentence that holds the marker: does it
+   end in `?`. A sentence ending in `?` is the requester wondering, not the requester
+   telling - asking *where* providers get added is not asking for one to be added - so
+   its verb does not resolve an explanation collision. The sentence is found by
+   scanning from the verb to the next `.`, `?` or `!`, and back to the previous one;
+   nothing is parsed, and text with no terminator after the verb is treated as an
+   instruction, so every statement the rule already decided is decided exactly as
+   before.
+2. `_SEQUENCED_ACTION_RE` gained `(?!:)`, which rejects one character: a colon written
+   directly after the sequenced verb. "Next fix: none needed." is a label for a slot,
+   and a label orders no work.
+
+**Why request-shaped questions stay actionable.** A question that opens by addressing
+the reader *is* the instruction, wrapped in question marks, so the exclusion exempts
+the five openings in `_QUESTION_OPENERS` - `can you`, `could you`, `would you`,
+`will you`, `please` - and "Can you add a retry field and explain it?" stays
+IMPLEMENT, as requirement 2 asks. The exemption is on the sentence's opening, not on
+the opener appearing anywhere in it: "Does the gateway create a new index per request?
+Please explain." keeps `please` in the *answer* sentence, so its question sentence is
+not exempt and the turn is EXPLAIN.
+
+**What was deliberately not touched.** The keyword table, the priority order, the
+newest-message-first pass and the position of IMPLEMENT in it are unchanged, and
+questions carrying no EXPLAIN keyword are untouched: "Why does the builder add the
+import block?" is IMPLEMENT at c4dfac6, at `7cb03b4` and here, because the collision
+rule never runs on text with no explanation request - the table matches `add`. That
+row is pinned as documentation, not as a claim it is right.
+
+
+**Historical corpus, three arms.** `build\intent_turn_measure.py` classifies every user
+turn in the client's own session records (the gateway session log truncates
+`last_user_message`, so it cannot carry this measurement) under `c4dfac6`, `7cb03b4` and
+the working copy. The session making this change is excluded: its turns quote the six
+example prompts, and scoring a corpus against text that names the cases is circular.
+
+```
+sessions: 63 (excluding 1794729344298_9pcde), user turns with text: 192
+
+=== turn-local classification of every user turn ===
+intent       c4dfac6   7cb03b4  candidate
+DEBUG             43        57         57
+DEFAULT           51        51         51
+EXPLAIN           56        12         12
+IMPLEMENT         12        42         42
+REFACTOR          15        15         15
+SEARCH             5         5          5
+TEST              10        10         10
+total classifications: 192
+
+turn-local flips, 7cb03b4 -> candidate (0 turns)
+
+=== request-shaped, last 30 user turns of each session ===
+intent       c4dfac6   7cb03b4  candidate
+DEBUG             22        61         61
+DEFAULT           22        22         22
+EXPLAIN           96        12         12
+IMPLEMENT         15        53         53
+REFACTOR           8        15         15
+SEARCH            14        12         12
+TEST              15        17         17
+total classifications: 192
+
+request-shaped flips, 7cb03b4 -> candidate (0 turns)
+```
+
+No turn moved, in either pass, and no turn moved *away* from EXPLAIN. That is the
+result, not a missing signal: `build\intent_question_reach.py` counts the shapes
+underneath the labels over the same corpus -
+
+```
+=== collision-rule reach over the same corpus ===
+  7cb03b4 rule fired                       45
+  candidate rule fired                     45
+  explanation keyword present              57
+  no explanation keyword                   135
+  turns                                    192
+  turns with a verb as an instruction      43
+```
+
+- the collision rule fires on 45 of 192 turns and fires identically under the candidate;
+- `turns with a verb inside a question`, `sequenced colon labels`, `rule changed its
+  mind` and `label changed` are absent from that output because each counted 0.
+
+So in the traffic this deployment has actually served, the rule has only ever been
+given verbs in imperative sentences. The shape the task reported comes from prompts
+written by hand around an example - which is exactly what the corpus cannot show and
+what the six tests in `TestQuestionSentencesInCollision` do show. The change costs
+nothing measurable and closes a class of prompt that would otherwise misprice.
+
+**Replay probes through `PlanningStage`, no `context_intent`** (pinning
+`context_intent` would bypass the behavior under test, so this does not use
+`scripts/probe_replay.py`'s configuration): of 27 `REPLAY_PROBES`, the detected intent
+differs from the probe's declared label on 11 at `c4dfac6`, 13 at `7cb03b4` and **13
+under the candidate, the same 13 probes with the same matched keywords**. Probes whose
+detection moved, `7cb03b4` -> candidate: **0**. The differing set is the one
+`7cb03b4` recorded (the DEFAULT-on-no-keyword group plus the replay-only envelope pair
+`cline_hook_context_answer` / `cline_hook_context_after_greeting`, EXPLAIN ->
+IMPLEMENT on `implement`); full table in `build\probe_stage_question.out`.
+
+
+**Where the boundary falls on forms the task did not list** (`build\intent_question_edges.py`,
+all three arms; `c4dfac6` says EXPLAIN on every row):
+
+| prompt | `7cb03b4` | candidate |
+| --- | --- | --- |
+| Please explain where we add providers? | EXPLAIN (`explain`) | EXPLAIN (`explain`) |
+| Explain the flow. Q: do we add the import here? A: no. | EXPLAIN (`explain`) | EXPLAIN (`explain`) |
+| "Step 1 - diagnose" / "Where do we add providers?" / "Explain briefly." | IMPLEMENT (`add`) | EXPLAIN (`explain`) |
+| Add tests for the parser, explain the coverage. | IMPLEMENT (`add`) | IMPLEMENT (`add`) |
+| Can we add a retry field? Explain what changed. | IMPLEMENT (`add`) | EXPLAIN (`explain`) |
+| Do you want me to add a probe? Explain the plan. | IMPLEMENT (`add`) | EXPLAIN (`explain`) |
+
+The fourth row is the rule doing its job: an imperative clause, verb before the
+explanation, unchanged from `7cb03b4`. The fifth and sixth are the opener list working
+as written - `can we` and `do you want me to` are not among the five openings, so those
+questions are questions; both were EXPLAIN before `7cb03b4` too, so this is a
+restoration and not a new loss.
+
+**Tests.** `tests/planning/test_intent.py` gained `TestQuestionSentencesInCollision`: the
+six cases the task named, plus `test_every_request_opener_keeps_a_question_actionable`
+(all five openings) and `test_question_with_no_explain_keyword_is_untouched`, which
+pins the out-of-scope row as documentation. `tests/planning/test_planning_stage.py`
+gained `test_execute_plans_question_that_names_an_action_verb_as_explain`, which sends
+the first row through the stage and asserts `plan.intent == "EXPLAIN"`,
+`planning_matched_keyword == "explain"` and the message the stage selected. `tests/planning`
+265 -> 274, no existing expectation changed, nothing weakened, deleted, skipped or
+xfailed: every one of the 11 requirement-4 rows already had a test and still passes as
+written.
+
+**Gates.** Focused `tests/planning` 274 passed in 0.63 s; `tests/pipeline` +
+`tests/context` + `tests/gateway` + `tests/evaluation` + `tests/scripts` 1,441 passed
+in 18.17 s; live-path gate (`scripts/precommit_test_gate.sh`, the pre-commit selection)
+`2730 passed in 119.63s`, `pre-commit: live gate OK`. Full suite before, from a clean
+detached worktree of `945e2bb`: `43 failed, 5277 passed, 3 skipped in 193.01s`; after,
+in this checkout: `43 failed, 5286 passed, 3 skipped in 220.68s` - the documented
+43-failure baseline both times, and the +9 passing are these tests. `ruff check` clean on
+`packages/planning/intent.py` and both test files; `ruff format --diff` reports
+`packages/planning/intent.py` and `test_planning_stage.py` already formatted and, in
+`test_intent.py`, only the pre-existing blank line after `from collections import
+Counter` inside `test_exactly_one_rule_per_intent`, a test this change did not touch.
+`uv run python -m mypy packages/providers packages/pipeline apps/gateway`:
+`Success: no issues found in 46 source files`. No gateway was started, stopped or
+inspected and no HTTP request was sent, per this task's restrictions - which is why the
+measurement above is corpus and probe classification rather than a live run.
+
+**Files:** `packages/planning/intent.py`, `tests/planning/test_intent.py`,
+`tests/planning/test_planning_stage.py`, and the four documents. Nothing else; in
+particular no scoring, ranking, ranking-config, budget, query-selection, history or
+provider file was touched, and `945e2bb` was left alone.
+
+**What is still uncertain.** The five openings are a list, not a grammar: a request
+phrased any other way ("add a retry field, could you explain it?" aside, e.g. "want you
+to add…", or a non-English request question) reads as a question and lands on EXPLAIN.
+The sentence scan uses `.`, `?` and `!` only, so a line break does not close a sentence -
+a marker on one line is judged against the next punctuation, which is what row three of
+the table above exercises. And the corpus evidence is null evidence: 192 turns, 45 rule
+firings, 0 of them question-shaped, so nothing here shows the change helps on recorded
+traffic - it shows it cannot hurt. The five reported rows are the only demonstration
+that it helps, and they are demonstrated in tests.
+
+**Artifacts (Git-ignored):** `build\intent_question_cases.py`,
+`build\intent_question_edges.py`, `build\intent_question_reach.py`,
+`build\intent_turn_measure.py` (three arms: c4dfac6 / 7cb03b4 / candidate),
+`build\intent_probe_stage.py` (same three arms, no `context_intent`),
+`build\{turn_question,reach,probe_stage_question}.out`,
+`build\full_{pre,post}.out`, `build\gate_live_question.log`.
+
 ## Interpreting long runs, timeouts, and failed execution
 
 Three independent timeout layers can each produce a failure report. Identify

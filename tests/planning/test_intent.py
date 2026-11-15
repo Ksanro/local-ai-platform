@@ -608,6 +608,84 @@ class TestSequencedActionAfterExplanation:
         assert match.keyword == "custom:flow"
 
 
+class TestQuestionSentencesInCollision:
+    """A verb inside a question the prompt asks is not an instruction it gives.
+
+    The collision rule reads work named before an explanation request as that work,
+    which is right for "add a retry field and explain it" and wrong for "where do we
+    add providers? explain briefly" - there the verb sits in a sentence the requester
+    is wondering out loud in, and the only thing asked for is an explanation. A
+    question that opens by addressing the reader is a request wearing question
+    clothing, so its verb counts again, and a sequenced verb written as a label
+    ("Next fix: none needed.") orders nothing.
+    """
+
+    def test_question_before_explain_is_explain(self):
+        """'Where do we add X? Explain.' asks where, it does not ask to add."""
+        match = Intent.detect_match(
+            ["Where do we add new providers in the registry? Explain briefly."]
+        )
+
+        assert match.intent == Intent.EXPLAIN
+        assert match.keyword == "explain"
+
+    def test_question_with_fix_before_explain_is_explain(self):
+        """'What should I fix first? Explain.' keeps the debug verb in the question."""
+        match = Intent.detect_match(["What should I fix first? Explain."])
+
+        assert match.intent == Intent.EXPLAIN
+        assert match.keyword == "explain"
+
+    def test_yes_no_question_with_create_before_explain_is_explain(self):
+        """A yes/no question contributes no action marker either."""
+        match = Intent.detect_match(
+            ["Does the gateway create a new index per request? Please explain."]
+        )
+
+        assert match.intent == Intent.EXPLAIN
+        assert match.keyword == "explain"
+
+    def test_why_question_with_add_before_explain_is_explain(self):
+        """'Why do we add X? Explain.' asks about a decision already taken."""
+        match = Intent.detect_match(["Why do we add the import block? Explain."])
+
+        assert match.intent == Intent.EXPLAIN
+        assert match.keyword == "explain"
+
+    def test_action_verb_written_as_a_label_is_explain(self):
+        """'Explain the diff. Next fix: none needed.' names a slot, not work."""
+        match = Intent.detect_match(["Explain the diff. Next fix: none needed."])
+
+        assert match.intent == Intent.EXPLAIN
+        assert match.keyword == "explain"
+
+    def test_request_question_still_counts_as_the_action(self):
+        """'Can you add X and explain it?' is a request wearing question clothing."""
+        match = Intent.detect_match(["Can you add a retry field and explain it?"])
+
+        assert match.intent == Intent.IMPLEMENT
+        assert match.keyword == "add"
+
+    def test_every_request_opener_keeps_a_question_actionable(self):
+        """All five openings exempt the question, not just the one above."""
+        for opener in ("can you", "could you", "would you", "will you", "please"):
+            text = f"{opener} add a retry field and explain it?"
+            assert Intent.detect([text]) == Intent.IMPLEMENT, text
+
+    def test_question_with_no_explain_keyword_is_untouched(self):
+        """The boundary of this rule, pinned as documentation.
+
+        'Why does the builder add the import block?' carries no EXPLAIN keyword, so
+        the collision rule never runs on it and the keyword table decides: IMPLEMENT
+        on 'add', at c4dfac6, at 7cb03b4 and here. Question handling was fixed inside
+        the collision rule only; general question classification is unchanged.
+        """
+        match = Intent.detect_match(["Why does the builder add the import block?"])
+
+        assert match.intent == Intent.IMPLEMENT
+        assert match.keyword == "add"
+
+
 class TestExtractWords:
     """Test the _extract_words helper method."""
 

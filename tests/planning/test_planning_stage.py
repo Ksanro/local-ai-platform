@@ -291,6 +291,38 @@ class TestPlanningStageExecute:
         assert plan.intent == "IMPLEMENT"
         assert context.get_metadata("planning_matched_keyword") == "add"
 
+    def test_execute_plans_question_that_names_an_action_verb_as_explain(self):
+        """A question turn plans as the question, not as the verb inside it.
+
+        The live shape the collision rule used to misprice: the work named in the
+        question ("where do we add new providers") is the thing being asked about,
+        and the only instruction in the turn is the explanation after it.
+        """
+        stage = PlanningStage()
+        context = PipelineContext(
+            request={
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": (
+                            "Where do we add new providers in the registry? "
+                            "Explain briefly."
+                        ),
+                    },
+                ]
+            }
+        )
+
+        result = asyncio.run(stage.execute(context))
+
+        assert result.success is True
+        plan = result.data
+        assert plan.intent == "EXPLAIN"
+        assert context.get_metadata("planning_matched_keyword") == "explain"
+        assert context.get_metadata("planning_last_user_message") == (
+            "Where do we add new providers in the registry? Explain briefly."
+        )
+
     def test_execute_context_intent_override_beats_action_collision(self):
         """An explicit context_intent still wins over the collision rule."""
         stage = PlanningStage()

@@ -129,6 +129,14 @@ Detection is:
   intent, and so does a mutation sequenced after it - "implement X and explain the
   change" and "explain the failure, then fix the parser" are action tasks, while
   "explain how X is implemented" stays EXPLAIN), then the keyword priority order.
+  Two things are outside that rule, both because they state no work: a marker inside
+  a question sentence - one ending in `?` - does not count unless the sentence opens
+  by addressing the reader (`can you`, `could you`, `would you`, `will you`,
+  `please`), so "Where do we add providers? Explain." is EXPLAIN while "Can you add
+  a retry field and explain it?" is IMPLEMENT; and a sequenced verb written as a
+  label ("Next fix: none needed.") does not count either. A prompt with no EXPLAIN
+  keyword is never reached by any of this - "Why does the builder add the import
+  block?" is IMPLEMENT off the keyword table, as it has always been.
   The newest non-empty user message is classified alone first; the combined text of
   all user messages is used only when that classification is DEFAULT.
 - The text it detects on is `select_task_texts(user_message_texts(...))`: a Cline
