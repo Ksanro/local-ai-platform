@@ -156,7 +156,39 @@ class TestPlanningStageExecute:
 
         assert context.get_metadata("planning_user_message_count") == 2
         assert context.get_metadata("planning_last_user_message") == ("Locate cap metadata")
-        assert context.get_metadata("planning_matched_keyword") == "find"
+        # The newest independently classifiable user message decides, so the
+        # keyword comes from "Locate cap metadata", not from the older turn.
+        assert context.get_metadata("planning_matched_keyword") == "locate"
+
+    def test_execute_newer_read_only_request_beats_older_action_turn(self):
+        """An older action turn must not override the newest read-only request.
+
+        Live shape of the regression: a task turn, an acknowledgement, then a
+        question that explicitly says not to change anything.
+        """
+        stage = PlanningStage()
+        context = PipelineContext(
+            request={
+                "messages": [
+                    {"role": "user", "content": "Add retry support."},
+                    {"role": "assistant", "content": "Understood."},
+                    {
+                        "role": "user",
+                        "content": (
+                            "Explain how repository context currently works. Do not modify files."
+                        ),
+                    },
+                ]
+            }
+        )
+
+        result = asyncio.run(stage.execute(context))
+
+        assert result.success is True
+        plan = result.data
+        assert plan.intent == "EXPLAIN"
+        assert context.get_metadata("planning_matched_keyword") == "explain"
+        assert context.get_metadata("planning_user_message_count") == 2
 
     def test_execute_honors_valid_context_intent_override(self):
         """Explicit context_intent should win over keyword detection."""
@@ -240,6 +272,43 @@ class TestPlanningStageExecute:
         assert plan.intent == "SEARCH"
         assert context.get_metadata("planning_matched_keyword") == "context_intent"
         assert context.get_metadata("planning_context_intent_override") == "SEARCH"
+
+    def test_execute_plans_actionable_task_that_asks_to_explain(self):
+        """Work named before an explanation request plans as that work."""
+        stage = PlanningStage()
+        context = PipelineContext(
+            request={
+                "messages": [
+                    {"role": "user", "content": "Add a health field and explain the change."},
+                ]
+            }
+        )
+
+        result = asyncio.run(stage.execute(context))
+
+        assert result.success is True
+        plan = result.data
+        assert plan.intent == "IMPLEMENT"
+        assert context.get_metadata("planning_matched_keyword") == "add"
+
+    def test_execute_context_intent_override_beats_action_collision(self):
+        """An explicit context_intent still wins over the collision rule."""
+        stage = PlanningStage()
+        context = PipelineContext(
+            request={
+                "messages": [
+                    {"role": "user", "content": "Add a health field and explain the change."},
+                ]
+            }
+        )
+        context.set_metadata("context_intent", "EXPLAIN")
+
+        result = asyncio.run(stage.execute(context))
+
+        assert result.success is True
+        plan = result.data
+        assert plan.intent == "EXPLAIN"
+        assert context.get_metadata("planning_matched_keyword") == "context_intent"
 
     def test_execute_uses_cline_task_block_for_intent_metadata(self):
         """Cline task text is used instead of noisy tool-result messages."""

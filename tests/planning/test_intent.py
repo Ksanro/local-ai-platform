@@ -409,6 +409,205 @@ class TestAdversarialCollision:
         )
 
 
+class TestActionableExplainCollision:
+    """Actionable work named before an explanation request keeps its intent.
+
+    EXPLAIN is first in the keyword priority order, so a prompt that asks for
+    work to be done and then for an explanation used to be classified EXPLAIN.
+    These cases pin the bounded rule that resolves that collision, and the
+    prompts it must leave alone.
+    """
+
+    def test_implement_with_explain_is_implement(self):
+        """'implement X and explain the change' is an implementation task."""
+        match = Intent.detect_match(
+            ["Implement a retry field in the provider client and explain the change."]
+        )
+
+        assert match.intent == Intent.IMPLEMENT
+        assert match.keyword == "implement"
+
+    def test_modify_files_with_explain_is_implement(self):
+        """'modify files and explain why' is an implementation task."""
+        match = Intent.detect_match(["Modify the files under packages/context and explain why."])
+
+        assert match.intent == Intent.IMPLEMENT
+        assert match.keyword == "modify"
+
+    def test_add_then_explain_is_implement(self):
+        """'add X, then explain it' is an implementation task."""
+        match = Intent.detect_match(["Add streaming to the gateway, then explain it."])
+
+        assert match.intent == Intent.IMPLEMENT
+        assert match.keyword == "add"
+
+    def test_explain_how_implemented_is_explain(self):
+        """A question about an implementation stays EXPLAIN."""
+        assert (
+            Intent.detect(["Explain how retry is implemented in the provider."]) == Intent.EXPLAIN
+        )
+
+    def test_explain_architecture_is_explain(self):
+        """A pure explanation request stays EXPLAIN."""
+        assert Intent.detect(["Explain the architecture."]) == Intent.EXPLAIN
+
+    def test_fix_with_explain_is_debug(self):
+        """'fix the error and explain the cause' stays a debug task."""
+        match = Intent.detect_match(["Fix the error and explain the cause."])
+
+        assert match.intent == Intent.DEBUG
+        assert match.keyword == "fix"
+
+    def test_refactor_with_explain_is_refactor(self):
+        """'refactor X and explain the result' stays a refactor task."""
+        match = Intent.detect_match(["Refactor session logging and explain the result."])
+
+        assert match.intent == Intent.REFACTOR
+        assert match.keyword == "refactor"
+
+    def test_explain_then_add_is_implement(self):
+        """A mutation sequenced after the explanation is still work to do.
+
+        Reverses the guard this class used to hold for that shape: requirement 5
+        states it as an action request, and it is decided by the sequencer
+        pattern, not by the position of the verb alone.
+        """
+        match = Intent.detect_match(["Explain this, then add tests."])
+
+        assert match.intent == Intent.IMPLEMENT
+        assert match.keyword == "add"
+
+    def test_explanation_with_a_noun_after_it_stays_explain(self):
+        """An action word after the question, with no sequencer, does not move it."""
+        assert (
+            Intent.detect(["Explain how retry is implemented in the provider."]) == Intent.EXPLAIN
+        )
+
+    def test_interrogative_with_action_verb_stays_explain(self):
+        """'how do I add X' is a question, not a task."""
+        assert Intent.detect(["How do I add a provider?"]) == Intent.EXPLAIN
+
+    def test_negated_action_before_explain_stays_explain(self):
+        """A removed negative command leaves the explanation in charge."""
+        assert Intent.detect(["Do not add anything, just explain the flow."]) == Intent.EXPLAIN
+
+    def test_do_not_modify_files_prompt_stays_explain(self):
+        """Read-only investigation wording keeps EXPLAIN.
+
+        Same shape as a real Cline prompt: the action verbs sit after the
+        explanation request, so nothing overrides it.
+        """
+        messages = [
+            (
+                "Explain investigation only. Do not modify files. "
+                "Add a note about how the tests run later."
+            )
+        ]
+        assert Intent.detect(messages) == Intent.EXPLAIN
+
+    def test_custom_rule_beats_action_collision(self):
+        """Configured rules keep precedence over the collision rule."""
+        match = Intent.detect_match(
+            ["Add a health field and explain the flow"],
+            custom_rules={"EXPLAIN": ("health",)},
+        )
+
+        assert match.intent == Intent.EXPLAIN
+        assert match.keyword == "custom:health"
+
+    def test_action_in_older_message_does_not_override_newer_explain(self):
+        """A marker in an older turn cannot reprice the newest user's request.
+
+        Replaces `test_action_marker_works_across_messages`, which pinned the
+        regression: detection reads the newest user message alone when that
+        message is classifiable on its own.
+        """
+        match = Intent.detect_match(
+            ["Add a health field to /v1/models.", "Explain what you changed."]
+        )
+
+        assert match.intent == Intent.EXPLAIN
+        assert match.keyword == "explain"
+
+    def test_default_followup_inherits_earlier_action_intent(self):
+        """A follow-up with no signal of its own keeps the conversation's intent."""
+        match = Intent.detect_match(
+            ["Add a health field to /v1/models.", "Same for the other file."]
+        )
+
+        assert match.intent == Intent.IMPLEMENT
+        assert match.keyword == "add"
+
+    def test_earliest_action_marker_decides(self):
+        """The first verb states the task when several precede the question."""
+        match = Intent.detect_match(["Fix the failing replay, then add a probe and explain both."])
+
+        assert match.intent == Intent.DEBUG
+        assert match.keyword == "fix"
+
+
+class TestSequencedActionAfterExplanation:
+    """A mutation sequenced after an explanation request keeps its own intent.
+
+    The second branch of the collision rule: the question comes first, but the
+    prompt still orders a change to the repository. The shape is bounded to a
+    sequencing word immediately followed by an action verb, so questions that
+    merely contain an action word stay EXPLAIN.
+    """
+
+    def test_explain_then_fix_is_debug(self):
+        """'explain the failure, then fix the parser' is a debug task."""
+        match = Intent.detect_match(["Explain the failure, then fix the parser."])
+
+        assert match.intent == Intent.DEBUG
+        assert match.keyword == "fix"
+
+    def test_explain_then_add_is_implement(self):
+        """'explain the current flow, then add retry support' is implementation."""
+        match = Intent.detect_match(["Explain the current flow, then add retry support."])
+
+        assert match.intent == Intent.IMPLEMENT
+        assert match.keyword == "add"
+
+    def test_explain_then_refactor_is_refactor(self):
+        """A sequenced restructure instruction stays a refactor task."""
+        match = Intent.detect_match(["Explain the module, then refactor the helpers."])
+
+        assert match.intent == Intent.REFACTOR
+        assert match.keyword == "refactor"
+
+    def test_interrogative_with_action_verb_stays_explain(self):
+        """'how do I add X' carries no sequenced instruction."""
+        assert Intent.detect(["How do I add a provider?"]) == Intent.EXPLAIN
+
+    def test_question_after_the_sequencer_stays_explain(self):
+        """A sequencer followed by a question, not a verb, stays EXPLAIN."""
+        assert Intent.detect(["Explain it, then how do I add a provider?"]) == Intent.EXPLAIN
+
+    def test_word_next_without_a_sequenced_verb_stays_explain(self):
+        """'next' used as an adverb does not order work."""
+        assert Intent.detect(["Explain what the code does next."]) == Intent.EXPLAIN
+        assert Intent.detect(["What happens next, explain the flow."]) == Intent.EXPLAIN
+
+    def test_third_person_verb_after_the_sequencer_does_not_match(self):
+        """Whole-word matching still applies to the sequenced verb."""
+        assert Intent.detect(["Explain the flow, then it adds a symbol."]) == Intent.EXPLAIN
+
+    def test_sequenced_verb_with_an_empty_object_still_reads_as_action(self):
+        """Known cost of the bounded pattern: the verb counts, its object does not."""
+        assert Intent.detect(["Explain the flow, then add nothing."]) == Intent.IMPLEMENT
+
+    def test_custom_rule_beats_sequenced_action(self):
+        """Configured rules keep precedence over the sequenced branch too."""
+        match = Intent.detect_match(
+            ["Explain the current flow, then add retry support."],
+            custom_rules={"EXPLAIN": ("flow",)},
+        )
+
+        assert match.intent == Intent.EXPLAIN
+        assert match.keyword == "custom:flow"
+
+
 class TestExtractWords:
     """Test the _extract_words helper method."""
 

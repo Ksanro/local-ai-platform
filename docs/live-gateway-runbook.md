@@ -3553,6 +3553,249 @@ ruff and mypy clean on the changed files. The live 8001 gateway needs a restart 
 
 Artifacts (Git-ignored): `build\probe_replay\{9378cd1,288cb8d,review-288cb8d,19dc0f6}.json`.
 
+### Actionable tasks that contain "explain", 2026-11-14/15
+
+`Intent.detect_match` checked EXPLAIN first, so any prompt carrying an EXPLAIN
+keyword was classified EXPLAIN, and it read every user message of a request as
+one concatenated string. The recorded traffic shows how wide the first half was
+(`build\intent_session_measure.py`): in `logs/cline_sessions.jsonl`, 728 requests
+were logged before this task's own session (cutoff `2026-11-14T18:52:53Z`); 727 of
+them carry a non-empty `planning.last_user_message` - the 728th has
+`user_message_count: 0` and recorded `DEFAULT`, which is the extra filter behind
+the 727 - and those 727 record `EXPLAIN` 452, `DEFAULT` 268, `TEST` 6,
+`IMPLEMENT` 1. 451 of the 452 EXPLAIN records matched on the bare keyword
+`explain`. An implementation task that said "and explain the change" was
+budgeted and profiled as a question.
+
+That log cannot measure the correction: `planning.last_user_message` is written
+through `_truncate(..., 500)` (`apps/gateway/session_log.py:467`) and keeps only
+the *last* user message, while a Cline request carries its task text in an earlier
+message. `build\intent_turn_measure.py` therefore reads the real transcripts -
+every user turn (full text) in
+`C:\Users\ovidi\.cline\data\sessions\<id>\<id>.messages.json`, 62 sessions,
+188 text-bearing user turns, the current session's own excluded - and classifies
+each one three ways: with `packages/planning/intent.py` as of `c4dfac6` (loaded
+from `C:\Users\ovidi\lap-replay-c4dfac6`), with change 1 alone, and with both
+changes. Change 1 alone is reproduced two ways and the two arms were compared
+over 430 classifications with 0 disagreements (`build\intent_arm_check.py`): the
+working copy with `_match_sequenced_action` overridden to return `None`, and
+`build\intent_c1_snapshot.py` with change 2 removed by hand. That is what makes
+the two changes separately attributable below.
+
+What that corpus is, and what it is not: it is a **directional historical-corpus
+measurement over the stored transcripts**. It does not rebuild an OpenAI gateway
+request and it does not run `user_message_texts` or `select_task_texts`, so it
+carries turns the live path would set aside and keeps no request envelope, no
+system message and no message ordering of its own. The evidence for what the live
+stage does is kept separate below - the exact three-message PlanningStage
+regression test, the 27 `REPLAY_PROBES` run through `PlanningStage` without
+`context_intent`, and the hand-sent live gateway requests.
+
+Two changes, made and measured separately.
+
+**Change 1 - the collision rule.** `_match_action_before_explanation` in
+`packages/planning/intent.py`, evaluated after custom rules and after the two
+explicit task markers, and before the keyword table.
+- *Condition.* It finds the first EXPLAIN keyword in the normalized,
+  negation-stripped text and the first `_ACTION_MARKERS` hit (`implement`,
+  `modify`, `add`, `create` -> IMPLEMENT; `refactor` -> REFACTOR; `fix` -> DEBUG).
+  When a marker sits strictly before that keyword, the marker's intent wins; the
+  earliest marker decides, table order breaks a tie.
+- *Bounding.* It returns `None` whenever no EXPLAIN keyword is present, so it can
+  only ever change a prompt the priority table would already have called EXPLAIN -
+  a prompt that already lands on REFACTOR, DEBUG, TEST, SEARCH, IMPLEMENT or
+  DEFAULT is outside it, and IMPLEMENT was not moved ahead of any other intent.
+- Multi-word EXPLAIN keywords keep their substring semantics and single-word ones
+  their whole-word semantics, so the position test agrees with the table.
+
+**Change 2 - the sequenced instruction.** `_match_sequenced_action`, the second
+branch of the same rule: an action verb immediately after a sequencing word
+(`then`, `next`, `after that`, `afterwards`, with at most one polite adverb
+between them, `_SEQUENCED_ACTION_RE`) and located after the explanation request
+also wins, so "Explain the failure, then fix the parser" is DEBUG and "Explain
+the current flow, then add retry support" is IMPLEMENT. The sequencer is what
+keeps questions out of it: "How do I add a provider?", "Explain it, then how do
+I add a provider?" and "Explain what the code does next." stay EXPLAIN, and
+whole-word matching still excludes "then it adds". The pattern reads the verb and
+not its object, so "Explain the flow, then add nothing." is IMPLEMENT - the one
+cost of keeping it bounded, pinned by a test.
+
+**Message order (the live regression the first pass introduced).** PlanningStage
+passes every selected user message, and a positional rule over the concatenation
+let a verb in an older turn override the newest request: "Add retry support." +
+"Understood." + "Explain how repository context currently works. Do not modify
+files." came back IMPLEMENT/`add`. `detect_match` now classifies the newest
+non-empty message **alone first** and uses the combined text only when that
+classification is DEFAULT (`_classify` is the single pass; `detect_match` calls it
+on the newest message, then on the join). An older turn can therefore not
+override a newer independently classifiable request, while a signal-free follow-up
+("Same for the other file.") still inherits the conversation's intent.
+
+**Precedence and the tests it pinned.** `context_intent` still short-circuits
+detection in `PlanningStage` and `context_intent_rules` still wins over every
+built-in rule, including both branches; each is pinned by a case in
+`tests/planning/test_planning_stage.py` and `tests/planning/test_intent.py`.
+28 tests come with the two changes: 16 in `TestActionableExplainCollision`, 9 in
+`TestSequencedActionAfterExplanation`, and 3 in `TestPlanningStageExecute`
+(the newest-message regression, the actionable-through-the-stage plan, and the
+explicit `context_intent` override beating the collision rule). Three earlier
+expectations changed with the semantics and are now reversed with a note in
+place: `test_action_marker_works_across_messages` became
+`test_action_in_older_message_does_not_override_newer_explain`,
+`test_explanation_before_action_stays_explain` became
+`test_explain_then_add_is_implement` (change 2's own shape), and
+`test_execute_stores_detected_message_metadata` now reports the keyword of the
+newest message (`find` -> `locate`).
+
+Directional corpus numbers (`build\intent_turn_measure.py`). Turn-local, each
+user turn classified alone - 188 turns:
+
+| intent | `c4dfac6` | change 1 | change 1 + 2 |
+| --- | --- | --- | --- |
+| DEBUG | 43 | 56 | 56 |
+| DEFAULT | 50 | 50 | 50 |
+| EXPLAIN | 55 | 13 | 12 |
+| IMPLEMENT | 11 | 40 | 41 |
+| REFACTOR | 15 | 15 | 15 |
+| SEARCH | 5 | 5 | 5 |
+| TEST | 9 | 9 | 9 |
+
+42 of the 188 turns move under change 1 (`EXPLAIN`->`IMPLEMENT` 29,
+`EXPLAIN`->`DEBUG` 13) and **1 more** under change 2 (`EXPLAIN`->`IMPLEMENT`, turn
+`1791532083267_ffg8c#1`: "...Then implement the slice, verify it, and finish
+with:" behind a read-this-first opening). No turn moves *into* EXPLAIN, and
+DEFAULT, REFACTOR, SEARCH and TEST counts are untouched.
+
+The second pass is a synthetic prefix classification over the same corpus: each
+high-level user turn classified with the earlier user turns of its session placed
+in front of it (last 30 turns of each session, 188 rows). It is **directional
+only** - not a reconstructed gateway request, and it does not execute
+`user_message_texts` or `select_task_texts`, so which turns a live request would
+actually carry is not modelled here. Read it as the size and direction of the
+shift across multi-turn conversations; the stage-faithful evidence follows.
+
+| intent | `c4dfac6` | change 1 | change 1 + 2 |
+| --- | --- | --- | --- |
+| DEBUG | 22 | 60 | 60 |
+| DEFAULT | 22 | 22 | 22 |
+| EXPLAIN | 96 | 13 | 12 |
+| IMPLEMENT | 11 | 50 | 51 |
+| REFACTOR | 8 | 15 | 15 |
+| SEARCH | 14 | 12 | 12 |
+| TEST | 15 | 16 | 16 |
+
+On this directional pass, 92 of 188 rows move under change 1: 83 are `EXPLAIN`
+giving way to the action the prompt actually orders (`EXPLAIN`->`DEBUG` 39,
+`EXPLAIN`->`IMPLEMENT` 37, `EXPLAIN`->`REFACTOR` 7). The other 9 are the
+newest-message rule rather than the collision rule, and each is listed in the run
+output with the newest turn beside it: 4 `SEARCH`->`IMPLEMENT` (the newest turn is
+"Create a new file named ..." or "Add a second line ...", which an older turn's
+"find" had labelled SEARCH), and 5 lateral moves where an older turn's keyword had
+outvoted the newest message (`DEBUG`->`TEST`, `DEBUG`->`SEARCH`,
+`REFACTOR`->`SEARCH`, `IMPLEMENT`->`DEBUG`, `IMPLEMENT`->`REFACTOR`). Change 2 adds
+the 1 turn above and nothing else.
+
+Three pieces of evidence run the real stage, and they stand apart from the corpus
+numbers above:
+
+1. **The exact three-message request shape**, as a `PlanningStage` test
+   (`test_execute_newer_read_only_request_beats_older_action_turn` in
+   `tests/planning/test_planning_stage.py`): user "Add retry support.", assistant
+   "Understood.", user "Explain how repository context currently works. Do not
+   modify files." through `PlanningStage.execute`, asserting `plan.intent ==
+   "EXPLAIN"` and `planning_matched_keyword == "explain"`. Two further stage tests
+   cover the same prompt through the stage: the single-message actionable case, and
+   an explicit `context_intent` override beating the collision rule.
+2. **All 27 `REPLAY_PROBES` through `PlanningStage`** with no `context_intent`.
+3. **Hand-sent live gateway requests**, read back from the session log.
+
+Probe intents, measured the way the replay cannot measure them
+(`build\intent_probe_stage.py`: every `REPLAY_PROBES` prompt through
+`PlanningStage` with **no** `context_intent` set, so detection decides):
+detected intent differs from the probe's declared label for 11 probes at
+`c4dfac6`, 13 after both changes - 2 probes move, `cline_hook_context_answer` and
+`cline_hook_context_after_greeting`, `EXPLAIN` -> `IMPLEMENT` (keyword
+`implement`). Those are the replay-only envelope pair; their newest user message
+is bookkeeping, so the combined fallback classifies the task text in front of it,
+which is an implementation task. `probe_replay` pins `context_intent` per probe,
+so its `OK` line says only that retrieval is unchanged - the byte-identical
+replay confirms that: indexing a worktree detached at `c4dfac6`, this checkout's
+replay equals `build\probe_replay\19dc0f6.json` file for file, and `--compare`
+reports `OK: facts present 67 -> 67 of 74; 27 of 27 probes send identical symbols`
+(25 live probes `59/66` facts present, the envelope pair `8/8`) - the same line
+from `build\probe_replay\intent-c2.json` and from the replay of the final source,
+`build\probe_replay\intent-final.json`.
+
+Live, eleven hand-sent requests on the 8001 gateway restarted with both changes,
+no `context_intent` in any payload, read back from the session log
+(`build\intent_live_check.py`, 11/11 `ok`, run twice - after the restart at
+01:0x and again at 01:4x on the final source). Each prompt carried a unique
+`intentfix-<id>` token so its record could be found in the log.
+
+| request | recorded intent | matched_keyword |
+| --- | --- | --- |
+| Implement a health field for /v1/models and explain the change. | IMPLEMENT | `implement` |
+| Modify the files under packages/context and explain why. | IMPLEMENT | `modify` |
+| Add streaming to the session writer, then explain it. | IMPLEMENT | `add` |
+| Explain how retry is implemented in the provider. | EXPLAIN | `explain` |
+| Explain the architecture. | EXPLAIN | `explain` |
+| Fix the error and explain the cause. | DEBUG | `fix` |
+| Refactor session logging and explain the result. | REFACTOR | `refactor` |
+| "Add retry support to the provider client." / "Understood." / "Explain how repository context currently works. Do not modify files." | EXPLAIN | `explain` |
+| "Add a health field to /v1/models." / "Added it." / "Same for the other file." | IMPLEMENT | `add` |
+| Explain the failure, then fix the parser. | DEBUG | `fix` |
+| Explain the current flow, then add retry support. | IMPLEMENT | `add` |
+
+The 25 live probes were then run twice against that gateway
+(`build\c2_probes_run{1,2}.json`, `--model qwen38-27b --max-tokens 8192
+--timeout 345 --reasoning-model qwen38-27b --json`, from 01:17:22 +02:00):
+
+| | run 1 | run 2 |
+| --- | --- | --- |
+| facts found | 54/62 | **58/66** |
+| style violations | 0 | 0 |
+| errored probes | 1 (`explain_live_path`, backend `Server disconnected` -> 502 at 01:17:57) | 0 |
+| prompt tokens | 79,040 | 81,886 |
+| wall clock | 01:17:22-01:25:29 | 01:25:29-01:32:30 |
+
+An earlier pair of the same runs (`build\intent_probes_run{1,2}.json`, 21:29:51 and
+21:36:11 +02:00, `54/63` with one backend 502 and `58/66` clean) measured the first
+pass of this change, before the message-order correction and the sequenced branch;
+the pair above supersedes it. Nothing in either pair depends on detection: the
+harness sends each probe's `context_intent`, so every probe prompt is the one HEAD
+builds - which is also what the byte-identical replay shows. The run above used the
+live 8001 gateway with the current `.env` (history cap disabled) indexing this
+working tree, not the controlled H1 worktree configuration the published `57/66`
+came from, so it is a live no-regression check, not a new baseline; the misses are
+the already-recorded ones (`explain_changed_files_history_cap` 0/4,
+`implement_runtime_debug_route_path` `_gateway_session_summary`,
+`test_history_group_capping_guard` `max_current_tool_result_tokens`,
+`explain_changed_file_promotion_two_modules` `_surface_session_metadata`,
+`refactor_changed_file_promotion_counts` `changed_file_promotion_counts`).
+
+Files this change touched: `packages/planning/intent.py`,
+`tests/planning/test_intent.py`, `tests/planning/test_planning_stage.py`,
+`docs/STATUS.md`, `docs/roadmap.md`, `docs/live-gateway-runbook.md`, and the
+detection-precedence list in `docs/context-planning.md`.
+
+Gates: the live-gate sets pass on the changed code - `tests/planning` 265
+(237 at `c4dfac6`, +28 tests here), `tests/pipeline` + `tests/context` +
+`tests/gateway` + `tests/providers` + `tests/serializers` 1,184, and
+`tests/evaluation` + `tests/scripts` + `tests/test_protocol_invariant.py` +
+`tests/capabilities` + `tests/tasks` + `tests/engineering_memory` 1,397,
+`tests/repository` 573; the observability files run in the full-suite pass below.
+Full suite: `43 failed, 5259 passed, 3 skipped in 203.33s` - the documented
+43-failure dormant-package baseline, and `5231 + 28` passing at `c4dfac6`, the 28
+being these tests. ruff and mypy clean on `packages/planning/intent.py`;
+`ruff format --check` still wants one blank line in the pre-existing
+`test_exactly_one_rule_per_intent`, and `ruff check` reports three pre-existing `I001`
+findings in `tests/planning/test_intent_rules.py` - both files this change did not touch.
+
+Artifacts (Git-ignored): `build\probe_replay\intent-fix.json` and
+`build\probe_replay\intent-c2.json`, `build\intent_{turn_measure,probe_stage,live_check,session_measure,arm_check}.py`,
+`build\intent_c1_snapshot.py` (the change-1 module the stub arm is checked
+against), `build\{turn,probe_stage}_*.out`, `build\c2_probes_run{1,2}.json`.
+
 ## Interpreting long runs, timeouts, and failed execution
 
 Three independent timeout layers can each produce a failure report. Identify

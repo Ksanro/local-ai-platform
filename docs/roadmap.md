@@ -1064,6 +1064,48 @@ contained in it).
      `debug_streaming_preview`, each by 38-58 tokens); every other prompt was
      byte-identical.
 
+4. **Intent - actionable tasks that contain "explain" - DONE 2026-11-15.** Evidence:
+   `docs/live-gateway-runbook.md`, *Actionable tasks that contain "explain", 2026-11-14/15*.
+   - *Problem.* `Intent.detect_match` checked EXPLAIN first, over every user message of a request
+     joined into one string, so a prompt that asked for work and then for an explanation was
+     classified EXPLAIN. Of the 728 requests in `logs/cline_sessions.jsonl` logged before this
+     task's own session, the 727 that carry a non-empty detection input recorded EXPLAIN 452 times
+     and 451 of those matched on the bare keyword `explain`, which is how the Cline tasks and the
+     `<hook_context>` sessions got their budget and retrieval profile.
+   - *Change 1, the collision rule.* `_match_action_before_explanation`: when an action marker
+     (`implement`, `modify`, `add`, `create` for IMPLEMENT; `refactor` for REFACTOR; `fix` for
+     DEBUG) sits before the first EXPLAIN keyword, the action's intent wins. It runs after custom
+     rules and after the two explicit task markers, and returns nothing when no EXPLAIN keyword is
+     present, so it can only change a prompt the priority table would already have called EXPLAIN.
+     IMPLEMENT was not moved ahead of any intent in general, and `context_intent` and
+     `context_intent_rules` keep their precedence.
+   - *Change 1 correction, message order.* The first pass read that concatenation, so an action
+     verb in an older turn overrode a newer read-only question ("Add retry support." +
+     "Understood." + "Explain how repository context currently works. Do not modify files." came
+     back IMPLEMENT/`add`). `detect_match` now classifies the newest non-empty user message alone
+     first and falls back to the combined text only when that is DEFAULT: the shape above is
+     EXPLAIN/`explain`, and a signal-free follow-up ("Same for the other file.") still inherits the
+     conversation's intent.
+   - *Change 2, sequenced mutation.* The second branch of the same rule: a mutation verb directly
+     after a sequencing word and located after the explanation request also wins, so "Explain the
+     failure, then fix the parser" is DEBUG and "Explain the current flow, then add retry support"
+     is IMPLEMENT, while "How do I add a provider?" and "Explain it, then how do I add a provider?"
+     stay EXPLAIN. Measured apart from change 1 (its hook stubbed out), so its own effect is one
+     turn of 188 and zero probes.
+   - *Measured.* 28 new tests (`tests/planning` 237 -> 265), including the three-message
+     PlanningStage regression; two earlier expectations were reversed on purpose
+     (`test_action_marker_works_across_messages`, `test_explanation_before_action_stays_explain`)
+     and one pre-existing keyword assertion moved from `find` to `locate`. Over the real transcripts
+     - 188 text-bearing user turns in 62 sessions under `C:\Users\ovidi\.cline\data\sessions`,
+     because the gateway log truncates `last_user_message` - EXPLAIN drops 55 -> 12 turn-local and
+     96 -> 12 request-shaped with nothing moving into EXPLAIN. Through `PlanningStage` with no
+     `context_intent`, 2 of 27 `REPLAY_PROBES` change label (the replay-only envelope pair,
+     EXPLAIN -> IMPLEMENT). The offline replay stays byte-identical to the `19dc0f6` file:
+     `OK: facts present 67 -> 67 of 74; 27 of 27 probes send identical symbols` - which measures
+     retrieval only, since the replay pins `context_intent`. Eleven hand-sent requests on the
+     restarted gateway recorded the expected intent and keyword; the live 25-probe runs and gate
+     counts are in the runbook section.
+
 The controlled baseline was `55/66`, measured with H2 applied on top of `b2135b3`. Since
 2026-11-13 it is `54/66` at `a23faa2`: short query tokens no longer match as substrings,
 which removed the accidental `py`-in-`copy` hit `search_file_activity_two_modules` scored on.
@@ -1072,8 +1114,6 @@ and docstrings are delivered once (that probe `2/2`, `search_delta_sentinel_valu
 
 Still open after 2026-11-14, not authorized:
 
-- Intent detection classes a task as `EXPLAIN` whenever its text contains "explain", including
-  implementation tasks (all 200 `<hook_context>` records, and the Cline tasks themselves).
 - A history cap suited to agent sessions (disabled in the live `.env`; see the runbook).
 - A message carrying task text and an envelope together is selected whole, markup included.
 - One offline replay scored the 25 probes `53/66` instead of `59/66` and did not reproduce;

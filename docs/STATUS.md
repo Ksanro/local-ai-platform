@@ -3,7 +3,36 @@
 This file is the current runtime snapshot. It intentionally describes only
 what matters for the live gateway path and calls out dormant code explicitly.
 
-Last reviewed: 2026-11-14 (A module named by path now contributes its module-level
+Last reviewed: 2026-11-15 (Intent detection classified an actionable task as `EXPLAIN` whenever its
+text carried an EXPLAIN keyword, because `Intent.detect_match` checks EXPLAIN first over all user
+messages joined: of the 728 requests logged in `logs/cline_sessions.jsonl` before this task's own
+session, the 727 that carry a non-empty detection input say `EXPLAIN` 452 times, 451 of them on the
+bare word `explain`, which is what priced the Cline tasks and the `<hook_context>` sessions.
+`packages/planning/intent.py` changes that twice, both bounded. (1) `_match_action_before_explanation`:
+when an action marker (`implement`, `modify`, `add`, `create` -> IMPLEMENT; `refactor` -> REFACTOR;
+`fix` -> DEBUG) sits before the first EXPLAIN keyword, the action's intent wins; a sequenced mutation
+after it ("Explain the failure, then fix the parser") also wins. With no EXPLAIN keyword in the text
+the rule returns nothing, so it can only ever change a prompt the priority table already called
+EXPLAIN, and IMPLEMENT was not moved ahead of any intent in general. (2) The newest non-empty user
+message is classified **alone first** and the combined text is used only when that is DEFAULT, so a
+verb in an older turn cannot override a newer request - the first pass at (1) read the concatenation
+and mispriced "Add retry support." + "Understood." + "Explain how context works. Do not modify
+files." as IMPLEMENT/`add`; it is EXPLAIN/`explain` now, pinned by a three-message PlanningStage
+test, and a signal-free follow-up ("Same for the other file.") still inherits the task's intent.
+`context_intent` and `context_intent_rules` keep their precedence. Over the real transcripts - 188
+text-bearing user turns in 62 sessions under `C:\Users\ovidi\.cline\data\sessions` (the gateway
+session log truncates `last_user_message`, so it cannot carry this measurement) - EXPLAIN drops
+55 -> 12 turn-local and 96 -> 12 request-shaped, and no turn moves into EXPLAIN; through
+`PlanningStage` with no `context_intent`, 2 of 27 `REPLAY_PROBES` change label, the replay-only
+envelope pair EXPLAIN -> IMPLEMENT. `tests/planning` grows 237 -> 265 with two earlier expectations
+reversed on purpose, the full suite holds the documented baseline (`43 failed, 5259 passed`), and
+the offline replay stays byte-identical to `19dc0f6`: `OK: facts present 67 -> 67 of 74; 27 of 27
+probes send identical symbols`. Eleven hand-sent requests on the restarted gateway recorded the
+expected intent and keyword, and two live 25-probe runs on that gateway scored
+`58/66` with no error and `54/62` with one probe lost to a backend 502 (live `.env`, history cap disabled, so not the controlled configuration).
+Evidence: `docs/live-gateway-runbook.md`, *Actionable tasks that contain "explain"*.)
+
+Previous review: 2026-11-14 (A module named by path now contributes its module-level
 definitions in turn, ordered by score then file position, instead of one symbol chosen by an
 alphabetical tie (`1a3f8ee`), and a symbol's docstring is no longer delivered a second time when
 its source span already carries it (`7068d16`). Live, two runs at `7068d16`: `57/66` with

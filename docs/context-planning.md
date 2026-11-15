@@ -123,6 +123,14 @@ Detection is:
 - Based on user messages only
 - First-match wins (checked in priority order)
 - O(number of keywords)
+- Precedence: explicit `context_intent` for the request, then configured
+  `context_intent_rules`, then the explicit task markers, then the action versus
+  explanation rule (an action marker before the first EXPLAIN keyword keeps its own
+  intent, and so does a mutation sequenced after it - "implement X and explain the
+  change" and "explain the failure, then fix the parser" are action tasks, while
+  "explain how X is implemented" stays EXPLAIN), then the keyword priority order.
+  The newest non-empty user message is classified alone first; the combined text of
+  all user messages is used only when that classification is DEFAULT.
 
 ### Planning Rules
 
