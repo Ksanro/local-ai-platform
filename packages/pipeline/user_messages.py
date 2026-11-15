@@ -19,6 +19,11 @@ is not a fourth view of the tool registry - no tool is written down there - and 
 deliberately does not reach the history cap, which must keep sending an envelope
 whole to the model.
 
+Recognition is positional: only where an envelope opens and closes is read, never
+what sits inside one.  A message that carries user text alongside an envelope is
+user text and stays selectable whole - :func:`select_task_texts` states why the
+boundary does not rewrite it.
+
 The two views are deliberately not the same set, and the difference is policy
 rather than drift.  Roadmap C1 widened *recognition*, so that a write or a
 replace now shows up in the file-activity counters; it must not have widened
@@ -179,6 +184,20 @@ def select_task_texts(messages: list[str]) -> list[str]:
     bookkeeping itself.  There is then no user-authored text to retrieve for,
     and retrieving for the client's own words is what made 200 requests in
     ``logs/cline_sessions.jsonl`` get answered out of a dormant package.
+
+    A message that carries user text *and* an envelope is selected whole, markup
+    included.  That is the policy of this boundary - it recognizes a message as
+    bookkeeping and never edits one - and it is set by the client observed in this
+    deployment, not by a promise about future ones: Cline 3.0.74 flushes each
+    envelope as a user message of its own (``@cline/agents``
+    ``flushPendingHookContexts``), so an *injected* envelope beside a task has not
+    occurred here, while a task that quotes a whole envelope in its own prose is
+    common.  What keeping that markup does to a symbol list is ranking's to decide,
+    and this rule neither claims nor forbids a difference.  Rewriting the user's text
+    is a different matter, because a span rule cannot tell a quotation from an
+    injection: that is how a prompt written about ``<task>...</task>`` became the
+    three-character query ``...`` (`19dc0f6`), and on this repository's own index it
+    would cost a real quoting turn 169 of its characters and two of its symbols.
     """
     filtered = [
         message

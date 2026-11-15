@@ -3,7 +3,32 @@
 This file is the current runtime snapshot. It intentionally describes only
 what matters for the live gateway path and calls out dormant code explicitly.
 
-Last reviewed: 2026-11-15 (Intent detection classified an actionable task as `EXPLAIN` whenever its
+Last reviewed: 2026-11-15 (A user message that carries task text **and** a `<hook_context>` envelope is
+selected whole, markup included - measured rather than "fixed". The shape is not something Cline sends:
+`@cline/agents` 0.2.0 `flushPendingHookContexts` joins the pending envelopes with `"\n\n"` and pushes them as
+**their own** user message (`displayRole: "system"`), and the composer escapes a body's `hook_context`
+mentions as `<\hook_context`. In the 1,399 records logged before this task's own requests, 202 newest-user
+messages are one whole 209-character envelope (all 200 that retrieved before `288cb8d` got
+`packages/tasks/context_builder.ContextBuilderTask.name`), 159 quote a whole envelope inside the user's own
+task, and the text selection carried both tags in exactly 200 records - all of them that pre-fix set, none a
+mixed message; over 193 user turns in the client's transcripts the split is 7 / 1 / 2 with zero injections.
+What extraction would have cost, on this repository's own index: a 2,043-character task with an appended
+envelope retrieves the same 6 symbols either way, a 122-character task goes 14 -> 18, and the real
+3,825-character turn that *quotes* an envelope loses 169 characters of the user's sentence and moves two
+symbols (`select_last_task_text` out, `looks_like_tool_result_message` in) - the `19dc0f6` failure mode, one
+tag vocabulary over. So `packages/pipeline/user_messages.py` gained the rule in its docstrings and nothing
+else, and `tests/pipeline/test_mixed_envelope_query_selection.py` (18 tests) pins the boundary and the four
+preserved halves: envelope-only still `empty` / `client_bookkeeping_only`, ordinary messages selected byte for
+byte, `<task>`-marker and `context_intent` precedence intact, the anaphoric join unchanged. Live on the
+restarted 8001 gateway, five hand-sent requests: mixed 343 characters with markup, `assembled`, 14 symbols;
+envelope alone `empty` / `client_bookkeeping_only`; the client's own task-then-envelope shape and the plain
+task identical at 133 characters and 16 symbols; the quoting turn 17 symbols with the dormant `packages/tasks`
+primary, because the user's sentence put those words there. Replay byte-identical
+(`67 -> 67 of 74; 27 of 27 probes send identical symbols`), live gate 2,721 passed, full suite
+`43 failed, 5277 passed` at the documented baseline, ruff and mypy clean on the changed files. Evidence:
+`docs/live-gateway-runbook.md`, *Task text with an attached envelope: extraction measured and declined*.)
+
+Previous review: 2026-11-15 (Intent detection classified an actionable task as `EXPLAIN` whenever its
 text carried an EXPLAIN keyword, because `Intent.detect_match` checks EXPLAIN first over all user
 messages joined: of the 728 requests logged in `logs/cline_sessions.jsonl` before this task's own
 session, the 727 that carry a non-empty detection input say `EXPLAIN` 452 times, 451 of them on the

@@ -131,6 +131,12 @@ Detection is:
   "explain how X is implemented" stays EXPLAIN), then the keyword priority order.
   The newest non-empty user message is classified alone first; the combined text of
   all user messages is used only when that classification is DEFAULT.
+- The text it detects on is `select_task_texts(user_message_texts(...))`: a Cline
+  envelope that arrives as its own user message is set aside, and a message that
+  carries user text alongside one is passed on whole, markup included. Extraction
+  from inside a message is not what this boundary does - see
+  `packages/pipeline/user_messages.py` and
+  `tests/pipeline/test_mixed_envelope_query_selection.py`.
 
 ### Planning Rules
 

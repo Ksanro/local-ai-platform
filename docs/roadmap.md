@@ -2,7 +2,21 @@
 
 This roadmap is based on the current live gateway, not on dormant scaffolding.
 
-Last reviewed: 2026-11-14 (No new phase. A module named by path contributes its
+Last reviewed: 2026-11-15 (No new phase. Query selection was asked to extract task text from a message that
+carries task text *and* a Cline `<hook_context>` envelope, and the measurement says no: the client flushes
+envelopes as their own user message, so no logged request and no recorded user turn in this deployment has
+ever carried an injected envelope beside its task, while 159 requests carry a task that *quotes* one - where
+span removal would drop 169 characters of the user's sentence and move two symbols. The boundary stays where
+`288cb8d`, `6f7bebf` and `19dc0f6` put it: recognize a message at its two ends, never edit its inside.
+`packages/pipeline/user_messages.py` gained the rule in its docstrings, and
+`tests/pipeline/test_mixed_envelope_query_selection.py` (18 tests) pins it with the four preserved halves
+(envelope-only still `client_bookkeeping_only`, ordinary messages unchanged, marker and `context_intent`
+precedence intact, anaphoric fallback intact); replay byte-identical, full suite at the 43-failure baseline,
+five live requests on the 8001 gateway recorded as predicted. See `docs/live-gateway-runbook.md`, *Task text
+with an attached envelope: extraction measured and declined*. The same day's intent-detection change
+(`7cb03b4`) is recorded in `docs/STATUS.md` and *Actionable tasks that contain "explain"*.)
+
+Previous review: 2026-11-14 (No new phase. A module named by path contributes its
 module-level definitions in turn (`1a3f8ee`) and a docstring already inside the delivered
 span is not sent again (`7068d16`). The controlled baseline is now `57/66` with context,
 measured twice at `7068d16`; see `docs/live-gateway-runbook.md`, *Named-module contributions

@@ -3796,6 +3796,133 @@ Artifacts (Git-ignored): `build\probe_replay\intent-fix.json` and
 `build\intent_c1_snapshot.py` (the change-1 module the stub arm is checked
 against), `build\{turn,probe_stage}_*.out`, `build\c2_probes_run{1,2}.json`.
 
+### Task text with an attached envelope: extraction measured and declined, 2026-11-15
+
+The claim put to this change was that when a user message carries genuine task text
+*and* a `<hook_context>` envelope, query selection keeps the whole message - markup
+included. It does, and `packages/pipeline/user_messages.py` shows why that is the
+boundary rather than a gap in it.
+
+**Reproduced through the real path first.** Through `PlanningStage` +
+`RepositoryContextStage` with the messages a request actually carries, a mixed turn
+selects its full text: 318 characters with the envelope in it against 108 without,
+in either order (`build\repro_mixed_envelope.py`), while an envelope that arrives as
+its own message still selects `""` and records
+`context.empty_reason: client_bookkeeping_only`. So the behavior is exactly as
+reported; what was reported as a bug turned out to be the interesting half of the
+question.
+
+**How often the shape occurs.** It does not occur as an injection.
+
+- Cline 3.0.74 / `@cline/agents` 0.2.0: `flushPendingHookContexts()` takes the
+  pending envelopes, joins them with `"\n\n"`, and pushes them as a user message of
+  its own (`displayRole: "system"`), spliced in after the assistant turn that asked
+  the question. The composer `ht()` never receives the user's text: it wraps a
+  hook's `appendContext` or a tool's `successContext` and escapes any `hook_context`
+  mention inside the body as `<\hook_context`. Sources seen in the bundle:
+  `RunStart`, `PreToolUse`, `PostToolUse`, `ToolSuccess`.
+- `logs/cline_sessions.jsonl`, the 1,399 records logged before this task's own
+  requests: 655 have the tag in their newest user message. 202 of those messages are
+  one whole envelope (all 209 characters, the `ask_question` answer notice - the
+  shape `288cb8d` fixed); 159 are a task that *quotes* a whole envelope inside the
+  user's own sentence; 294 mention the tag in prose with no closing tag inside the
+  500-character field. The text selection actually handed to retrieval carries both
+  tags in exactly 200 records, every one of them a pre-`288cb8d` pure-envelope
+  request, and all 200 recorded primary
+  `packages/tasks/context_builder.ContextBuilderTask.name`. **No logged request ever
+  retrieved an injected envelope attached to user text.**
+- The client's transcripts hold the same split: 193 user-role text blocks across
+  `C:\Users\ovidi\.cline\data\sessions`, 10 carrying the tag - 7 nothing-but-envelope,
+  1 whole envelope quoted inside a 3,825-character task, 2 prose mentions.
+  (The session log truncates `last_user_message` at `_truncate(..., 500)`
+  (`apps/gateway/session_log.py:467`), so it cannot separate the last two on its own.)
+
+**What extraction would have cost.** Three arms, this repository's own index
+(`build\measure_mix_dilution.py`):
+
+| Query | symbols | outcome of removing whole-envelope spans |
+| --- | --- | --- |
+| 2,043-char task + an appended envelope | 6 -> 6 | identical list, identical order - appended markup is free at this length |
+| 122-char task + an appended envelope | 14 -> 18 | the set grows with markup-matched noise; primary unchanged |
+| the real 3,825-char turn that *quotes* an envelope | 10 -> 10 | 169 characters of the user's own sentence dropped and two symbols move: `select_last_task_text` out, `looks_like_tool_result_message` in |
+
+That third row is the whole argument. A rule that finds spans inside a message cannot
+tell an injection from a quotation, and in this deployment only quotations occur -
+including in the prompts that ask for this line of work. It is the same failure
+`19dc0f6` closed for `<task>`: the session whose task was to fix envelope handling
+had its own query replaced by the three characters `...` because its prompt quoted the
+tags. The boundary is left exactly as `288cb8d`, `6f7bebf` and `19dc0f6` set it: it
+recognizes a message, and it does not edit one.
+
+**Decision: no behavior change.** `packages/pipeline/user_messages.py` gained the
+rule in its docstrings and `tests/pipeline/test_mixed_envelope_query_selection.py`
+(18 tests) pins it: a mixed turn selects whole in either order; two envelopes joined
+behind task text are kept and the same two alone are still bookkeeping; an envelope
+whose body carries the client's own `<\hook_context` escape is still recognized as one
+envelope; a quoting turn keeps its quotation, and the span-removed form is asserted to
+be a different string the boundary must not produce. The preserved halves are checked
+by name, not by implication - envelope-only stays
+`empty` / `client_bookkeeping_only`, an ordinary message is selected byte for byte, a
+`<task>` wrapper with an envelope after it still yields just the task, an envelope
+before a wrapper keeps the wrapper's own rule (the asymmetry, pinned as an asymmetry),
+the anaphoric join still returns previous + newest with no markup in it, and
+`context_intent` still outranks detection on a turn that carries an envelope.
+
+**Live, on the gateway restarted at this working tree (port 8001, live `.env`,
+history cap disabled, repository context on, `stream: false`, `max_tokens: 40`,
+model `qwen38-27b`), five hand-sent requests at 09:03:16-09:04:02Z.** The backend
+returned empty message content at that token budget on a reasoning model, so the
+session record - not the answer - carries the measurement; all five logged
+`status: ok`.
+
+| shape | request_id | selected | markup in query | context | symbols / primary |
+| --- | --- | --- | --- | --- | --- |
+| task + attached envelope, one message | `7b635c7c` | 343 ch | yes | `assembled` | 14 / `user_messages.select_task_texts` |
+| envelope alone | `064eeaed` | 0 ch | no | `empty`, `client_bookkeeping_only` | 0 / - |
+| task, report, envelope as its own message | `3019c5f0` | 133 ch | no | `assembled` | 16 / `user_messages.select_context_query_text` |
+| ordinary message | `cd543356` | 133 ch | no | `assembled` | 16 / same |
+| task quoting a whole envelope | `12f09561` | 387 ch | yes | `assembled` | 17 / `packages/tasks/context_builder.ContextBuilderTask.name` |
+
+The third and fourth rows are the same request with and without a bookkeeping turn
+attached, and they selected and retrieved identically - that is the `288cb8d`
+guarantee still holding on the live path. The last row is what a quotation costs:
+17 symbols and the dormant `packages/tasks` symbol as primary, because the user's own
+sentence put those words in the query. Removing the span would have changed the
+answer rather than cleaned it. Newest record at inspection (1,410 records):
+`f5a0b831`, this session's own turn, `n_messages: 271`, `status: ok`,
+`empty_reason: ""`.
+
+**Gates.** 18 new tests; `tests/pipeline` collects 437 with them, and the three
+envelope modules (`test_mixed_envelope_query_selection.py`,
+`test_user_messages.py`, `test_client_bookkeeping_context.py`) pass 80 in 1.44 s;
+live gate `2721 passed in 123.13s`; full suite
+`43 failed, 5277 passed, 3 skipped in 203.80s` against the documented 43-failure
+baseline (5,259 passed at `7cb03b4`, +18 here). `ruff check` clean on both changed
+files; `ruff format --check` still wants three pre-existing hunks in
+`packages/pipeline/user_messages.py` (the HEAD blob is reported identically) and
+finds the new test file already formatted. `mypy packages/providers
+packages/pipeline apps/gateway`: `Success: no issues found in 46 source files`.
+Offline replay from a detached worktree of `7cb03b4`
+(`build\probe_replay\mixed-envelope.json`, re-run on the final tree as
+`mixed-envelope-final.json` - the two files are the same bytes):
+`OK: facts present 67 -> 67 of 74; 27 of 27 probes send identical symbols` against
+`intent-c2.json`, `19dc0f6.json` and the final run, and the three JSON files are
+SHA-256 identical (`126046a1...c6224`, first two and last five hex digits). The
+change is docstrings and tests, and a
+byte-identical replay is the proof of that.
+
+**Files:** `packages/pipeline/user_messages.py` (docstrings only, no code line
+touched), `tests/pipeline/test_mixed_envelope_query_selection.py` (new), and
+`docs/STATUS.md`, `docs/roadmap.md`, `docs/context-planning.md`, this file.
+Scoring, ranking, `ranking_config`, budgets and every other retrieval behavior were
+left alone; nothing was committed or pushed.
+
+**Artifacts (Git-ignored):** `build\repro_mixed_envelope.py`,
+`build\measure_envelope_spans.py`, `build\measure_mix_dilution.py`,
+`build\probe_mixed_shapes.py`, `build\live_mixed_check.py`,
+`build\probe_replay\mixed-envelope{,-final}.json`,
+`build\{mix,dilution,live_mixed}_out.txt`.
+
 ## Interpreting long runs, timeouts, and failed execution
 
 Three independent timeout layers can each produce a failure report. Identify
