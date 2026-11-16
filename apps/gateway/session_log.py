@@ -173,6 +173,9 @@ would have spent the same way.
   so must not be able to end the detail either.
 * ``last_message_role`` / ``last_user_distance`` — the role of the newest
   message, and how far back the newest ``user`` message sits (``0`` is last).
+  ``None`` means the list holds no ``user`` message at all, which is the field
+  that says so: the protected position is then a fallback slot, and
+  ``last_user_group`` can be a group with no user message in it.
 * ``assistant_with_tool_calls`` / ``tool_result_count`` — messages carrying
   ``tool_calls``, and messages whose ``role`` is ``tool``.
 * ``complete_tool_groups`` / ``orphan_tool_calls`` / ``orphan_tool_results`` —
@@ -183,21 +186,33 @@ would have spent the same way.
   they carry 131,072 **cap-eligible** tokens (the largest budget the planned cap
   sweep simulates), whichever comes first.  Per group: ``ordinal`` (``0`` is newest),
   ``message_count``, ``tokens``, ``cap_eligible_tokens`` (what a budget is charged
-  for this group — zero for a system or protected-turn group), ``roles`` (count by
-  role), ``has_system``, ``has_last_user`` (the group holds the turn capping never
-  drops), ``has_tool_calls``, ``has_tool_results``, ``pairing_complete`` (nothing in
+  for this group - zero for a system group, and for the protected group only what
+  its non-protected members are worth: the protected message itself is never
+  charged, the rest of its group is), ``roles`` (count by
+  role), ``has_system``, ``has_last_user`` (the group holds the position capping
+  never drops - the name is legacy, and the position is a ``user`` message only when
+  the list holds one), ``has_tool_calls``, ``has_tool_results``, ``pairing_complete``
+  (nothing in
   the group dangles; a group with no tool traffic satisfies it trivially),
-  ``orphan_tool_calls`` and ``orphan_tool_results``.  Capping keeps a prefix of this
-  order, so this is what a "keep newest groups until the budget is exhausted" policy
-  is simulated from, and ``detail_complete`` says whether the prefix was the whole
+  ``orphan_tool_calls`` and ``orphan_tool_results``.  What capping keeps is the
+  protected group plus a prefix of this order - the protected group whatever it
+  costs, then newest-first until the first group that no longer fits - so this is
+  what a "keep newest groups until the budget is exhausted" policy is simulated
+  from, and ``detail_complete`` says whether the prefix was the whole
   list.
-* ``last_user_group`` — the same group summary for the protected current turn,
+* ``last_user_group`` — the same group summary for the protected turn,
   reserved rather than bounded: it is stated whether or not the walk reached that
   ordinal, so a transcript with more than 256 newer groups cannot lose the one group
-  capping is guaranteed to keep.  It is ``null`` only when the list has nothing to
-  protect, and it repeats the matching ``groups`` entry when the prefix already
+  capping is guaranteed to keep.  Reserved is not free - its
+  ``cap_eligible_tokens`` are spent against the budget before any other group is
+  considered, and if they alone exceed it the group is still kept whole and nothing
+  else is.  It is ``null`` only when the list has nothing to
+  protect - an all-assistant transcript, whose fallback slot is not an index at all
+  and where capping therefore protects nothing - and it repeats the matching
+  ``groups`` entry when the prefix already
   recorded it; it is not itself a member of ``groups``, which stays one contiguous
-  newest-first prefix.
+  newest-first prefix.  ``last_user_distance`` is the field that says whether the
+  protected position was a real ``user`` message: ``None`` means it was not.
 
 Schema history: v1 counted system and protected-turn tokens toward the 131,072-token
 coverage floor, so a transcript whose current turn was itself larger than that floor

@@ -315,25 +315,44 @@ def cap_history(
     1. **Never drop system messages.** All system messages are kept
        regardless of budget. They are not counted against
        ``max_history_tokens``.
-    2. **Never drop the last user message.** The current turn is always
-       kept in full.
-    3. **Keep the most recent messages that fit** ``max_history_tokens``,
-       walking backward from the newest.  Older messages are dropped
-       first.
+    2. **Never drop the protected turn, and never drop part of the group
+       around it.** The protected turn is the last ``user`` message when the
+       list holds one, and that message is kept in full.  A list with no user
+       message - the tail of an agent loop, or an all-assistant transcript -
+       has no such message, so the protected *position* falls back to the slot
+       after the trailing assistant messages, which can hold an assistant
+       message or a ``role: "tool"`` result; when even that falls outside the
+       list (every message is a trailing assistant) there is nothing to
+       protect and no index is invented for it.  Whatever role the protected
+       position holds, it belongs to one atomic group (rule 4) and the whole
+       group is kept: keeping a lone tool result while dropping the assistant
+       call that produced it would emit an orphan.  Only the protected message
+       itself is free of the budget; the other members of its group are worth
+       what ``summarize_history_shape`` says they are, and are *reserved*
+       against the budget before any other group is considered.
+    3. **Keep the most recent groups that fit what the reservation leaves** of
+       ``max_history_tokens``, walking backward from the newest and stopping at
+       the first group that does not fit.  Older messages are dropped first,
+       and a group that cannot be kept whole is not kept at all.
     4. **Preserve tool-call / tool-result pairing.** If a message is an
        assistant tool call and its matching tool result would be dropped
        (or vice versa), drop or keep them **together**.  Never leave a
        tool call without its result or a result without its call.
-    5. **Preserve order.** The kept messages stay in their original
-       relative order.
+    5. **Preserve order, and never duplicate a message.** The kept messages
+       stay in their original relative order and each input message appears at
+       most once, because what is kept is a set of positions in the input.
     6. **When nothing needs dropping** (history already fits), return the
        messages unchanged and ``dropped_count=0``.  The transform is a
        no-op under the budget.
+    7. **``dropped_count`` is truthful**: it is always
+       ``len(messages) - len(capped_messages)``.
 
     Args:
         messages: Full message list including system messages.
-        max_history_tokens: Token budget for non-system messages (excluding
-            the last user message).
+        max_history_tokens: Token budget for non-system messages other than the
+            protected one.  When the protected position falls inside a larger
+            atomic group, that group's cap-eligible tokens are charged against
+            this budget first and the rest of it is what the walk gets to fill.
         estimate: A callable that estimates token count from text.  Applied to
             every text field that is counted.  If not provided, uses
             ``int(len(text) / chars_per_token)``.
@@ -377,20 +396,32 @@ def cap_history(
     if not non_system_indices:
         return messages, 0
 
-    # Find the last user message index (among all messages, including system).
-    last_user_idx = len(messages) - 1 - _trailing_assistant_count(messages)
+    # The position this pass never drops.  A real ``user`` message when the list
+    # holds one; otherwise the fallback slot after the trailing assistant
+    # messages, which is a position rather than a user message; and otherwise
+    # nothing at all.  The validity guard matters: on an all-assistant list the
+    # fallback is ``len(messages) - 1 - len(messages)``, i.e. ``-1``, and a
+    # ``-1`` among the kept positions reads back as ``messages[-1]`` - the newest
+    # message kept twice, out of order, with a dropped count that no longer
+    # describes what came out.  An index outside the list protects nothing, so
+    # it never enters the kept set.
+    protected_idx: int | None = None
     for i in range(len(messages) - 1, -1, -1):
         if messages[i].get("role") == "user":
-            last_user_idx = i
+            protected_idx = i
             break
+    if protected_idx is None:
+        fallback_idx = len(messages) - 1 - _trailing_assistant_count(messages)
+        protected_idx = fallback_idx if 0 <= fallback_idx < len(messages) else None
 
-    # FIX 3: Total tokens of non-system messages EXCLUDING the last user message.
-    # The last user message is always kept outside the budget.
-    non_last_user_indices = [i for i in non_system_indices if i != last_user_idx]
-    total_non_last_user_tokens = sum(token_counts[i] for i in non_last_user_indices)
+    # FIX 3: Total tokens of non-system messages EXCLUDING the protected one.
+    # The protected message is always kept outside the budget.  This is the same
+    # figure ``summarize_history_shape`` states as ``cap_eligible_tokens``, which
+    # is what lets a budget be read off a recorded shape and land here.
+    eligible_total = sum(token_counts[i] for i in non_system_indices if i != protected_idx)
 
     # If everything fits, return unchanged.
-    if total_non_last_user_tokens <= max_history_tokens:
+    if eligible_total <= max_history_tokens:
         return (
             _cap_current_tool_result(
                 messages, max_current_tool_result_tokens, ratio
@@ -403,21 +434,34 @@ def cap_history(
     # Build atomic groups for tool-call/result pairing.
     groups = _build_cap_groups(messages)
 
-    # Build candidate groups for dropping: exclude system messages and the
-    # last user message's group, and only include groups that have at least
-    # one non-system, non-last-user member.
+    # The group the protected position belongs to.  It is reserved rather than
+    # treated as a candidate, because capping cannot split an atomic group: a
+    # protected tool result travels with the assistant call that produced it,
+    # and a protected assistant call travels with its results.  For a list that
+    # holds a real user message this is exactly the single protected message it
+    # has always been, because grouping links assistant calls to tool results
+    # and never touches a ``user`` or ``system`` message.
+    protected_group: set[int] = set()
+    if protected_idx is not None:
+        for group in groups:
+            if protected_idx in group:
+                protected_group = group
+                break
+
+    # Build candidate groups for dropping: everything except the protected
+    # group, and only groups with at least one member that is not a system
+    # message - a group of nothing but system text is kept regardless.
     # Each group is a set of indices.
     candidate_groups: list[set[int]] = []
     for group in groups:
-        # Skip groups that are entirely system or last-user.
-        has_capable_member = any(
-            i not in system_indices and i != last_user_idx
-            for i in group
-        )
+        if group == protected_group:
+            continue
+        has_capable_member = any(i not in system_indices for i in group)
         if has_capable_member:
             candidate_groups.append(group)
 
-    # If no candidate groups, nothing to cap.
+    # If no candidate groups, nothing to cap: what is left is system text and
+    # the protected group, all of which is kept whatever the budget says.
     if not candidate_groups:
         return (
             _cap_current_tool_result(
@@ -429,12 +473,25 @@ def cap_history(
     # Sort groups by their maximum index (newest-first ordering).
     candidate_groups.sort(key=lambda g: max(g), reverse=True)
 
-    # Accumulate tokens from newest groups until budget exhausted.
-    accumulated = 0
+    # Reserve before filling: the protected group is kept whole, but only the
+    # protected message inside it is free, so the rest of that group spends
+    # budget - and spends it before any other group gets a chance at what is
+    # left.  The same eligibility rule prices every candidate group; on
+    # candidates it is a no-op (they hold no system and no protected message),
+    # which is what keeps a real-user transcript capped precisely as before.
+    accumulated = sum(
+        token_counts[i]
+        for i in protected_group
+        if i != protected_idx and i not in system_indices
+    )
     kept_groups: list[set[int]] = []
 
     for group in candidate_groups:
-        group_tokens = sum(token_counts[i] for i in group)
+        group_tokens = sum(
+            token_counts[i]
+            for i in group
+            if i != protected_idx and i not in system_indices
+        )
         if accumulated + group_tokens <= max_history_tokens:
             kept_groups.append(group)
             accumulated += group_tokens
@@ -442,9 +499,11 @@ def cap_history(
             # This and older groups will be dropped.
             break
 
-    # Build kept set: all system indices + last user index + kept group members.
+    # Build kept set: all system indices + the whole protected group + kept
+    # group members.  Every one of them is an index that exists in ``messages``,
+    # so no message is kept twice and none is pulled out of order.
     kept_set: set[int] = set(system_indices)
-    kept_set.add(last_user_idx)
+    kept_set.update(protected_group)
     for group in kept_groups:
         kept_set.update(group)
 

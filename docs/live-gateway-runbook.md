@@ -4248,20 +4248,65 @@ fields already there and never in place of them.
 
 Each entry of `groups` - and `last_user_group`, which has the same shape:
 `ordinal` (`0` is newest), `message_count`, `tokens`, `cap_eligible_tokens` (what a
-budget is charged for this group; zero for a system or protected-turn group), `roles`
-(a count per role), `has_system`, `has_last_user`, `has_tool_calls`,
-`has_tool_results`, `pairing_complete` (nothing in the group dangles; a group with no
+budget is charged for this group; zero for a system group, and for the protected
+group only its non-protected members - the protected message itself is never
+charged), `roles` (a count per role), `has_system`, `has_last_user` (holds the
+protected position; the name is legacy), `has_tool_calls`, `has_tool_results`,
+`pairing_complete` (nothing in the group dangles; a group with no
 tool traffic satisfies it trivially), `orphan_tool_calls` and `orphan_tool_results`.
 
-To read a budget out of it, walk `groups` by ascending `ordinal`, keep every group
-marked `has_system` or `has_last_user` unconditionally and charge nothing for them, and
-stop at the first other group whose `cap_eligible_tokens` no longer fits. That is
+To read a budget out of it: take `last_user_group` first - it is kept whole whatever
+the budget says, and it is charged its own `cap_eligible_tokens` - then walk the other
+`groups` by ascending `ordinal`, keeping any group marked `has_system` wherever it sits
+and charging nothing for it, and stop at the first remaining group whose
+`cap_eligible_tokens` no longer fits what the reservation left. That is
 `cap_history`'s rule restated as a prefix, and it works because capping breaks on the
-first group it cannot fit: what it keeps is always a prefix of this order.
+first group it cannot fit: what it keeps is always the protected group plus a prefix of
+this order.
 `last_user_group` exists so that a prefix cut short by the 256-group bound still states
 the protected turn explicitly instead of leaving a reader to infer which kept group the
 newest traffic gathered around; it sits beyond the prefix in that case, and repeats the
 matching entry when the prefix already reached it.
+
+### The protected position when a transcript has no user message
+
+Added 2026-11-16 with the cap fix, documented here because it is the one place the
+two rules meet.
+
+`cap_history` protects a *message* when the inbound list holds a `user` message, and a
+*position* when it does not: the slot after the trailing assistant messages, computed by
+`packages.pipeline.history._trailing_assistant_count`. Three things follow, and the
+shape summary is written so all three are readable from it alone:
+
+* `has_last_user` / `last_user_group` name the group holding that position. The name is
+  legacy - it means "contains the protected position", not "contains a user message" -
+  so a no-user fallback can mark a group `has_last_user: true` while `roles` says
+  `{"assistant": 1, "tool": 1}`.
+* `last_user_distance is None` is what actually says no `user` message was in the list.
+  A `null` `last_user_group` says something stronger: there was no position to protect
+  at all, which happens on an all-assistant transcript, where the fallback slot is
+  `-1`. Capping does not clamp or invent an index there; it runs the ordinary
+  newest-first group walk with no protected group, so a zero budget on such a list
+  keeps nothing. That is pinned by
+  `tests/pipeline/test_history.py::TestNoUserFallbackIndex`.
+* The protected group is atomic. The fallback position can land on a `role: "tool"`
+  result, and capping cannot keep a result without the assistant call that produced it,
+  so the whole group is reserved. Only the protected message itself is free of the
+  budget; the group's other members consume budget exactly as that group's
+  `cap_eligible_tokens` says. If the reservation alone exceeds the budget, the group is
+  still kept whole and nothing else is kept at all.
+
+The schema did not change for this: `history-shape-v2` already stated per-group
+eligibility, and `summarize_history_shape` already followed the fallback correctly
+through `_protected_history_index`. What was wrong was `cap_history` - it force-kept a
+single index, which on an all-assistant list was `-1` (and `-1` reads back as the newest
+message, so a message could be emitted twice, out of order, with a dropped count that
+did not describe the output), and which on a tool group could leave an orphan result
+behind. `tests/pipeline/test_history.py::TestCapMatchesShapeSimulation` now walks the
+summary on the reference side and asserts the two agree message for message on both the
+real-user and the no-user shapes; it fails against the pre-fix code and passes against
+this. Real-user transcripts are unaffected at every budget, which the same test proves
+by including them.
 
 
 ### Privacy

@@ -180,6 +180,11 @@ def _protected_history_index(messages: list[dict[str, Any]]) -> int | None:
     protected here is the group the real cap would mark: the point is a faithful
     simulation, not a nicer story.
 
+    The fallback only counts when it is an index that exists.  A transcript of
+    nothing but trailing assistant messages has no such position - the slot after
+    them is ``-1`` - and ``cap_history`` protects nothing there rather than
+    inventing a turn, so this returns ``None`` and the two stay in step.
+
     Args:
         messages: The full message list.
 
@@ -292,12 +297,28 @@ def summarize_history_shape(
         index: a position is stated as a newest-first group ordinal or as a distance
         from the end.
 
-        To read a budget out of it: walk ``groups`` by ascending ``ordinal``,
-        unconditionally keeping any group marked ``has_system`` or ``has_last_user``
-        and charging nothing for it, and stop at the first other group whose
-        ``cap_eligible_tokens`` no longer fits.  That is ``cap_history``'s rule
-        restated as a prefix of this order, because capping breaks at the first group
-        it cannot fit.
+        To read a budget out of it: reserve ``last_user_group`` first - that
+        group is kept whole whatever the budget says, and it is not free: it
+        costs its own ``cap_eligible_tokens``, because only the protected
+        message inside it is.  Then walk the other ``groups`` by ascending
+        ``ordinal``, keeping any group marked ``has_system`` at no charge
+        wherever it sits, and stop at the first remaining group whose
+        ``cap_eligible_tokens`` no longer fits what the reservation left.  When
+        ``last_user_group`` is ``null`` there is nothing to reserve and that is
+        the whole rule: newest-first until the first group that does not fit.
+        That is ``cap_history``'s rule restated as a prefix of this order,
+        because capping breaks at the first group it cannot fit.
+
+        Read the group flags by what they count, not by their names.
+        ``has_last_user`` means the group holds the position capping never
+        drops - a legacy name from when only a real user message could be that
+        position.  With no user message in the list, capping protects the slot
+        after the trailing assistant messages instead, so the protected group
+        can carry ``has_last_user`` true while holding only an assistant call
+        and a ``role: "tool"`` result.  ``last_user_distance is None`` is the
+        field that says no ``user`` message was ever there; an all-assistant
+        list has neither a distance nor a ``last_user_group``, because its
+        fallback slot is not an index at all and capping invents one nowhere.
 
         Two partitions are stated, both exact over the whole list:
         ``recorded_tokens + omitted_tokens`` is the estimate of every message, system
@@ -308,7 +329,7 @@ def summarize_history_shape(
         must not be able to buy the detail out of the history it exists to record.
 
         ``last_user_group`` is that reservation made explicit - the detail of the
-        group holding the turn capping never drops, present whether or not the
+        group holding the position capping never drops, present whether or not the
         bounded walk reached its ordinal, and ``null`` only when the list holds
         nothing to protect.  It repeats the matching entry when the prefix already
         recorded that group, and it is not a member of ``groups``, so ``groups`` stays

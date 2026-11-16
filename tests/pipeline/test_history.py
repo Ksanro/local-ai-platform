@@ -10,6 +10,9 @@ Covers all capping rules:
 - list-form content counted correctly
 - history_cap_enabled=False path
 - budget derivation from the resolved model's definition.context_window
+- transcripts with no user message: the protected *position*, its atomic group,
+  and the all-assistant case where there is no position to protect
+- differential agreement with the ``history-shape-v2`` simulation rule
 """
 
 from __future__ import annotations
@@ -26,7 +29,14 @@ from packages.pipeline.engine import (
     _apply_history_cap,
     _resolve_history_chars_per_token,
 )
-from packages.pipeline.history import RATIO_MAX, RATIO_MIN, cap_history
+from packages.pipeline.history import (
+    RATIO_MAX,
+    RATIO_MIN,
+    _build_cap_groups,
+    _message_token_count,
+    cap_history,
+)
+from packages.pipeline.history_shape import summarize_history_shape
 from packages.pipeline.normalized import NormalizedRequest
 from packages.providers.models import ModelDefinition, ResolvedModel
 
@@ -1375,3 +1385,756 @@ class TestCalibratedRatioThroughTheEngine:
         assert len(calibrated["messages"][-1]["content"]) == int(20 * 3.5)
         assert calibrated["dropped_count"] == default["dropped_count"] == 0
         assert calibrated["messages"][-1]["content"].endswith(TRUNCATION_MARKER)
+
+
+# ---------------------------------------------------------------------------
+# No-user transcripts: the protected position and its atomic group
+# ---------------------------------------------------------------------------
+#
+# ``cap_history`` protects a *message* when the list holds a user message and a
+# *position* when it does not.  Both of the defects below were reachable only on
+# the no-user path, so every ordinary system/user/assistant/tool transcript in
+# this file is also a control: none of them changed.
+
+
+def _tokens(messages: list[dict[str, Any]]) -> list[int]:
+    """What the cap's own estimator charges each message of ``messages``."""
+    return [_message_token_count(m, CHARS_PER_TOKEN, _estimate) for m in messages]
+
+
+def _tool_call(call_id: str, arguments: str = "a" * 40) -> dict[str, Any]:
+    """One native assistant tool call."""
+    return {
+        "id": call_id,
+        "type": "function",
+        "function": {"name": "read_file", "arguments": arguments},
+    }
+
+
+def _call_msg(call_id: str, *extra_ids: str) -> dict[str, Any]:
+    """An assistant message carrying one tool call, plus any extra ids."""
+    calls = [_tool_call(call_id)] + [_tool_call(other) for other in extra_ids]
+    return _msg("assistant", "", tool_calls=calls)
+
+
+def _result_msg(call_id: str, body: str = "r" * 40) -> dict[str, Any]:
+    """A native ``role: "tool"`` result for ``call_id``."""
+    return _msg("tool", body, tool_call_id=call_id)
+
+
+def _pair(call_id: str) -> list[dict[str, Any]]:
+    """One complete assistant-call/result group - two messages, one unit."""
+    return [_call_msg(call_id), _result_msg(call_id)]
+
+
+def _call_ids(message: dict[str, Any]) -> set[str]:
+    """The tool-call ids one message carries."""
+    return {
+        tc["id"]
+        for tc in (message.get("tool_calls") or [])
+        if isinstance(tc, dict) and tc.get("id")
+    }
+
+
+def _result_ids(messages: list[dict[str, Any]]) -> set[str]:
+    """The tool-call ids results in ``messages`` answer."""
+    return {
+        m["tool_call_id"]
+        for m in messages
+        if m.get("role") == "tool" and m.get("tool_call_id")
+    }
+
+
+def _call_id_set(messages: list[dict[str, Any]]) -> set[str]:
+    """Every tool-call id ``messages`` asks for."""
+    return set().union(*[_call_ids(m) for m in messages]) if messages else set()
+
+
+def _cap_violations(
+    source: list[dict[str, Any]],
+    capped: list[dict[str, Any]],
+    dropped: int,
+) -> list[str]:
+    """Every structural promise ``cap_history`` breaks, by name.
+
+    An empty list is a pass.  The pairing rule is stated as "capping must not
+    orphan what it capped": an id that had its counterpart in the input must not
+    lose it in the output, which leaves a transcript that arrived already
+    mismatched exactly as mismatched as it arrived.
+
+    Args:
+        source: The message list handed to ``cap_history``.
+        capped: The list it returned.
+        dropped: The count it returned with it.
+
+    Returns:
+        One string per violated promise.
+    """
+    problems: list[str] = []
+
+    if dropped != len(source) - len(capped):
+        problems.append(
+            f"dropped_count {dropped} != {len(source)} - {len(capped)}"
+        )
+
+    identities = [id(m) for m in capped]
+    if len(set(identities)) != len(identities):
+        problems.append("same message object kept twice")
+
+    source_identities = [id(m) for m in source]
+    positions: list[int] = []
+    for marker in identities:
+        found = [i for i, candidate in enumerate(source_identities) if candidate == marker]
+        if len(found) != 1:
+            problems.append("kept a message that was never in the input")
+        else:
+            positions.append(found[0])
+    if positions != sorted(positions):
+        problems.append("reordered retained messages")
+
+    if any(m.get("role") == "system" and id(m) not in set(identities) for m in source):
+        problems.append("dropped a system message")
+
+    calls_in, results_in = _call_id_set(source), _result_ids(source)
+    calls_out, results_out = _call_id_set(capped), _result_ids(capped)
+    for call_id in sorted(calls_out):
+        if call_id not in results_out and call_id in results_in:
+            problems.append(f"orphaned tool call {call_id}")
+    for call_id in sorted(results_out):
+        if call_id not in calls_out and call_id in calls_in:
+            problems.append(f"orphaned tool result {call_id}")
+
+    for group in _build_cap_groups(source):
+        kept = [i for i in group if id(source[i]) in set(identities)]
+        if kept and len(kept) != len(group):
+            problems.append("split an atomic group")
+
+    return problems
+
+
+def _cap(messages: list[dict[str, Any]], budget: int) -> tuple[list[dict[str, Any]], int]:
+    """Run ``cap_history`` at the platform ratio with the shared estimator."""
+    return cap_history(messages, budget, estimate=_estimate)
+
+
+#: Fixtures the invariant sweeps below run over.  Each entry holds **no** user
+#: message, so every one of them reaches the fallback protected position - which
+#: is where both defects lived.
+_NO_USER_FIXTURES: dict[str, list[dict[str, Any]]] = {
+    "empty": [],
+    "system only": [_msg("system", "System.")],
+    "one assistant": [_msg("assistant", "A" * 40)],
+    "assistant only": [
+        _msg("assistant", "A" * 40),
+        _msg("assistant", "B" * 40),
+        _msg("assistant", "C" * 40),
+        _msg("assistant", "D" * 40),
+    ],
+    "call and result": _pair("tc1"),
+    "one call two results": [
+        _call_msg("tc1", "tc2"),
+        _result_msg("tc1"),
+        _result_msg("tc2"),
+    ],
+    "protected group then assistant": [*_pair("tc1"), _msg("assistant", "tail" * 4)],
+    "two complete groups": [*_pair("tc1"), *_pair("tc2")],
+    "orphan result singleton": [_msg("assistant", "note" * 4), _result_msg("gone")],
+    "fallback on a system message": [_msg("assistant", "A" * 40), _msg("system", "SYS.")],
+    "orphan result then assistant": [_result_msg("gone"), _msg("assistant", "B" * 40)],
+    "assistant then tool group": [
+        _msg("assistant", "A" * 40),
+        _call_msg("tc1"),
+        _result_msg("tc1"),
+    ],
+}
+
+#: The same shapes plus ordinary transcripts that do hold a user message.  These
+#: are the controls: their behaviour did not change at any budget.
+_REAL_USER_FIXTURES: dict[str, list[dict[str, Any]]] = {
+    "plain three turns": [
+        _msg("system", "System."),
+        _msg("user", "A" * 40),
+        _msg("assistant", "B" * 40),
+        _msg("user", "C" * 40),
+    ],
+    "user then tool group then user": [
+        _msg("system", "System."),
+        _msg("user", "older question"),
+        _call_msg("tc1"),
+        _result_msg("tc1"),
+        _msg("assistant", "an answer"),
+        _msg("user", "the current turn"),
+    ],
+    "user then assistant tail": [
+        _msg("user", "A" * 40),
+        _call_msg("tc1"),
+        _result_msg("tc1"),
+        _msg("assistant", "B" * 40),
+        _msg("user", "C" * 40),
+        _msg("assistant", "D" * 40),
+    ],
+    "one user message": [_msg("user", "Hello")],
+}
+
+#: Budgets swept for every fixture: nothing, one token, a boundary inside a
+#: group, a boundary between two groups, and more than the whole history.
+_SWEPT_BUDGETS: tuple[int, ...] = (0, 1, 10, 12, 20, 22, 40, 1000)
+
+_ALL_FIXTURES: dict[str, list[dict[str, Any]]] = {
+    **_NO_USER_FIXTURES,
+    **_REAL_USER_FIXTURES,
+}
+
+_FIXTURE_NAMES: tuple[str, ...] = tuple(_ALL_FIXTURES)
+
+
+def _fixture(name: str) -> list[dict[str, Any]]:
+    """A fresh copy of one named fixture; identity checks need their own objects."""
+    return [dict(message) for message in _ALL_FIXTURES[name]]
+
+
+class TestNoUserFallbackIndex:
+    """A fallback position that would land outside the list protects nothing."""
+
+    def test_empty_messages(self) -> None:
+        """Nothing in, nothing out, nothing dropped."""
+        for budget in (0, 1000):
+            capped, dropped = cap_history([], max_history_tokens=budget, estimate=_estimate)
+            assert capped == []
+            assert dropped == 0
+
+    def test_system_only_messages(self) -> None:
+        """System messages are kept and cost the budget nothing."""
+        msgs = [_msg("system", "SYS1"), _msg("system", "SYS2")]
+        for budget in (0, 1000):
+            capped, dropped = cap_history(msgs, max_history_tokens=budget, estimate=_estimate)
+            assert capped is msgs
+            assert dropped == 0
+
+    def test_single_assistant_at_zero_budget_yields_nothing(self) -> None:
+        """One assistant message and no user: there is no position to protect.
+
+        The fallback for a no-user list is the slot after the trailing assistant
+        messages, and when every message is a trailing assistant that slot is
+        ``-1``.  It is neither clamped to a real index nor kept: a clamped index
+        would be an invented protected turn, and a ``-1`` reads back as
+        ``messages[-1]``.  The ordinary newest-first walk runs with no protected
+        group instead, so a zero budget keeps nothing - pinned deliberately.
+        """
+        msgs = [_msg("assistant", "A" * 40)]
+
+        capped, dropped = cap_history(msgs, max_history_tokens=0, estimate=_estimate)
+
+        assert capped == []
+        assert dropped == 1
+
+    def test_single_assistant_over_budget_drops_it(self) -> None:
+        """The same message at a budget it does not fit is dropped exactly once."""
+        msgs = [_msg("assistant", "A" * 40)]
+
+        capped, dropped = cap_history(msgs, max_history_tokens=9, estimate=_estimate)
+
+        assert capped == []
+        assert dropped == 1
+
+    def test_single_assistant_under_budget_is_untouched(self) -> None:
+        """A message that fits comes back whole and uncounted as dropped."""
+        msgs = [_msg("assistant", "A" * 40)]
+
+        capped, dropped = cap_history(msgs, max_history_tokens=10, estimate=_estimate)
+
+        assert capped is msgs
+        assert dropped == 0
+
+
+class TestAssistantOnlyBudgets:
+    """Assistant-only history caps newest-first, whole, and without duplicates."""
+
+    def test_zero_budget_keeps_nothing(self) -> None:
+        msgs = _fixture("assistant only")
+
+        capped, dropped = _cap(msgs, 0)
+
+        assert capped == []
+        assert dropped == 4
+
+    def test_exact_boundary_keeps_the_newest_two_groups(self) -> None:
+        """A budget worth exactly two messages keeps those two, in order."""
+        msgs = _fixture("assistant only")
+        tokens = _tokens(msgs)
+        budget = tokens[2] + tokens[3]
+
+        capped, dropped = _cap(msgs, budget)
+
+        assert [m["content"] for m in capped] == ["C" * 40, "D" * 40]
+        assert dropped == 2
+
+    def test_insufficient_budget_keeps_the_newest_only(self) -> None:
+        """One token short of two groups keeps one group and nothing older."""
+        msgs = _fixture("assistant only")
+        tokens = _tokens(msgs)
+        budget = tokens[2] + tokens[3] - 1
+
+        capped, dropped = _cap(msgs, budget)
+
+        assert [m["content"] for m in capped] == ["D" * 40]
+        assert dropped == 3
+
+    def test_sufficient_budget_keeps_everything(self) -> None:
+        msgs = _fixture("assistant only")
+        budget = sum(_tokens(msgs))
+
+        capped, dropped = _cap(msgs, budget)
+
+        assert capped is msgs
+        assert dropped == 0
+
+    def test_no_duplicates_and_no_reordering_at_every_budget(self) -> None:
+        msgs = _fixture("assistant only")
+
+        for budget in _SWEPT_BUDGETS:
+            source = [dict(message) for message in msgs]
+            capped, dropped = _cap(source, budget)
+
+            assert _cap_violations(source, capped, dropped) == [], budget
+            kept = [m["content"] for m in capped]
+            order = [content for content in ("A" * 40, "B" * 40, "C" * 40, "D" * 40)
+                     if content in kept]
+            assert kept == order, budget
+
+
+class TestProtectedGroupIsAtomic:
+    """A no-user fallback inside a tool group reserves the whole group."""
+
+    def test_call_and_result_group_alone_is_kept_whole(self) -> None:
+        """With nothing but its own group to protect, capping drops nothing."""
+        msgs = _fixture("call and result")
+
+        for budget in _SWEPT_BUDGETS:
+            source = [dict(message) for message in msgs]
+            capped, dropped = _cap(source, budget)
+
+            assert [m["role"] for m in capped] == ["assistant", "tool"], budget
+            assert dropped == 0, budget
+            assert _cap_violations(source, capped, dropped) == [], budget
+
+    def test_one_call_two_results_keeps_the_group_whole(self) -> None:
+        """The fallback result drags its call and its sibling result along."""
+        msgs = _fixture("one call two results")
+
+        for budget in (0, 12, 1000):
+            source = [dict(message) for message in msgs]
+            capped, dropped = _cap(source, budget)
+
+            assert [m["role"] for m in capped] == ["assistant", "tool", "tool"], budget
+            assert dropped == 0, budget
+            assert _cap_violations(source, capped, dropped) == [], budget
+
+    def test_protected_group_with_newer_assistant(self) -> None:
+        """A trailing assistant is an ordinary candidate; the group is not.
+
+        The protected position is the tool result, so the assistant call that
+        produced it is reserved with it, and only the newer assistant message is
+        still free to go.  This is the case that used to emit the result alone.
+        """
+        msgs = _fixture("protected group then assistant")
+        tokens = _tokens(msgs)
+        reserve = tokens[0]  # index 1 is the protected message and costs nothing
+
+        capped, dropped = _cap(msgs, reserve)
+
+        assert [m["role"] for m in capped] == ["assistant", "tool"]
+        assert dropped == 1
+        assert _cap_violations(msgs, capped, dropped) == []
+
+        roomier = _cap([dict(message) for message in msgs], reserve + tokens[2])
+        assert roomier[1] == 0
+        assert [m["role"] for m in roomier[0]] == ["assistant", "tool", "assistant"]
+
+    def test_fallback_in_the_newer_of_two_tool_groups(self) -> None:
+        """The older group goes; the newer group leaves as a pair, never as one.
+
+        Before the fix the protected position was a single tool result, so the
+        budget bought the result and dropped its call: an orphan, and a dropped
+        count that did not describe the messages that actually left.
+        """
+        msgs = _fixture("two complete groups")
+        tokens = _tokens(msgs)
+        reserve = tokens[2]
+
+        for budget in (0, 1, reserve):
+            source = [dict(message) for message in msgs]
+            capped, dropped = _cap(source, budget)
+
+            assert [m["role"] for m in capped] == ["assistant", "tool"], budget
+            assert dropped == 2, budget
+            assert _cap_violations(source, capped, dropped) == [], budget
+
+        both = _cap([dict(message) for message in msgs], reserve + tokens[0] + tokens[1])
+        assert both[1] == 0
+        assert [m["role"] for m in both[0]] == ["assistant", "tool", "assistant", "tool"]
+
+    def test_orphan_tool_result_singleton_as_fallback(self) -> None:
+        """A result that never paired with anything is protected as one message.
+
+        Grouping cannot link it to the assistant ahead of it - no call asks for
+        it - so it is its own atomic group and that assistant stays a candidate.
+        Capping does not orphan it: it arrived unmatched.
+        """
+        msgs = _fixture("orphan result singleton")
+        tokens = _tokens(msgs)
+
+        capped, dropped = _cap(msgs, 0)
+
+        assert [m["role"] for m in capped] == ["tool"]
+        assert dropped == 1
+        assert _cap_violations(msgs, capped, dropped) == []
+
+        fits = _cap([dict(message) for message in msgs], sum(tokens))
+        assert fits[1] == 0
+        assert len(fits[0]) == 2
+
+    def test_group_protected_by_the_fallback_with_older_history(self) -> None:
+        """Older groups are charged and dropped newest-first around the reserve."""
+        msgs = _fixture("assistant then tool group")
+        tokens = _tokens(msgs)
+
+        capped, dropped = _cap(msgs, tokens[1])
+
+        assert [m["role"] for m in capped] == ["assistant", "tool"]
+        assert dropped == 1
+        assert _cap_violations(msgs, capped, dropped) == []
+
+        everything = _cap([dict(message) for message in msgs], tokens[1] + tokens[0])
+        assert everything[1] == 0
+        assert len(everything[0]) == 3
+
+
+def _without_system(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The non-system part of a list, which is the part a budget decides on."""
+    return [m for m in messages if m.get("role") != "system"]
+
+
+class TestSystemInjectedParity:
+    """An injected system message changes where messages sit, not what survives.
+
+    The gateway's repository-context message is prepended to the list a client
+    sent, so a no-user transcript's cap must not depend on it.  Every grouped
+    case above is run again with one added at the front.
+    """
+
+    @pytest.mark.parametrize("name", sorted(_NO_USER_FIXTURES))
+    def test_system_message_does_not_change_the_cap(self, name: str) -> None:
+        plain = [dict(message) for message in _fixture(name)]
+        with_system = [_msg("system", "You are helpful."), *plain]
+
+        for budget in _SWEPT_BUDGETS:
+            source_plain = [dict(message) for message in plain]
+            source_both = [dict(message) for message in with_system]
+            capped_plain, dropped_plain = _cap(source_plain, budget)
+            capped_both, dropped_both = _cap(source_both, budget)
+
+            assert _cap_violations(source_both, capped_both, dropped_both) == [], (name, budget)
+            assert _without_system(capped_both) == _without_system(capped_plain), (name, budget)
+            assert dropped_both == dropped_plain, (name, budget)
+            assert sum(1 for m in capped_both if m.get("role") == "system") == sum(
+                1 for m in source_both if m.get("role") == "system"
+            ), (name, budget)
+
+
+class TestCapInvariantsOverEveryFixture:
+    """The promises ``cap_history`` makes hold on every shape, at every budget."""
+
+    @pytest.mark.parametrize("name", sorted(_FIXTURE_NAMES))
+    def test_dropped_count_is_truthful(self, name: str) -> None:
+        for budget in _SWEPT_BUDGETS:
+            source = _fixture(name)
+            capped, dropped = _cap(source, budget)
+
+            assert dropped == len(source) - len(capped), (name, budget)
+
+    @pytest.mark.parametrize("name", sorted(_FIXTURE_NAMES))
+    def test_output_holds_no_message_twice(self, name: str) -> None:
+        for budget in _SWEPT_BUDGETS:
+            source = _fixture(name)
+            capped, _ = _cap(source, budget)
+
+            identities = [id(m) for m in capped]
+            assert len(set(identities)) == len(identities), (name, budget)
+            assert set(identities) <= {id(m) for m in source}, (name, budget)
+
+    @pytest.mark.parametrize("name", sorted(_FIXTURE_NAMES))
+    def test_call_and_result_pairing_survives(self, name: str) -> None:
+        for budget in _SWEPT_BUDGETS:
+            source = _fixture(name)
+            capped, dropped = _cap(source, budget)
+
+            assert _cap_violations(source, capped, dropped) == [], (name, budget)
+
+    @pytest.mark.parametrize("name", sorted(_REAL_USER_FIXTURES))
+    def test_real_user_history_keeps_the_current_turn(self, name: str) -> None:
+        """Every control fixture keeps its last user message whatever the budget."""
+        for budget in _SWEPT_BUDGETS:
+            source = _fixture(name)
+            capped, dropped = _cap(source, budget)
+            last_user = [m for m in source if m.get("role") == "user"][-1]
+
+            assert any(m is last_user for m in capped), (name, budget)
+            assert _cap_violations(source, capped, dropped) == [], (name, budget)
+
+
+def _documented_protected_position(messages: list[dict[str, Any]]) -> int | None:
+    """The position ``cap_history`` promises never to drop, stated independently.
+
+    A restatement of the documented rule rather than a call into the module: the
+    last ``user`` message when the list holds one; otherwise the slot after the
+    trailing assistant messages, and otherwise - when that slot is not a real
+    index - nothing.  The reference walk below and the cap must agree on it.
+    """
+    for index in range(len(messages) - 1, -1, -1):
+        if messages[index].get("role") == "user":
+            return index
+    if not messages:
+        return None
+    trailing = 0
+    for message in reversed(messages):
+        if message.get("role") == "assistant":
+            trailing += 1
+        else:
+            break
+    fallback = len(messages) - 1 - trailing
+    return fallback if 0 <= fallback < len(messages) else None
+
+
+def _charged_by_cap(
+    source: list[dict[str, Any]],
+    capped: list[dict[str, Any]],
+) -> int:
+    """What a budget actually paid for: eligible tokens of the messages kept."""
+    protected = _documented_protected_position(source)
+    kept_ids = {id(message) for message in capped}
+    return sum(
+        _message_token_count(message, CHARS_PER_TOKEN, _estimate)
+        for index, message in enumerate(source)
+        if id(message) in kept_ids
+        and message.get("role") != "system"
+        and index != protected
+    )
+
+
+def _shape_reference(messages: list[dict[str, Any]], budget: int) -> dict[str, Any]:
+    """What a ``history-shape-v2`` summary alone says a budget keeps.
+
+    The corrected reading rule, in the summary's own fields:
+
+    * the protected group is ``last_user_group`` - the group holding the
+      position capping never drops.  Its name is legacy: the position can hold an
+      assistant message or a tool result, and only ``last_user_distance is None``
+      says there was no real ``user`` message in the list at all;
+    * that group is kept whole, and its ``cap_eligible_tokens`` are **reserved**
+      against the budget before any other group is considered - even when the
+      reservation alone is more than the budget;
+    * ``last_user_group`` is ``null`` when there is nothing to protect, which is
+      the all-assistant case, and then the walk is the ordinary newest-first one;
+    * system groups are kept and charged nothing;
+    * every other group is walked by ascending ``ordinal`` and charged its
+      ``cap_eligible_tokens``, stopping at the first that does not fit.
+    """
+    summary = summarize_history_shape(messages)
+    assert summary["detail_complete"] is True, "fixture must fit the recorded detail"
+
+    ordered = sorted(_build_cap_groups(messages), key=lambda group: max(group), reverse=True)
+    assert len(ordered) == summary["group_count"]
+    for entry, group in zip(summary["groups"], ordered):
+        # The summary's ordinals are the cap's own groups in the cap's own order,
+        # so the walk below moves exactly the units the cap moves.
+        assert entry["message_count"] == len(group)
+        assert entry["roles"] == {
+            role: sum(1 for i in group if messages[i].get("role") == role)
+            for role in {str(messages[i].get("role")) for i in group}
+        }
+
+    kept: set[int] = set()
+    charged = 0
+    protected = summary["last_user_group"]
+    if protected is not None:
+        charged = int(protected["cap_eligible_tokens"])
+        kept.add(int(protected["ordinal"]))
+
+    # A system group is kept wherever it sits, so it cannot be a step of the
+    # newest-first walk - an old system message must not be lost just because a
+    # newer group exhausted the budget.  It is taken out of the walk here and
+    # added back at the end, charged nothing, exactly as ``cap_history`` keeps it.
+    system = {
+        int(entry["ordinal"])
+        for entry in summary["groups"]
+        if entry["has_system"] and int(entry["ordinal"]) not in kept
+    }
+
+    for entry in summary["groups"]:
+        ordinal = int(entry["ordinal"])
+        if ordinal in kept or ordinal in system:
+            continue
+        cost = int(entry["cap_eligible_tokens"])
+        if charged + cost <= budget:
+            charged += cost
+            kept.add(ordinal)
+        else:
+            break
+
+    kept |= system
+
+    indices: set[int] = set()
+    for ordinal in kept:
+        indices.update(ordered[ordinal])
+
+    return {
+        "messages": [messages[i] for i in sorted(indices)],
+        "charged": charged,
+        "groups": ordered,
+        "kept_ordinals": kept,
+        "protected_group": protected,
+        "summary": summary,
+    }
+
+
+class TestCapMatchesShapeSimulation:
+    """``cap_history`` and a ``history-shape-v2`` walk agree, message for message."""
+
+    @pytest.mark.parametrize("name", sorted(_FIXTURE_NAMES))
+    def test_same_messages_same_charge(self, name: str) -> None:
+        for budget in _SWEPT_BUDGETS:
+            source = _fixture(name)
+            capped, dropped = _cap(source, budget)
+            reference = _shape_reference(source, budget)
+            where = (name, budget)
+
+            # Retained and dropped message counts.
+            assert len(capped) == len(reference["messages"]), where
+            assert dropped == len(source) - len(reference["messages"]), where
+            # The very same objects, which pins order and uniqueness together.
+            assert [id(m) for m in capped] == [id(m) for m in reference["messages"]], where
+            # Retained role and order structure.
+            assert [m.get("role") for m in capped] == [
+                m.get("role") for m in reference["messages"]
+            ], where
+            # Eligible tokens charged, read off the messages and off the summary.
+            assert _charged_by_cap(source, capped) == reference["charged"], where
+
+            # Group atomicity: a group is wholly kept or wholly dropped, and the
+            # kept ordinals are exactly the ones the reference walk reserved or fit.
+            kept_ids = {id(m) for m in capped}
+            for ordinal, group in enumerate(reference["groups"]):
+                whole = all(id(source[i]) in kept_ids for i in group)
+                empty = all(id(source[i]) not in kept_ids for i in group)
+                assert whole or empty, (where, ordinal)
+                assert (ordinal in reference["kept_ordinals"]) is whole, (where, ordinal)
+
+    def test_has_last_user_names_the_protected_group_not_a_user_message(self) -> None:
+        """The legacy field says "protected", and the distance says whether a user.
+
+        ``has_last_user`` and ``last_user_group`` describe the position capping
+        reserves, which a no-user fallback can put on a tool result;
+        ``last_user_distance is None`` is the field that says no ``user`` message
+        was ever in the list.  An all-assistant list has neither.
+        """
+        pair_after_pair = _fixture("two complete groups")
+        summary = summarize_history_shape(pair_after_pair)
+
+        assert summary["last_user_distance"] is None
+        reserved = summary["last_user_group"]
+        assert reserved is not None
+        assert reserved["has_last_user"] is True
+        assert reserved["roles"] == {"assistant": 1, "tool": 1}
+        assert reserved["cap_eligible_tokens"] == _tokens(pair_after_pair)[2]
+        assert [group["has_last_user"] for group in summary["groups"]] == [True, False]
+
+        all_assistant = summarize_history_shape(_fixture("assistant only"))
+
+        assert all_assistant["last_user_distance"] is None
+        assert all_assistant["last_user_group"] is None
+        assert not any(group["has_last_user"] for group in all_assistant["groups"])
+
+
+def _legacy_real_user_rule(
+    messages: list[dict[str, Any]],
+    budget: int,
+) -> list[dict[str, Any]]:
+    """The decision ``cap_history`` made at `b0765cc`, restated for a real user.
+
+    Kept here as a test-side reference, not production code: protected position =
+    the last user message, every group with a member that is neither system nor
+    that message is a candidate, and a candidate costs *all* of its tokens.  On a
+    list with a user message the fixed cap must agree with it message for message
+    at every budget - that is what "real-user behaviour unchanged" means, and a
+    user message is always its own atomic group, so it does.
+
+    Args:
+        messages: A transcript that holds at least one user message.
+        budget: The history budget the rule is run at.
+
+    Returns:
+        The messages the pre-fix rule would have returned.
+    """
+    tokens = [_message_token_count(m, CHARS_PER_TOKEN, _estimate) for m in messages]
+    system_indices = [i for i, m in enumerate(messages) if m.get("role") == "system"]
+    last_user_idx = max(i for i, m in enumerate(messages) if m.get("role") == "user")
+
+    others = [i for i in range(len(messages)) if i not in system_indices and i != last_user_idx]
+    if sum(tokens[i] for i in others) <= budget:
+        return list(messages)
+
+    candidate_groups = [
+        group
+        for group in _build_cap_groups(messages)
+        if any(i not in system_indices and i != last_user_idx for i in group)
+    ]
+    candidate_groups.sort(key=lambda group: max(group), reverse=True)
+
+    accumulated = 0
+    kept: set[int] = set(system_indices) | {last_user_idx}
+    for group in candidate_groups:
+        cost = sum(tokens[i] for i in group)
+        if accumulated + cost <= budget:
+            kept.update(group)
+            accumulated += cost
+        else:
+            break
+    return [messages[i] for i in sorted(kept)]
+
+
+class TestRealUserBehaviourUnchanged:
+    """The controls: a transcript with a user message caps exactly as it did."""
+
+    @pytest.mark.parametrize("name", sorted(_REAL_USER_FIXTURES))
+    def test_matches_the_pre_fix_rule_message_for_message(self, name: str) -> None:
+        for budget in _SWEPT_BUDGETS:
+            source = _fixture(name)
+            capped, dropped = _cap(source, budget)
+            legacy = _legacy_real_user_rule(source, budget)
+
+            assert [id(m) for m in capped] == [id(m) for m in legacy], (name, budget)
+            assert dropped == len(source) - len(legacy), (name, budget)
+
+    def test_pinned_control_decisions(self) -> None:
+        """Four ordinary transcripts, four budgets, the answers spelled out."""
+        msgs = [
+            _msg("system", "System."),
+            _msg("user", "A" * 40),
+            _msg("assistant", "B" * 40),
+            _msg("user", "C" * 40),
+        ]
+        cases = {
+            0: (["system", "user"], 2),
+            9: (["system", "user"], 2),
+            10: (["system", "assistant", "user"], 1),
+            20: (["system", "user", "assistant", "user"], 0),
+        }
+
+        for budget, (roles, dropped) in cases.items():
+            source = [dict(message) for message in msgs]
+            capped, actual_dropped = _cap(source, budget)
+
+            assert [m["role"] for m in capped] == roles, budget
+            assert actual_dropped == dropped, budget
+            assert _cap_violations(source, capped, actual_dropped) == [], budget

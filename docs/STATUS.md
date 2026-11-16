@@ -3,7 +3,51 @@
 This file is the current runtime snapshot. It intentionally describes only
 what matters for the live gateway path and calls out dormant code explicitly.
 
-Last reviewed: 2026-11-16 (No new phase. The history-cap question was missing an input,
+Last reviewed: 2026-11-16 (No new phase. Two defects in
+`packages/pipeline/history.cap_history`, both reachable only when the inbound list holds
+no `user` message, and both of them the cap disagreeing with what
+`packages/pipeline/history_shape.py` had been recording correctly all along. First: the
+no-user fallback position is `len(messages) - 1 - _trailing_assistant_count(messages)`,
+which on an all-assistant transcript is `-1`; that `-1` went into the kept set and got
+read back as `messages[-1]` - the newest message surfacing where nothing should have
+survived, sometimes beside itself, always with a `dropped_count` that did not describe
+the list that came out (three messages at a zero budget came back as one message and
+"dropped 2"). Second: the fallback is a position, not a user turn, and it can land on a
+`role: "tool"` result inside an assistant/tool atomic group; the old code force-kept that
+one message, priced the group including it, and could drop the assistant call that
+produced it - emitting an orphan tool result, which is what capping's own pairing rule
+forbids. Now an index outside the list is neither invented nor clamped: it protects
+nothing, so an all-assistant list runs the ordinary newest-first group walk and a zero
+budget can keep nothing (pinned explicitly). A valid protected position reserves its
+whole group atomically, and only the protected message itself is free of the budget - the
+rest of that group is charged its `cap_eligible_tokens` before any other group sees what
+is left, and when the reservation alone exceeds the budget the group is still kept whole
+and nothing else is. A transcript that does hold a user message is unaffected at every
+budget: a `user` message is always its own atomic group, so the reserved group is the
+same single message, the candidate set is the same, and every candidate's charge equals
+what it was already charged - which `TestRealUserBehaviourUnchanged` asserts by replaying
+the pre-fix rule itself. No schema bump: `history-shape-v2` already stated all of it, so
+`has_last_user` is now documented as "contains the protected position" (the name is
+legacy), `last_user_distance is None` as the field that says there was no user message at
+all, and a `null` `last_user_group` as "nothing was protected". This file's earlier note
+that a bounded detail must not lose `last_user_group` still holds; what changed is that
+the cap now keeps the group that note describes. `packages/pipeline/history.py` gained no
+symbol - 11 function symbols, the same set as `b0765cc` - and no signature moved, so no
+retrieval measurement shifted. Validation: 102 new tests in `tests/pipeline/test_history.py`
+(181 there, up from 79), including a differential test that walks a recorded summary and
+compares message lists against the real cap over both real-user and no-user fixtures; 32
+of them fail against `b0765cc` and none of the real-user controls do. No existing
+expectation changed, skipped or weakened: history and history-shape 219 passed, session
+log and history shape 37, `tests/pipeline tests/gateway` 701, live-path gate 2,882
+against the 2,780 the previous review recorded - the delta is exactly those 102 - and
+full suite 43 failed / 5,438 passed / 3 skipped, the documented baseline with an
+identical failure distribution, against 5,336 passed at `b0765cc`. ruff clean on every
+changed file; `mypy packages/providers packages/pipeline apps/gateway` clean over 47
+files. Offline only: no gateway restarted, no port touched, no provider called, no stored
+transcript used as an inbound request. See `docs/live-gateway-runbook.md`, *The protected
+position when a transcript has no user message*.)
+
+Previous review: 2026-11-16 (No new phase. The history-cap question was missing an input,
 not a decision: nobody had ever recorded the shape of the message list a cap would run
 on. The offline attempt stopped correctly for that reason - stored Cline transcripts are
 Anthropic `tool_use`/`tool_result` blocks, while `packages/pipeline/history.cap_history`
@@ -441,6 +485,24 @@ and safety reserves; `8192` stands only when neither the definition nor the reso
 object names a usable window, where before it stood for every request because the
 read looked for `context_window` on the resolved object, which that type does not
 have.
+
+Two rules hold on the no-user path, where there is no last user message to
+protect. The pass protects a *position* instead - the slot after the trailing
+assistant messages - and it uses that position only when it is a real index: an
+all-assistant list has nothing to protect, and no index is invented or clamped
+for it, so the ordinary newest-first group walk runs and a zero budget can keep
+nothing. When the position is real it belongs to one atomic group, and the whole
+group is reserved: a protected `role: "tool"` result cannot be forwarded without
+the assistant call that produced it. Only the protected message itself is free of
+the budget; the rest of that group spends `cap_eligible_tokens` before any other
+group gets what is left, and if the reservation alone exceeds the budget the
+group is still kept whole and nothing else is. Both rules are what
+`history-shape-v2` has always recorded, and
+`tests/pipeline/test_history.py::TestCapMatchesShapeSimulation` now asserts the
+two agree message for message. A transcript that does hold a user message is
+unaffected at every budget, because a user message is always its own group. See
+`docs/live-gateway-runbook.md`, *The protected position when a transcript has no
+user message*.
 
 Measured result with Cline/vLLM:
 
