@@ -17,6 +17,11 @@ from packages.pipeline.base import PipelineStage
 from packages.pipeline.context import PipelineContext
 from packages.pipeline.exceptions import PipelineExecutionError
 from packages.pipeline.history import RATIO_MAX, RATIO_MIN, cap_history
+from packages.pipeline.history_shape import (
+    SHAPE_SCHEMA_VERSION,
+    SHAPE_UNAVAILABLE,
+    summarize_history_shape,
+)
 from packages.pipeline.normalized import NormalizedRequest
 from packages.pipeline.request import PipelineRequest
 from packages.pipeline.response import PipelineResponse
@@ -96,6 +101,13 @@ class PipelineEngine:
             "history_cap_enabled", request.metadata.get("history_cap_enabled", False)
         )
         context.set_metadata("history_cap_tokens", request.metadata.get("history_cap_tokens", 0))
+        # Observability only, and off by default: whether to summarize the shape
+        # of the history about to be handed to the cap.  It never reaches a
+        # provider, and it never decides anything the pipeline does.
+        context.set_metadata(
+            "history_shape_log_enabled",
+            bool(request.metadata.get("history_shape_log_enabled", False)),
+        )
         context.set_metadata("max_tokens_override", request.metadata.get("max_tokens_override"))
         if "context_intent" in request.metadata:
             context.set_metadata(
@@ -121,6 +133,7 @@ class PipelineEngine:
         # These are set by the gateway endpoint from settings.
         history_cap_enabled = context.get_metadata("history_cap_enabled", False)
         history_cap_tokens = context.get_metadata("history_cap_tokens", 0)
+        history_shape_log_enabled = context.get_metadata("history_shape_log_enabled", False)
         max_tokens_override = context.get_metadata("max_tokens_override")
         context.set_metadata("history_cap_enabled", history_cap_enabled)
         context.set_metadata("history_cap_tokens", history_cap_tokens)
@@ -178,13 +191,19 @@ class PipelineEngine:
 
                 # Apply history capping after RepositoryContextStage completes
                 # (where the repo-context system message is injected) and
-                # before ProviderStage calls to_provider_payload.
-                if stage_name == "repository_context" and history_cap_enabled:
-                    _apply_history_cap(
-                        context,
-                        context.resolved_model,
-                        max_tokens_override,
-                    )
+                # before ProviderStage calls to_provider_payload.  The shape
+                # summary is taken at that same boundary and one step before
+                # it, so it describes the message list capping would consume -
+                # and it is taken whether or not capping is switched on.
+                if stage_name == "repository_context":
+                    if history_shape_log_enabled:
+                        _record_history_shape(context, context.resolved_model)
+                    if history_cap_enabled:
+                        _apply_history_cap(
+                            context,
+                            context.resolved_model,
+                            max_tokens_override,
+                        )
 
             except Exception as exc:
                 elapsed = time.perf_counter() - stage_start
@@ -375,3 +394,57 @@ def _apply_history_cap(
             total_after,
             max_history_tokens,
         )
+
+
+def _record_history_shape(context: PipelineContext, resolved_model: Any) -> None:
+    """Summarize the pre-cap inbound history shape for the session log.
+
+    Observability, not policy.  This reads ``context.normalized_request.messages``
+    exactly as :func:`_apply_history_cap` is about to receive them - the inbound
+    list with the repository-context system message already injected, before any
+    capping drops, truncates, or replaces a message - and stores a
+    structure-only summary on context metadata.  It never touches the message
+    list, the normalized request, or what is forwarded to the provider, and it
+    is called whether or not capping is enabled, which is how a cap decision can
+    later be simulated against the shape a cap-off request actually had.
+
+    The estimator ratio is the one the real history-cap path resolves from this
+    request's resolved model (:func:`_resolve_history_chars_per_token`), so a
+    model calibrated to 3.5 is summarized at 3.5 and a model that overrides
+    nothing at the platform 4.0.  The ratio changes what the summary says a
+    group is worth; it changes nothing about what is kept, because nothing here
+    keeps or drops anything.
+
+    A summary is a log line, never a request failure: anything raised while it
+    is built leaves the request untouched and records an ``unavailable`` shape
+    marker instead, which is evidence that the measurement did not run rather
+    than a number that would read as if it had.
+
+    Args:
+        context: The pipeline context.
+        resolved_model: The router's ``ResolvedModel`` for this request, or
+            ``None`` when no resolution stage ran, in which case the summary
+            falls back to the platform ratio.
+    """
+    nr = context.normalized_request
+    if nr is None:
+        return
+
+    try:
+        summary = summarize_history_shape(
+            nr.messages,
+            chars_per_token=_resolve_history_chars_per_token(resolved_model),
+        )
+    except Exception:
+        logger.warning(
+            "history_shape request_id=%s unavailable",
+            context.request_id,
+            exc_info=True,
+        )
+        context.set_metadata(
+            "history_shape",
+            {"schema": SHAPE_SCHEMA_VERSION, "status": SHAPE_UNAVAILABLE},
+        )
+        return
+
+    context.set_metadata("history_shape", summary)

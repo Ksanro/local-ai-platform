@@ -3,7 +3,48 @@
 This file is the current runtime snapshot. It intentionally describes only
 what matters for the live gateway path and calls out dormant code explicitly.
 
-Last reviewed: 2026-11-15 (Intent detection repriced a question as a task: `_match_action_before_explanation`
+Last reviewed: 2026-11-16 (No new phase. The history-cap question was missing an input,
+not a decision: nobody had ever recorded the shape of the message list a cap would run
+on. The offline attempt stopped correctly for that reason - stored Cline transcripts are
+Anthropic `tool_use`/`tool_result` blocks, while `packages/pipeline/history.cap_history`
+consumes OpenAI chat-form messages with assistant `tool_calls` and `role: "tool"`
+results, and converting one dialect into the other would have measured the converter.
+What lands here is that input, observed and nothing else. `APP_HISTORY_SHAPE_LOG_ENABLED`
+(false by default, false in every tracked configuration) adds `history.shape` to the
+session log: the inbound list counted by `packages.pipeline.history._message_token_count`
+at the resolved model's `chars_per_token`, carved by the real `_build_cap_groups`, and
+listed newest-first so a "keep groups until the budget is exhausted" policy can be
+simulated later at 16k/32k/64k/96k/128k. Structure and numbers only - no content,
+preview, reasoning, tool name, argument, tool-call id, derived path, hash or raw index;
+an unrecognized `role` is written as `other` rather than echoed. The detail is bounded at
+256 groups or 131,072 **cap-eligible** tokens of coverage, whichever bites first - never
+system or protected-turn tokens, which capping charges nothing - and a summary that hits
+the bound says so (`omitted_groups`, `omitted_tokens`, `omitted_cap_eligible_tokens`,
+`detail_complete`), with the protected turn's own group reserved beside the list
+(`last_user_group`) so a 256-group cut cannot silently lose it. That is
+`history-shape-v2`: v1 counted every token toward the floor, so a current turn larger
+than 128k recorded one group - itself - and omitted all the eligible history a
+simulation needs; a review caught it, and the three cases are now pinned by tests.
+Measured at the
+capping boundary - after `RepositoryContextStage`, before `_apply_history_cap` - and
+recorded whether or not capping is enabled; it cannot fail or edit a request, and a
+summary that raises logs `status: unavailable` instead of a number that would read as if
+it had run. One design fact the live gate forced: the summary first lived in
+`packages/pipeline/history.py`, and the `gains_the_changed_file` A/B case in
+`tests/observability/test_quality_harness.py` moved from 9 promoted symbols to 12 - that
+module's index symbol set is itself a measured quantity, exactly as its header says. It is
+now `packages/pipeline/history_shape.py`, importing the two production functions rather
+than restating them, and `history.py` is byte-for-byte unchanged. Validation: 50 new tests
+(38 pipeline, 9 session-log, 3 config), no existing expectation changed and none weakened;
+live-path gate 2,780 passed against 2,730 at `b01fe4b`; full suite 43 failed / 5,336
+passed / 3 skipped, the documented 43-failure baseline, against 5,286 passed before; ruff
+clean on every changed file; `mypy packages/providers packages/pipeline apps/gateway`
+clean over 47 files; a synthetic native-tool fixture emitted the summary with 11 sentinels
+planted and 0 found, input messages deep-equal before and after. No cap was chosen,
+enabled, or changed: `history_cap_enabled` and `history_cap_tokens` are untouched. See
+`docs/live-gateway-runbook.md`, *History-Shape Observability (pre-cap, opt-in)*.)
+
+Previous review: 2026-11-15 (Intent detection repriced a question as a task: `_match_action_before_explanation`
 counted an `_ACTION_MARKERS` verb sitting **inside a question the prompt was asking**, so "Where do we add new
 providers in the registry? Explain briefly." was IMPLEMENT(`add`), "What should I fix first? Explain." was
 DEBUG(`fix`), "Does the gateway create a new index per request? Please explain." and "Why do we add the import
@@ -413,6 +454,54 @@ Measured result with Cline/vLLM:
   `104,956` prompt tokens to a max of `20,321` prompt tokens while preserving
   the final task answer quality
 
+#### History-shape observability (added 2026-11-16, off by default)
+
+Choosing a cap needs the shape of the message list a cap would run on, and that
+had never been recorded: every number so far came from a budget chosen first and
+measured after. `APP_HISTORY_SHAPE_LOG_ENABLED` now summarizes it into
+`history.shape` in the session log - counts, group sizes and roles, never text.
+It is observation only: enabling it changes no budget, drops no message, and
+decides nothing about capping, and it is off in every tracked configuration.
+
+- Measured where capping is measured: after `RepositoryContextStage`, before
+  `_apply_history_cap` replaces anything, and whether or not the cap is enabled.
+- Counted and grouped by the production code, not a copy of it:
+  `_message_token_count` at the resolved model's `chars_per_token`, and
+  `_build_cap_groups` for the atomic units, both imported by
+  `packages/pipeline/history_shape.py` from `packages/pipeline/history.py`.
+- Privacy-bounded by construction: the summary can hold no content, preview,
+  reasoning text, tool name, tool argument, tool-call id, derived path or hash,
+  and no raw message index. An unrecognized `role` is written as `other` rather
+  than echoed, so the one client-controlled string in the shape cannot reach a
+  log either.
+- Bounded detail: the newest groups, until they carry `131,072` **cap-eligible**
+  tokens or `256` groups have been written, whichever comes first, with
+  `omitted_groups`, `omitted_tokens`, `omitted_cap_eligible_tokens` and
+  `detail_complete` stating what was left out. The token floor is what makes it
+  enough to simulate the planned 16k/32k/64k/96k/128k sweep, because capping keeps a
+  prefix of exactly this order. Eligible means eligible: a system message and the
+  protected current turn are recorded but charge the counter nothing, since capping
+  charges them nothing, and `recorded_cap_eligible_tokens +
+  omitted_cap_eligible_tokens == cap_eligible_tokens` holds by construction. The
+  protected turn's own group detail is reserved outside the bound (`last_user_group`),
+  so more than 256 newer groups cannot lose the marker for the group capping always
+  keeps. This replaced v1, which counted every token toward the floor and therefore
+  let an oversized current turn buy the detail out of the history it exists to record.
+- Cannot fail a request: a summary that raises logs
+  `{"schema": "history-shape-v2", "status": "unavailable"}` and the request
+  proceeds untouched.
+
+Two limitations it records rather than resolves. The offline route through
+stored Cline sessions is blocked by dialect, not by arithmetic: those transcripts
+are Anthropic `tool_use`/`tool_result` blocks and this code path consumes OpenAI
+chat-form messages, so converting them would have measured the converter. And
+`history.tokens_after` still sums content characters only, while
+`_message_token_count` - and therefore `history.shape.history_tokens` - also
+charges `name`, `reasoning_content` and tool-call names and arguments; that
+accounting difference predates this and was left alone rather than changing a
+field the analyzer and earlier measurements already read. See
+`docs/live-gateway-runbook.md`, *History-Shape Observability (pre-cap, opt-in)*.
+
 ### ProviderStage
 
 Builds the provider payload from `NormalizedRequest`, swaps `model` to
@@ -536,6 +625,14 @@ runs should use `--max-tokens 2048` or higher.
   roadmap Phase B item 5; off by default, `apps/gateway/main.py` ->
   `RepositoryContextStage` -> `ContextBuilder` -> `RankingEngine`)
 - history capping
+- opt-in pre-cap history-shape summary in the session log
+  (`APP_HISTORY_SHAPE_LOG_ENABLED`, default off: `apps/gateway/api/chat.py` ->
+  `PipelineEngine` -> `packages.pipeline.history_shape.summarize_history_shape`
+  -> `history.shape`), which counts and groups the inbound message list with the
+  cap's own estimator and the cap's own atomic grouping and changes nothing a
+  request does. It is a module of its own because adding symbols to
+  `packages/pipeline/history` moves the `explain_changed_files_history_cap`
+  changed-file measurement, which counts that module's promoted symbols
 - session JSONL logging
 - session log analyzer, including a count-only FILE ACTIVITY section that
   summarizes roadmap C1's `context.file_activity` records as per-record

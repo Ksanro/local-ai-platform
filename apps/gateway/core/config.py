@@ -112,6 +112,11 @@ class Settings(BaseSettings):
     session_log_path: str = "logs/sessions.jsonl"
     history_cap_enabled: bool = False  # on by default — opt in to reduce prefill
     history_cap_tokens: int = 0  # APP_HISTORY_CAP_TOKENS; 0 = derive from context_window
+    # Opt-in, count-only observation of the inbound history shape a history cap
+    # would run against (see packages/pipeline/history_shape.py).  It summarizes;
+    # it never caps.  Off by default and off in every tracked configuration:
+    # enabling it adds history.shape to a session record.
+    history_shape_log_enabled: bool = False
 
     model_config = {"env_prefix": "APP_"}
 

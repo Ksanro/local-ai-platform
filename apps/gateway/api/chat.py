@@ -332,6 +332,17 @@ def _surface_session_metadata(
     scope["session_history_dropped_count"] = resp_meta.get("history_dropped_count", 0)
     scope["session_history_tokens_after"] = resp_meta.get("history_tokens_after", 0)
 
+    # --- History-shape summary (roadmap: history-cap observability) ---
+    # Surfaced only when the pipeline actually measured a shape.  A run with
+    # APP_HISTORY_SHAPE_LOG_ENABLED left off therefore has no history.shape key
+    # at all, and its records are byte-for-byte the records it always wrote.
+    # The summary is structure and numbers only; see
+    # packages/pipeline/history_shape.summarize_history_shape for what it cannot
+    # hold.
+    history_shape = resp_meta.get("history_shape")
+    if isinstance(history_shape, dict):
+        scope["session_history_shape"] = history_shape
+
 
 @router.post("/v1/chat/completions", response_model=None)
 async def chat_completions(
@@ -386,6 +397,9 @@ async def chat_completions(
         ),
         "history_cap_enabled": settings.history_cap_enabled,
         "history_cap_tokens": settings.history_cap_tokens,
+        # Observability knob, read with a default so a caller that supplies an
+        # older settings stand-in keeps working exactly as it did.
+        "history_shape_log_enabled": getattr(settings, "history_shape_log_enabled", False),
         "max_tokens_override": body.max_tokens,
     }
     context_intent = body.context_intent or request.headers.get("X-Context-Intent")

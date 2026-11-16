@@ -2,7 +2,36 @@
 
 This roadmap is based on the current live gateway, not on dormant scaffolding.
 
-Last reviewed: 2026-11-15 (No new phase. Intent detection treated a verb sitting inside a *question* as the
+Last reviewed: 2026-11-16 (No new phase. The open item "a history cap suited to agent
+sessions" was blocked on something smaller than a decision: the shape of the message list
+a cap would run on had never been recorded by the code that caps. The offline route
+stopped for the right reason - stored Cline sessions are Anthropic `tool_use` /
+`tool_result` blocks and `cap_history` consumes OpenAI chat-form `tool_calls` plus
+`role: "tool"` results, so a converter would have become an unverified second variable.
+This adds the observation instead of the conversion: `APP_HISTORY_SHAPE_LOG_ENABLED`,
+false by default and false in every tracked configuration, writes `history.shape` into the
+session log - the inbound list counted with `packages.pipeline.history._message_token_count`
+at the resolved model's `chars_per_token`, grouped by the real `_build_cap_groups`, listed
+newest-first and bounded at 256 groups or 131,072 cap-eligible tokens of coverage - the
+eligible qualifier is the v2 correction to a v1 counter that included system and
+protected-turn tokens, which let an oversized current turn record one group and omit
+every token a simulation would need, caught in review and pinned by three regression
+cases - with the omitted mass and the protected group stated rather than dropped.
+Structure and numbers only; no text, id, name, argument, path,
+hash or raw index, and an unknown `role` is written as `other` rather than echoed. Measured
+at the capping boundary, before capping, and whether or not capping is enabled; it cannot
+fail or edit a request. The live gate settled where the code lives: added to
+`packages/pipeline/history.py` as new functions, it moved the `gains_the_changed_file` A/B
+assertion from 9 promoted symbols to 12, because that module's index symbol set is a
+measured quantity in its own right - so the summary is a module of its own that imports the
+cap's functions instead of restating them. 50 tests added, none changed or weakened;
+live-path gate 2,780 passed against 2,730 at `b01fe4b`, full suite 43 failures against the
+documented 43 (5,336 passed, 5,286 before), ruff and mypy clean on the changed files. No
+budget, default or behavior of the cap is chosen or altered here; `history.tokens_after`'s
+content-only accounting is recorded as a known difference, not fixed. See
+`docs/live-gateway-runbook.md`, *History-Shape Observability (pre-cap, opt-in)*.)
+
+Previous review: 2026-11-15 (No new phase. Intent detection treated a verb sitting inside a *question* as the
 instruction that beats an explanation request, so "Where do we add new providers in the registry? Explain
 briefly." planned as IMPLEMENT and "What should I fix first? Explain." as DEBUG, and a sequenced verb written
 as a label ("Next fix: none needed.") fired the second branch too. Both narrowed in place in
@@ -1146,7 +1175,15 @@ and docstrings are delivered once (that probe `2/2`, `search_delta_sentinel_valu
 Still open after 2026-11-14, not authorized:
 
 - A history cap suited to agent sessions (disabled in the live `.env`; see the runbook).
-- A message carrying task text and an envelope together is selected whole, markup included.
+  What that decision needed - the shape of the message list the cap actually receives -
+  is now recordable rather than guessed at: `APP_HISTORY_SHAPE_LOG_ENABLED` summarizes
+  it into `history.shape`, off by default, deciding nothing (runbook, *History-Shape
+  Observability (pre-cap, opt-in)*).
+- Closed, and listed here only because this list used to write it as open: a message
+  carrying task text and an envelope together is selected whole, markup included.
+  Extraction from that shape was measured and declined at `945e2bb` (runbook, *Task
+  text with an attached envelope: extraction measured and declined*); nothing here
+  revisits it.
 - One offline replay scored the 25 probes `53/66` instead of `59/66` and did not reproduce;
   cause unknown. Re-run once before believing a regression that drops whole test modules.
 

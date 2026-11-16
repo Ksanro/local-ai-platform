@@ -135,6 +135,84 @@ here; it is ``0`` on a request that was never compared.
 The changed-file fields are counts, two booleans, and two state tokens.  Changed
 file paths, module names derived from them, symbol names, and Git output are
 never recorded.
+
+History-shape summary (``history.shape``)
+-----------------------------------------
+
+Present only when ``APP_HISTORY_SHAPE_LOG_ENABLED=true``, and absent — not null,
+not empty — from every other record.  It describes the inbound message list the
+history cap would have consumed, taken before capping replaces anything and
+whether or not capping is enabled, by
+:py:func:`packages.pipeline.history_shape.summarize_history_shape`.  The counting is
+the cap's own ``_message_token_count`` and the grouping is the cap's own
+``_build_cap_groups``, at the ``chars_per_token`` resolved from this request's
+model, so a budget simulated from this section later is a budget the real code
+would have spent the same way.
+
+* ``schema`` / ``status`` — ``history-shape-v2`` and ``measured``, or
+  ``unavailable``, which is the only other shape this key can take: a summary
+  that could not be built cannot fail the request, so it states that it did not
+  run instead of stating a number as if it had.
+* ``chars_per_token`` — the ratio every token figure here was estimated with.
+* ``message_count`` / ``system_message_count`` / ``non_system_message_count`` —
+  the list, and how much of it capping never counts against a budget.
+* ``history_tokens`` — estimated tokens of all non-system messages.
+* ``cap_eligible_tokens`` — the same, less the protected current turn: the
+  figure ``cap_history`` compares a budget against.
+* ``group_count`` / ``recorded_groups`` / ``omitted_groups`` — how many atomic
+  groups the list carves into, how many the ordered detail carries, how many it
+  does not.
+* ``recorded_tokens`` / ``omitted_tokens`` / ``omitted_messages`` — what the bound
+  left out of the list as a whole; these two partition the estimate of every
+  message, system text included.  Every top-level total still describes the whole
+  list; only the ordered detail is bounded.
+* ``recorded_cap_eligible_tokens`` / ``omitted_cap_eligible_tokens`` — the same
+  partition over the part a budget is actually measured against, and it is exact:
+  the two sum to ``cap_eligible_tokens``.  This is also the figure the detail bound
+  counts, because a system message and the protected turn cost a budget nothing and
+  so must not be able to end the detail either.
+* ``last_message_role`` / ``last_user_distance`` — the role of the newest
+  message, and how far back the newest ``user`` message sits (``0`` is last).
+* ``assistant_with_tool_calls`` / ``tool_result_count`` — messages carrying
+  ``tool_calls``, and messages whose ``role`` is ``tool``.
+* ``complete_tool_groups`` / ``orphan_tool_calls`` / ``orphan_tool_results`` —
+  groups whose calls and results all pair inside the group, tool calls with no
+  result anywhere in the list, and results with no call anywhere in the list.
+  Ids are never stated, only whether they matched.
+* ``groups`` — newest-first list of group summaries, bounded at 256 entries or until
+  they carry 131,072 **cap-eligible** tokens (the largest budget the planned cap
+  sweep simulates), whichever comes first.  Per group: ``ordinal`` (``0`` is newest),
+  ``message_count``, ``tokens``, ``cap_eligible_tokens`` (what a budget is charged
+  for this group — zero for a system or protected-turn group), ``roles`` (count by
+  role), ``has_system``, ``has_last_user`` (the group holds the turn capping never
+  drops), ``has_tool_calls``, ``has_tool_results``, ``pairing_complete`` (nothing in
+  the group dangles; a group with no tool traffic satisfies it trivially),
+  ``orphan_tool_calls`` and ``orphan_tool_results``.  Capping keeps a prefix of this
+  order, so this is what a "keep newest groups until the budget is exhausted" policy
+  is simulated from, and ``detail_complete`` says whether the prefix was the whole
+  list.
+* ``last_user_group`` — the same group summary for the protected current turn,
+  reserved rather than bounded: it is stated whether or not the walk reached that
+  ordinal, so a transcript with more than 256 newer groups cannot lose the one group
+  capping is guaranteed to keep.  It is ``null`` only when the list has nothing to
+  protect, and it repeats the matching ``groups`` entry when the prefix already
+  recorded it; it is not itself a member of ``groups``, which stays one contiguous
+  newest-first prefix.
+
+Schema history: v1 counted system and protected-turn tokens toward the 131,072-token
+coverage floor, so a transcript whose current turn was itself larger than that floor
+recorded one group - the protected turn - and omitted all cap-eligible history.  v2
+counts eligible tokens only, states the eligible partition explicitly, and reserves the
+protected turn's detail.  A reader tells the two apart from ``schema`` alone.
+
+Nothing in this section is caller-authored text: no content, content preview,
+reasoning text, tool name, tool argument, tool-call id, file path derived from a
+message, or hash of any of them, and no raw message index — positions are a
+group ordinal and a distance from the end.  It is also not ``history.
+tokens_after``: that older field sums message content characters only, while
+``history_tokens`` here sums what ``_message_token_count`` actually charges
+(content, ``name``, ``reasoning_content``, tool-call names and arguments).  The
+difference predates this field and is left unfixed.
 """
 
 from __future__ import annotations
@@ -551,6 +629,14 @@ class SessionLoggerMiddleware:
             "dropped_count": history_dropped_count if history_dropped_count is not None else 0,
             "tokens_after": history_tokens_after if history_tokens_after is not None else 0,
         }
+        # The opt-in history-shape summary, nested beside the cap fields it
+        # describes rather than replacing any of them.  Absent - not null, not
+        # empty - when the knob is off or the pipeline never reached the point
+        # it measures, so a default-off record keeps the exact shape it had
+        # before this field existed.
+        history_shape = scope.get("session_history_shape")
+        if isinstance(history_shape, dict):
+            history_section["shape"] = history_shape
 
         # Build the stages sub-dict with the expected keys.
         _known_stages = [

@@ -134,3 +134,36 @@ def test_changed_file_comparison_is_off_for_a_false_spelling(
     settings = Settings()
 
     assert settings.repository_context_changed_files_comparison_enabled is False
+
+
+def test_history_shape_logging_is_off_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The history-shape summary is opt-in: no knob, no extra field in a record."""
+    monkeypatch.delenv("APP_HISTORY_SHAPE_LOG_ENABLED", raising=False)
+
+    settings = Settings()
+
+    assert settings.history_shape_log_enabled is False
+
+
+def test_history_shape_logging_reads_app_prefix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The knob is configured like the capping knobs it observes."""
+    monkeypatch.setenv("APP_HISTORY_SHAPE_LOG_ENABLED", "true")
+
+    settings = Settings()
+
+    assert settings.history_shape_log_enabled is True
+
+
+def test_history_shape_logging_is_off_for_an_explicit_false(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An explicit ``false`` is the default stated, not a different reading."""
+    monkeypatch.setenv("APP_HISTORY_SHAPE_LOG_ENABLED", "false")
+
+    settings = Settings()
+
+    assert settings.history_shape_log_enabled is False

@@ -4147,3 +4147,242 @@ which layer fired before re-running anything:
 - In comparison output, an errored arm shows as `ERR` and its delta is marked
   `*`: the delta for that probe is invalid, but the other arm's result remains
   a valid standalone measurement.
+
+## History-Shape Observability (pre-cap, opt-in)
+
+Added 2026-11-16. This documents an observation, not a policy: nothing here
+decides how much history a request keeps, and no cap budget or default changed.
+
+### Why it exists
+
+Every measurement of "which history cap suits agent sessions" so far was made
+against a *chosen* budget on a *running* gateway - `3000` in the A3 arms - or
+against stored Cline sessions, which turned out to be the wrong dialect: those
+transcripts carry Anthropic-style `tool_use` / `tool_result` content blocks,
+while `packages/pipeline/history.cap_history` consumes OpenAI chat-form messages
+with assistant `tool_calls` and `role: "tool"` results. Converting one into the
+other to make a measurement would have inserted an unverified independent
+variable into the thing being measured, so that run stopped and reported.
+
+What was missing is the shape of the message list the real cap receives - how
+many atomic groups it carves into, what each is worth - recorded on the request,
+so a budget can be simulated afterwards from a log instead of guessed at.
+
+### Knob
+
+| Setting | Env | Default | Effect |
+|---|---|---|---|
+| `history_shape_log_enabled` | `APP_HISTORY_SHAPE_LOG_ENABLED` | `false` | Adds `history.shape` to each session-log record |
+
+It is off in every tracked configuration. Nothing else reads it: `chat.py`
+forwards it into `PipelineRequest.metadata`, `PipelineEngine` forwards it into
+context metadata, and `_record_history_shape` is the only consumer. When it is
+false the session record is byte-for-byte what it was before, because the key is
+absent rather than null - a test pins that.
+
+### Where the measurement is taken
+
+`packages/pipeline/engine.py`, at the boundary capping itself uses: after
+`RepositoryContextStage` has run (so the injected context system message is part
+of the list) and before `_apply_history_cap` can drop, truncate, or replace
+anything. It is called whether or not `history_cap_enabled` is true, which is
+what makes a cap-off transcript's shape legible. The list is read, never
+touched: no copy, no reorder, no write, and a test asserts deep equality of the
+payload the provider stage receives before and after.
+
+### What is reused, not restated
+
+`packages/pipeline/history_shape.summarize_history_shape` calls the capping code
+directly rather than describing it a second time:
+
+- `_message_token_count(message, ratio, estimate)` - the same function that
+  prices a message for the budget, so `name`, `reasoning_content`, tool-call
+  names and arguments are charged here exactly as they are when capping decides;
+- `_build_cap_groups(messages)` - the same union-find over `tool_calls` and
+  `tool_call_id`, so a "group" in a summary is the unit capping keeps or drops;
+- the newest-first ordering `cap_history` uses (`max(group)` descending) and the
+  protected-turn rule (`_trailing_assistant_count` for its fallback).
+
+Nothing was copied into the gateway or the logger, and `cap_history` behaviour is
+unchanged.
+
+### Why the summary is its own module
+
+This is not a style preference. An earlier draft put `summarize_history_shape`
+inside `packages/pipeline/history.py`, and the live-path gate then failed
+`tests/observability/test_quality_harness.py::test_changed_file_ab_benefit_case_gains_the_file_the_question_asks_about`
+by promoting 12 symbols where it records 9: that probe injects
+`packages/pipeline/history` as the dirty module and counts how many of its
+symbols the changed-file bonus carries into context, so adding functions there
+moves a retrieval measurement that has nothing to do with history capping.
+`packages/pipeline/history.py` already says as much above its ratio constants -
+they are kept as constants rather than behind a helper "so this file's index
+symbols ... stay the set every measurement of them recorded".
+
+The summary therefore lives in `packages/pipeline/history_shape.py` and imports
+the two production functions it measures with.  Do not tidy it back into
+`history.py`.
+
+### Schema (`history-shape-v2`)
+
+`history.shape` is nested under the existing `history` section, beside the five
+fields already there and never in place of them.
+
+| Field | Meaning |
+|---|---|
+| `schema` | `history-shape-v2` |
+| `status` | `measured`, or `unavailable` if summarizing itself failed |
+| `chars_per_token` | the resolved model's calibration used for every number |
+| `message_count`, `system_message_count`, `non_system_message_count` | the list |
+| `history_tokens` | estimate of all non-system messages |
+| `cap_eligible_tokens` | the same, less the protected current turn - what `cap_history` compares a budget against |
+| `group_count`, `recorded_groups`, `omitted_groups` | atomic grouping, and how much of it the detail carries |
+| `recorded_tokens`, `omitted_tokens`, `omitted_messages` | the whole-list partition the detail bound left, system text included |
+| `recorded_cap_eligible_tokens`, `omitted_cap_eligible_tokens` | the same partition over `cap_eligible_tokens`, exact by construction: the two sum to it. This is what the coverage bound counts |
+| `detail_complete` | whether `groups` was the whole list |
+| `last_message_role`, `last_user_distance` | the newest role, and how far back the newest user turn sits |
+| `last_user_group` | the protected turn's group summary, reserved rather than bounded; `null` only when there is nothing to protect |
+| `assistant_with_tool_calls`, `tool_result_count` | messages with `tool_calls`, and messages whose `role` is `tool` |
+| `complete_tool_groups`, `orphan_tool_calls`, `orphan_tool_results` | groups that pair inside themselves, calls with no result anywhere, results with no call anywhere |
+| `groups` | the bounded newest-first detail below |
+
+Each entry of `groups` - and `last_user_group`, which has the same shape:
+`ordinal` (`0` is newest), `message_count`, `tokens`, `cap_eligible_tokens` (what a
+budget is charged for this group; zero for a system or protected-turn group), `roles`
+(a count per role), `has_system`, `has_last_user`, `has_tool_calls`,
+`has_tool_results`, `pairing_complete` (nothing in the group dangles; a group with no
+tool traffic satisfies it trivially), `orphan_tool_calls` and `orphan_tool_results`.
+
+To read a budget out of it, walk `groups` by ascending `ordinal`, keep every group
+marked `has_system` or `has_last_user` unconditionally and charge nothing for them, and
+stop at the first other group whose `cap_eligible_tokens` no longer fits. That is
+`cap_history`'s rule restated as a prefix, and it works because capping breaks on the
+first group it cannot fit: what it keeps is always a prefix of this order.
+`last_user_group` exists so that a prefix cut short by the 256-group bound still states
+the protected turn explicitly instead of leaving a reader to infer which kept group the
+newest traffic gathered around; it sits beyond the prefix in that case, and repeats the
+matching entry when the prefix already reached it.
+
+
+### Privacy
+
+No message text, no content preview, no reasoning text, no tool name, no tool
+argument, no raw tool-call id, no path derived from a message, and no hash of any
+of them. The only strings the summary can contain are the schema token, the
+status token, and a role drawn from a fixed list - a `role` the protocol does not
+define is written as `other`, so the one client-controlled string in the message
+shape cannot be echoed into a log either. A tool-call id is used only as
+in-memory set membership to decide whether a call paired and never leaves that
+decision. Positions are relative: a group ordinal and a distance from the end,
+never a raw index.
+
+The pre-existing `last_user_message` and `answer_preview` fields are untouched
+and still carry truncated text as they have since the logger existed; the privacy
+claim above is about `history.shape`. The synthetic fixture that demonstrates it
+keeps its sentinels out of those two fields, so the whole serialized line is
+shown clean rather than only the new key.
+
+### The bound, and why it is enough
+
+Two bounds, whichever bites first: `MAX_SHAPE_GROUPS = 256` groups, and
+`MAX_SHAPE_DETAIL_TOKENS = 131072` **cap-eligible** tokens of cumulative coverage.
+
+The count matches the repository's existing observational bounds - 256 envelopes per
+request in `packages/pipeline/cline_activity.py`, 256 files per state and 256
+fingerprint messages in `packages/pipeline/file_activity.py` - and caps one line at a
+few tens of kilobytes on a pathological transcript. The token floor is what makes the
+bound sufficient rather than merely cheap: because a cap keeps a prefix of this order, a
+detail that has already recorded 131,072 eligible tokens has passed the largest budget
+the planned sweep simulates (128k), so the cut point is inside the recorded groups for
+16k, 32k, 64k, 96k and 128k alike. On agent traffic that floor is usually reached in a
+few dozen groups, because tool results are large, so ordinary records stay small.
+
+"Cap-eligible" is the whole point of the figure: `cap_history` charges neither a system
+message nor the protected current turn against a budget, so neither advances the
+coverage counter here. `_cap_eligible_group_tokens()` is the single place that decides
+what counts, and it is the rule the `cap_eligible_tokens` total is built from, so the
+invariant `recorded_cap_eligible_tokens + omitted_cap_eligible_tokens ==
+cap_eligible_tokens` holds by construction rather than by two expressions agreeing.
+
+When the count bound bites first - a transcript of hundreds of tiny messages, or of
+more than 256 newer groups - `detail_complete` is `false` and `omitted_groups`,
+`omitted_tokens` and `omitted_cap_eligible_tokens` state the mass left out. A simulation
+can then place the cut exactly for any budget the recorded prefix covers, and for a
+larger one can bound the tail without claiming where inside it the cut falls. The record
+states which of the two it is; the reader does not have to guess.
+
+### Correction: what the bound counted (v1 to v2)
+
+v1 stopped recording once the groups it had written carried 131,072 tokens - counting
+every token, including the ones no budget is ever charged for. Since the protected
+current turn is exactly the message an agent client sends largest (a pasted page, a
+whole file in an envelope), the bound could be exhausted by a group that contributes
+nothing to a simulation. Measured on synthetic fixtures before the fix, at the platform
+4.0 ratio:
+
+| Case | v1 | v2 |
+|---|---|---|
+| protected turn ~150k tokens, 2 older eligible groups behind it | recorded 1/3 groups, `omitted_tokens` 10, all eligible history missing | recorded 3/3, `omitted_cap_eligible_tokens` 0 |
+| ~150k-token system message newer than the eligible history | recorded 1/4 groups, protected turn absent from the detail | recorded 4/4 |
+| last user behind 260 native tool groups | recorded 256/302, protected marker absent - nothing said which group capping kept | recorded 256/302 with `last_user_group.ordinal` 300 stated |
+
+The third row is the other half of the fix: a bounded list must not be able to lose the
+one group capping always keeps, so that group's detail is now reserved outside the bound
+rather than subject to it. Six new tests in `tests/pipeline/test_history_shape.py` (38
+there in total) cover the eligibility rule, the partition invariant at five different
+bounds, the reservation, and the capping fallback that protects a position when a
+transcript holds no user message; `build/history_shape_observability/repro.py` prints the
+three cases above.
+
+
+### Failure behaviour
+
+A summary that raises cannot fail a request. `_record_history_shape` catches
+everything, logs one warning, and records
+`{"schema": "history-shape-v2", "status": "unavailable"}` - evidence that the
+measurement did not run, rather than a zero that would read as if it had. The
+session logger keeps its existing rule of dropping a record it cannot write.
+
+### Validation (2026-11-16)
+
+Offline only: no gateway restarted, no port probed, no provider called, and no
+stored transcript used as though it were an inbound request.
+
+- `tests/pipeline/test_history_shape.py`, 38 tests: native chat-form fixtures;
+  one tool exchange; parallel calls held in one group; orphan call; orphan
+  result; protected last user; bounded detail and its totals; the calibrated
+  estimator; the engine measurement point with capping on and off; a raising
+  summarizer that must not fail or edit the request.
+- `tests/gateway/test_session_log_history_shape.py`, 9 tests: no key when off,
+  unchanged record shape, nested under `history` when on, a sentinel scan of the
+  whole serialized line, endpoint surfacing both ways.
+- `tests/gateway/test_config.py`, 3 tests added: default off, `APP_` prefix,
+  explicit false.
+- `tests/gateway tests/pipeline`: 599 passed.
+- Live-path gate (`bash scripts/precommit_test_gate.sh`): 2,780 passed, "live gate
+  OK", against 2,730 at `b01fe4b` - the delta is exactly the 50 tests this added.
+- Full suite: 43 failed, 5,336 passed, 3 skipped in 327.50 s. The failure count is
+  the documented 43-failure baseline and no test was changed, skipped or weakened
+  to keep it there; `b01fe4b` passed 5,286.
+- `ruff` clean on every changed file; `mypy packages/providers packages/pipeline
+  apps/gateway`: no issues in 47 source files.
+- Synthetic native-tool fixture: 11 sentinels planted across message content, a
+  system prompt, reasoning text, a tool name, tool arguments, two tool-call ids,
+  a result body and a path-like string; 0 of 11 present in the serialized
+  summary; the message list deep-equal before and after.
+
+### Still open, and not solved by this
+
+- The transcript-dialect blocker stands for the offline route. Stored Cline
+  sessions are Anthropic block form; the gateway's cap consumes OpenAI chat
+  form. This section is how the real shape gets recorded instead of converted.
+- `history.tokens_after` sums `content_to_text` characters only, while
+  `_message_token_count` also charges `name`, `reasoning_content`, and tool-call
+  names and arguments. That accounting difference predates this work and was not
+  fixed here: fixing it would change a field the analyzer and every past
+  measurement already read. `history.shape.history_tokens` is the figure built
+  the way the cap counts, which is why it sits beside that field rather than
+  replacing it.
+- No cap is selected, enabled or changed. `history_cap_enabled` still defaults to
+  false, `history_cap_tokens` still defaults to 0, and nothing in this change
+  reads either to decide anything.
