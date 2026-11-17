@@ -3,7 +3,39 @@
 This file is the current runtime snapshot. It intentionally describes only
 what matters for the live gateway path and calls out dormant code explicitly.
 
-Last reviewed: 2026-11-16 (No new phase. Two defects in
+Last reviewed: 2026-11-17 (No new phase. The gateway half of explicit client
+session correlation landed, and it is a receiver, not an end-to-end feature.
+`APP_SESSION_CORRELATION_ENABLED` (false by default, false in every tracked
+configuration) lets `apps/gateway/api/chat.py` read one dedicated request header -
+`X-Cline-Session-ID` - before `engine.execute()`, validate it, and put the result on
+the ASGI scope for the session logger, which adds a top-level `session` object:
+`{"schema": "session-correlation-v1", "source": "client", "id": <value as sent>}`, or
+`{"schema": "session-correlation-v1", "source": "absent"}` with no `id` key when the
+header was missing or refused. That knob is the only knob - the header name and the
+64-character cap are constants, because a configurable header name would make this a
+header-copying feature and a configurable cap would invite truncating an identifier -
+and an invalid value is refused whole, never trimmed, cut or repaired. The accepted
+design is the corrected conclusion of the session-correlation investigation, `CLIENT
+CHANGE REQUIRED`, so the gateway-owned lineage prototype and its transcript
+fingerprint did not come with it: nothing here is derived from message content,
+nothing is hashed, salted or minted, `packages.context.delta.conversation_key` and
+`store_key` are not consulted and the top-level `conversation_key` field is unchanged,
+and the value never reaches a backend - it is kept off the `PipelineRequest` and the
+providers build their own headers. Cline 3.0.74 does not yet transmit the header for
+`openai-compatible`, so turning the knob on today records `source: "absent"` on every
+request and live records still cannot be grouped by actual client session; no
+gateway-side inference exists to substitute for that, and history capping is untouched
+here (`history_cap_enabled` false, `history_cap_tokens` 0, no budget selected).
+Validation: 117 new tests in `tests/gateway/test_session_correlation.py` and no
+existing expectation changed, skipped or weakened - `tests/gateway tests/providers`
+348, `tests/pipeline` 577, live-path gate 2,999 passed against the 2,882 recorded at
+`99cf19c`, the delta being exactly those 117, and full suite 43 failed / 5,555 passed /
+3 skipped, the documented baseline. ruff clean on every changed file; `mypy
+packages/providers packages/pipeline apps/gateway` clean. Offline only: no gateway
+restarted, no port touched, no backend called, no `.env` read. See
+`docs/live-gateway-runbook.md`, *Client Session Correlation (receiver, opt-in)*.)
+
+Previous review: 2026-11-16 (No new phase. Two defects in
 `packages/pipeline/history.cap_history`, both reachable only when the inbound list holds
 no `user` message, and both of them the cap disagreeing with what
 `packages/pipeline/history_shape.py` had been recording correctly all along. First: the
@@ -696,6 +728,15 @@ runs should use `--max-tokens 2048` or higher.
   `packages/pipeline/history` moves the `explain_changed_files_history_cap`
   changed-file measurement, which counts that module's promoted symbols
 - session JSONL logging
+- opt-in, off-by-default client session correlation receiver: `apps/gateway/api/chat.py`
+  reads the dedicated `X-Cline-Session-ID` request header before `engine.execute()`,
+  `apps/gateway/session_correlation.py` validates it, and the session log gains a
+  top-level `session` object carrying the validated client-stated identifier
+  (`source: "client"`) or stating that nobody stated one (`source: "absent"`, no `id`
+  key). `APP_SESSION_CORRELATION_ENABLED`, default off. It is a log field only: never
+  forwarded upstream, never used to route, authorize, rate-limit, select or cache,
+  never hashed or minted, and never inferred from the transcript - Cline 3.0.74 does
+  not yet send the header for `openai-compatible`, so live records say `absent`
 - session log analyzer, including a count-only FILE ACTIVITY section that
   summarizes roadmap C1's `context.file_activity` records as per-record
   transcript snapshots without summing any counter across records
@@ -964,3 +1005,12 @@ environment uses whatever Python uv discovers, against `requires-python = ">=3.1
   messages to four at `3.5`, identically across three repeats, with no quality
   or style regression and no new error - `docs/live-gateway-runbook.md`. True
   tokenizer integration is out of scope/deferred.
+- Live session logs cannot yet be grouped by actual client session. The gateway
+  receiver is in place and off by default (`APP_SESSION_CORRELATION_ENABLED`); the
+  open item is the client, which does not transmit `X-Cline-Session-ID` for the
+  `openai-compatible` provider in Cline 3.0.74. Enabling the gateway knob before
+  that change lands records `session.source: "absent"` on every request, and there
+  is deliberately no transcript-derived fallback to substitute - the gateway-owned
+  lineage design that would have supplied one was rejected for two reproducible
+  silent-merge defects. No feature is end-to-end live until a controlled request
+  produces a `source: "client"` record.

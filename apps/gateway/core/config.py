@@ -110,6 +110,12 @@ class Settings(BaseSettings):
     context_delta_cache_size: int = 256  # max conversation keys in LRU cache
     session_log_enabled: bool = True  # on by default — opt in
     session_log_path: str = "logs/sessions.jsonl"
+    # Explicit client session correlation - see apps/gateway/session_correlation.py.
+    # Off means the gateway never reads the X-Cline-Session-ID request header and
+    # writes no "session" field, so a record stays byte-for-byte the record it was
+    # before the feature existed.  There is deliberately no header-name or length
+    # knob: the contract is one fixed dedicated header and one fixed cap.
+    session_correlation_enabled: bool = False
     history_cap_enabled: bool = False  # on by default — opt in to reduce prefill
     history_cap_tokens: int = 0  # APP_HISTORY_CAP_TOKENS; 0 = derive from context_window
     # Opt-in, count-only observation of the inbound history shape a history cap

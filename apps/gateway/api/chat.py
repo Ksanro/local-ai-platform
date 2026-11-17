@@ -18,6 +18,11 @@ from pydantic import BaseModel, ConfigDict, Field
 from starlette.responses import StreamingResponse
 
 from apps.gateway.core.config import get_settings
+from apps.gateway.session_correlation import (
+    SESSION_CORRELATION_HEADER,
+    SESSION_CORRELATION_SCOPE_KEY,
+    resolve_client_session,
+)
 from packages.pipeline.engine import PipelineEngine
 from packages.pipeline.exceptions import PipelineError
 from packages.pipeline.file_activity import sanitize_file_activity
@@ -373,6 +378,21 @@ async def chat_completions(
     # Look up the configured provider via the factory.
     settings = get_settings()
     provider_name = settings.default_provider
+
+    # Explicit client session correlation, resolved here and nowhere else, and
+    # resolved before the pipeline runs so the field survives a stage failure and
+    # an HTTP error raised on the way out.  It is a log field and nothing more: it
+    # is not consulted by routing, provider or model selection, context assembly,
+    # rate limiting or caching, and it is deliberately kept off the
+    # ``PipelineRequest`` - not in ``kwargs``, not in ``metadata`` - so there is no
+    # path from this header to a backend call.  When the knob is off the header is
+    # never read at all.  ``getattr`` keeps a caller that supplies an older
+    # settings stand-in working exactly as it did.
+    if getattr(settings, "session_correlation_enabled", False):
+        request.scope[SESSION_CORRELATION_SCOPE_KEY] = resolve_client_session(
+            enabled=True,
+            header_value=request.headers.get(SESSION_CORRELATION_HEADER),
+        )
 
     # Build the pipeline request.
     # Only optional passthrough params go in kwargs; messages/model/stream

@@ -4431,3 +4431,197 @@ stored transcript used as though it were an inbound request.
 - No cap is selected, enabled or changed. `history_cap_enabled` still defaults to
   false, `history_cap_tokens` still defaults to 0, and nothing in this change
   reads either to decide anything.
+## Client Session Correlation (receiver, opt-in)
+
+Added 2026-11-17. This documents a receiver, not an end-to-end feature. The
+gateway can now consume a session identifier that the client states about itself;
+the client that would state it has not been changed yet, so on live traffic this
+records nothing but `absent` until that change lands.
+
+The design this implements is the corrected conclusion of the session-correlation
+investigation: the accepted decision is `CLIENT CHANGE REQUIRED`, and the
+gateway-owned lineage prototype it replaced was rejected for two
+reproducible silent-merge defects and is not part of this repository.
+
+### Knob
+
+| Setting | Env | Default | Effect |
+|---|---|---|---|
+| `session_correlation_enabled` | `APP_SESSION_CORRELATION_ENABLED` | `false` | Reads the `X-Cline-Session-ID` request header at the chat endpoint and adds a top-level `session` object to each session-log record |
+
+That is the only knob. The header name and the 64-character length cap are
+constants in `apps/gateway/session_correlation.py`, not settings: a configurable
+header name would turn one narrow contract into a general header-copying
+feature, and a configurable cap invites truncation of an identifier, which is how
+two different sessions come to share one logged value.
+
+With the knob off - the default, and off in every tracked configuration - the
+gateway does not read the header at all and writes no `session` key, so a record
+is byte-for-byte the record written before this existed. The absence is the key
+being missing, not a null or empty object, and a test pins both halves.
+
+### Where it is resolved, and why that spot
+
+`apps/gateway/api/chat.py`, inside `chat_completions`, before
+`engine.execute()` is called. The sanitized object is written to
+`request.scope["session_correlation"]`, and `SessionLoggerMiddleware` reads it
+from there.
+
+That placement is the decision, not an implementation detail:
+
+- it belongs to no stage. `ModelResolutionStage`, `PlanningStage`,
+  `RepositoryContextStage` and `ProviderStage` neither see it nor decide it, so
+  repository context disabled, delta injection disabled and a stage that fails
+  halfway all leave the field intact;
+- it is written before the pipeline runs, so it survives a stage failure
+  (`chat.py` maps the exception to a 5xx) and an exception raised on the way out;
+  a test asserts the field on both;
+- it is kept off the `PipelineRequest` entirely - not in `kwargs`, not in
+  `metadata` - so there is no channel from this header to a backend call. The
+  providers build their own request headers
+  (`packages/providers/openai.py`, `packages/providers/vllm.py`) and forward no
+  client header, which is what makes "never forwarded upstream" true by
+  construction rather than by a strip step that could be forgotten later.
+
+### What counts as a stated session
+
+The raw header value is accepted only if it is a string that is non-empty, at
+most 64 characters, and made up only of ASCII letters, digits and `.`, `_`, `:`,
+`-`. That charset excludes whitespace and control characters by construction, and
+`fullmatch` means a padded value is not a valid value with the padding removed.
+
+Nothing is repaired. An invalid value and a missing value are the same state -
+`absent` - and the invalid value is not recorded, not echoed, not truncated to
+its first 64 characters, and not trimmed. Cline's own shape
+(`<unix-ms>_<5 random base36>`, 19 characters) is well inside every rule above.
+
+### Record schema (`session-correlation-v1`)
+
+A record for a request whose client stated its session:
+
+```json
+"session": {
+  "schema": "session-correlation-v1",
+  "source": "client",
+  "id": "1763302548123_a3k9z"
+}
+```
+
+A record for a request whose header was missing or refused:
+
+```json
+"session": {"schema": "session-correlation-v1", "source": "absent"}
+```
+
+There is no third shape and no `inferred` source, because the gateway infers
+nothing. The two objects above are the only things `session` can be; the absent
+form has no `id` key at all.
+
+`conversation_key` is not this value and does not become it. On the live path it
+remains the legacy `__new__` sentinel because nothing populates
+`session_conversation_key`, and it is not consulted here. The delta cache's
+internal content key is separate and is not recorded in this field.
+
+### What the value must never do
+
+It is a log field. It does not authenticate, authorize, route, rate-limit, select
+a model, drive retrieval or planning, or key a cache, and nothing in the request
+path reads it for any purpose except writing it. Correlation and control must not
+share an input, because a client-controlled string is the first thing a client
+can choose.
+
+It is also never hashed, never HMACed, never salted, and never replaced. A
+process-local salt would make the logged identifier move on every restart, on
+every worker and across parallel instances, which is the instability the design
+was corrected to remove; the client's value is already opaque, content-free and
+session-scoped, so a pseudonym of it would protect nothing.
+
+### Why live records still cannot be grouped by session
+
+Cline 3.0.74 creates one opaque session identifier per session and knows how to
+put it on the wire, but for the `openai-compatible` provider family it does not
+transmit it: the resolver that would attach it returns early and the value is
+dropped inside the client before the request is built. The required client change
+is an explicit, per-provider, off-by-default opt-in that sends that existing
+identifier in a dedicated header for the configured endpoint only.
+
+Until that change is in place and a controlled request has verified it:
+
+- enabling `APP_SESSION_CORRELATION_ENABLED=true` on a gateway serving Cline
+  produces `source: "absent"` on every record, because no header arrives;
+- no amount of gateway-side inference fixes that. There is deliberately no
+  transcript-derived fallback: no digest, no fingerprint, no message count, no
+  structural signature and no `conversation_key` substitution. A gateway that
+  guessed would produce identifiers that merge sessions, and that is the failure
+  this design exists to avoid;
+- grouping live records by actual client session is therefore not available yet,
+  and this repository does not claim that it is.
+
+### Reading it
+
+```powershell
+.\uv.exe run python -c "import json; [print(json.loads(l).get('session')) for l in open('logs/sessions.jsonl', encoding='utf-8')]"
+```
+
+`absent` on every line means either the knob is off (no field at all - check the
+setting), or the client is not yet sending the header. A `source: "client"` line
+is the first evidence that the end-to-end path works; nothing short of seeing one
+proves it.
+
+### Failure behaviour
+
+The helper cannot fail a request: it is a pure function of one boolean and one
+value, and it raises on no input, including a header that is empty, over length,
+non-ASCII, control-character-bearing, or a list rather than a string. The session
+logger's rule is unchanged - a record it cannot write is dropped, never a failed
+request.
+
+One boundary is worth stating exactly. The value is resolved in the endpoint, so
+a record for a request that never entered it - a `422` body-validation rejection,
+or any path FastAPI refuses before the handler runs - carries no `session` field
+even with the knob on: the gateway did not read the header there and so says
+nothing about it. Every record for a request that did enter the endpoint carries
+it, whether the pipeline then succeeded, streamed, failed a stage or raised on
+the way out.
+
+### Validation (2026-11-17)
+
+Offline only, as required: no gateway was restarted, no port was probed, no
+backend was called, and no stored transcript was used as an inbound request.
+
+- `tests/gateway/test_session_correlation.py`, 117 tests: configuration (default
+  off, `APP_` prefix, explicit false, no header-name or length knob); validation
+  (valid Cline-shaped values, the 64-character boundary, empty, over-length,
+  whitespace, control characters, Unicode digits and letters, disallowed
+  punctuation, non-string values); the two schema shapes; the record over the real
+  endpoint and the real session-log middleware - disabled writes no key, enabled
+  writes the exact validated value, missing or invalid writes `absent` with no
+  `id`, streamed and non-streamed agree, an error record after endpoint entry keeps
+  the field, repository context disabled and delta injection disabled keep it; a
+  pipeline that raises on entry keeps it, which is the ordering proof; determinism
+  across two independently built app instances and two helper calls, and distinct
+  client ids staying distinct; no-transcript-fallback tests that poison
+  `packages.context.delta.conversation_key` and `store_key` in both bindings;
+  upstream-capture tests through a recording stage standing where `ProviderStage`
+  stands, plus the provider's own header set; privacy tests that the serialized
+  `session` object holds only `schema`, `source` and, when stated, `id`.
+- `tests/gateway tests/providers`: 348 passed. `tests/pipeline`: 577 passed.
+- Live-path gate (`bash scripts/precommit_test_gate.sh`): 2,999 passed, "live gate
+  OK", against 2,882 at `99cf19c` - the delta is exactly the 117 tests this added.
+- Full suite: 43 failed, 5,555 passed, 3 skipped. The failure count is the
+  documented 43-failure baseline; no existing test was changed, skipped or
+  weakened.
+- `ruff` clean on every changed file; `mypy packages/providers packages/pipeline
+  apps/gateway`: no issues.
+
+### Still open, and not solved by this
+
+- The client half. Until Cline sends `X-Cline-Session-ID` for this endpoint
+  behind its own explicit opt-in, the feature is a receiver with nothing to
+  receive, and the honest state of live records is `absent`.
+- History capping is untouched here: `history_cap_enabled` still defaults to
+  false, `history_cap_tokens` still defaults to 0, and no cap budget is selected
+  or measured by this change.
+- Nothing was wired into `scripts/analyze_sessions.py`: grouping session logs by
+  `session.id`, and reporting the `source` histogram beside any conclusion drawn
+  from that grouping, belongs to the run that first sees a real `client` record.

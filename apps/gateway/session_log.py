@@ -136,6 +136,34 @@ The changed-file fields are counts, two booleans, and two state tokens.  Changed
 file paths, module names derived from them, symbol names, and Git output are
 never recorded.
 
+Client session correlation (``session``)
+----------------------------------------
+
+Present only when ``APP_SESSION_CORRELATION_ENABLED=true``, and absent - not
+null, not empty - from every other record.  It carries one thing: an opaque
+identifier the client stated for itself, arriving in the dedicated
+``X-Cline-Session-ID`` request header, validated and recorded as sent by
+:py:mod:`apps.gateway.session_correlation`.  Nothing in it is derived from the
+transcript.  The top-level ``conversation_key`` is not this value; on the live
+path it remains the legacy ``__new__`` sentinel because nothing populates
+``session_conversation_key``.  The delta cache's internal content key is
+separate and is not recorded here.
+
+* ``schema`` - ``session-correlation-v1``, so a reader knows what the object
+  promises without dating the log file.
+* ``source`` - ``client`` when the client stated the session, ``absent`` when it
+  stated nothing the gateway could record.  There is no third value, because
+  there is nothing to infer.
+* ``id`` - present only with ``source: "client"``: the validated value byte for
+  byte, never hashed, never salted, never truncated or trimmed.  The absent form
+  has no ``id`` key at all, so a refused value is not echoed back from the line
+  that refused it.
+
+Cline 3.0.74 does not yet transmit that header for the ``openai-compatible``
+provider, so a gateway that enables this ahead of the client change records
+``absent`` on every request, which is the honest state rather than a gap the
+logger fills in by guessing.
+
 History-shape summary (``history.shape``)
 -----------------------------------------
 
@@ -241,6 +269,10 @@ from pathlib import Path
 from typing import Any
 
 from apps.gateway.core.config import get_settings
+from apps.gateway.session_correlation import (
+    SESSION_CORRELATION_SCOPE_KEY,
+    session_record_field,
+)
 from packages.context.content import content_to_text
 from packages.pipeline.file_activity import INERT_FILE_ACTIVITY
 from packages.pipeline.stages.repository_context import INERT_PROMOTION
@@ -705,7 +737,7 @@ class SessionLoggerMiddleware:
         if response_body and status == "ok":
             answer_preview = _extract_answer_preview(response_body)
 
-        return {
+        record: dict[str, Any] = {
             "timestamp": now,
             "request_id": request_id,
             "conversation_key": conversation_key,
@@ -730,3 +762,19 @@ class SessionLoggerMiddleware:
             "error": error,
             "answer_preview": answer_preview,
         }
+
+        # --- explicit client session correlation ---
+        # Written onto the scope by the chat endpoint before the pipeline ran, so
+        # it is present on a success, a stream and an error after endpoint entry
+        # alike, and absent from every record of a gateway that never enabled the
+        # feature.  What gets serialized is rebuilt by ``session_record_field``
+        # rather than passed through: only ``schema``, ``source`` and a
+        # re-validated ``id`` can reach the line, and an invalid raw value never
+        # can.  There is no fallback here - no conversation key, no transcript
+        # digest, no gateway-minted substitute stands in for a client that said
+        # nothing.
+        session_field = session_record_field(scope.get(SESSION_CORRELATION_SCOPE_KEY))
+        if session_field is not None:
+            record["session"] = session_field
+
+        return record
