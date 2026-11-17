@@ -4380,6 +4380,116 @@ transcript holds no user message; `build/history_shape_observability/repro.py` p
 three cases above.
 
 
+### Simulating a budget offline from a recorded shape (added 2026-11-17)
+
+A recorded shape is only worth having if a budget can be read back off it, and
+that is what `scripts/analyze_sessions.py` now does. Its `HISTORY-SHAPE CAP
+SIMULATION` section walks every recorded `history.shape` at 16,384 / 32,768 /
+65,536 / 98,304 / 131,072 cap-eligible tokens and reports what
+`packages.pipeline.history.cap_history` would have done to each. **This selects
+and enables nothing.** The five budgets are constants in the analyzer;
+`APP_HISTORY_CAP_ENABLED` and `APP_HISTORY_CAP_TOKENS` are untouched, the
+gateway was not restarted, and nothing here forwarded a request.
+
+The walk is the production rule, not a simpler one that agrees by luck:
+
+- `cap_eligible_tokens <= budget` proves the cap is a no-op, and because the
+  totals are exact over the whole list that holds even when the detail was
+  truncated;
+- otherwise `last_user_group` is *reserved* - kept whole, and charged its own
+  `cap_eligible_tokens` before any other group is considered, because only the
+  protected message inside it is free of the budget. A reservation larger than
+  the budget is still spent, and still keeps its group: the cap cannot split an
+  atomic group to make it fit;
+- `groups` is then walked by ascending `ordinal`, which is the same newest-first
+  order `cap_history` sorts its candidates into, skipping every `has_system`
+  group (kept, charged nothing, and unable to cause a cut) and the reserved
+  ordinal, and stopping at the first group that does not fit;
+- `last_user_group` repeats the prefix's entry when the bound reached that group
+  and stands beside it when it did not, so it is never charged twice and never
+  lost;
+- with no `user` message in the list the protected *position* is the fallback
+  slot after the trailing assistants, so the reserved group can be an assistant
+  call and its `role: "tool"` result. `last_user_distance: null` beside a
+  non-null `last_user_group` is that shape; both null is an all-assistant list,
+  where capping protects nothing and the walk is the ordinary one.
+
+Bounded detail is reported, not guessed. A record/budget result is exact only
+when the totals prove that no cap would run, the recorded prefix proves where it
+stops, or the totals prove that nothing outside the prefix could be dropped. When
+every recorded group fits and `omitted_cap_eligible_tokens` is still nonzero the
+result is **indeterminate**: both drop figures are absent, the row says how far
+the recorded detail reached, and no cut point is interpolated into the part that
+was never written. Omitted groups are never assumed uniform.
+
+A zero `omitted_cap_eligible_tokens` is where the walk ran out of recorded groups
+and nothing chargeable was left out - the case that a `detail_complete: false`
+flag alone used to misreport as unknown. An older system message hidden past the
+bound is kept at any budget and the transcript ends up whole whatever the record
+never wrote, so the result is exact and `unchanged`, and this holds even though
+`detail_complete` is false. It is the *omitted mass*, not the completeness flag,
+that carries the claim, which is why `recorded_cap_eligible_tokens` and
+`omitted_cap_eligible_tokens` are both required of a `measured` summary and why
+their sum must equal `cap_eligible_tokens`: a record that does not add up is
+malformed rather than quietly reconciled. One residue is reported rather than
+smoothed over. A group of non-system messages that each estimate to zero tokens
+-an empty assistant turn, say - is chargeable nothing and is still a *candidate*
+the cap stops at once the reservation has spent the budget. `omitted_messages`
+beside the recorded `has_system` groups says whether any such group is hidden, and
+when one is, the record cannot name the group the cap stopped at, so the result is
+`indeterminate` with reason `zero_cost_candidate_unseen` instead of a no-op the
+transcript may not have had.
+
+Records are classified once and every denominator names its class: no
+`history.shape` at all, `status: unavailable`, an unknown `schema`, malformed,
+and usable `measured`. Old logs stay analyzable - the first three are counts
+beside the sweep, never zeros inside it - and the percentiles are computed over
+exact results alone. No message content is read; the section prints no path,
+tool name, argument, id or hash.
+
+Parity is pinned rather than asserted in prose:
+`tests/scripts/test_analyze_sessions_history_shape.py` runs transcripts through
+`summarize_history_shape` and through `cap_history` and requires the same dropped
+message count and the same charge, then repeats it with the detail bound forced
+down so that anything staying exact is exact because it is provable. Two named
+regressions hold the boundary described above: a `max_groups=1` summary of a
+system message behind a protected tool group whose reservation exceeds the budget
+must come out exact and unchanged with `cap_history` dropping nothing, and the
+same shape with an empty assistant turn hidden in the same place must come out
+indeterminate rather than claim a no-op.
+
+Measured 2026-11-17, offline, over every JSONL in the repository: 117 files,
+86 of them session logs (the other 31 are benchmark and per-turn probe artifacts
+with no session-record structure and no `history.shape`), 5,440 records. Exactly
+one file holds measurements - `logs/cline_sessions.jsonl`, 3,056 records, 1,001
+of them usable `history-shape-v2` / `measured` summaries - so the corpus table
+below is that file's table. Nothing was `unavailable`, and no unknown schema or
+malformed shape appeared anywhere.
+
+| budget | usable | exact | indeterminate | would cap | would not cap | messages dropped p50/p90/max | eligible tokens dropped p50/p90/max |
+|---|---|---|---|---|---|---|---|
+| 16,384 | 1,001 | 1,001 | 0 | 963 | 38 | 190 / 386 / 519 | 161,165 / 281,717 / 358,557 |
+| 32,768 | 1,001 | 1,001 | 0 | 937 | 64 | 164 / 367 / 497 | 147,447 / 265,925 / 343,508 |
+| 65,536 | 1,001 | 1,001 | 0 | 850 | 151 | 129 / 320 / 443 | 125,252 / 238,878 / 309,895 |
+| 98,304 | 1,001 | 1,001 | 0 | 745 | 256 | 111 / 288 / 391 | 105,468 / 212,660 / 276,512 |
+| 131,072 | 1,001 | 1,001 | 0 | 637 | 364 | 93 / 250 / 335 | 82,594 / 182,072 / 244,862 |
+
+What the corpus does and does not say:
+
+- 637 of the 1,001 summaries hit the detail bound, and none of them was
+  indeterminate at any candidate budget. That is the 131,072-eligible-token floor
+  doing its job: a recorded prefix that long places the cut for every budget this
+  sweep simulates, 131,072 included.
+- No record had a protected group at or over any candidate budget, so the
+  reservation never exhausted a budget on its own in this corpus, and the
+  `nothing_chargeable` case was never reached.
+- No recorded shape contained an orphan tool call or an orphan tool result: 0 of
+  1,001.
+- These are one client's ordinary traffic through this gateway, counted at the
+  `chars_per_token` each record states. They describe what a budget would have
+  done to requests like these; they do not choose one, and they are not a
+  projection of traffic this gateway has not yet seen.
+
 ### Failure behaviour
 
 A summary that raises cannot fail a request. `_record_history_shape` catches

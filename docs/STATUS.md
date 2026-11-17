@@ -596,6 +596,41 @@ accounting difference predates this and was left alone rather than changing a
 field the analyzer and earlier measurements already read. See
 `docs/live-gateway-runbook.md`, *History-Shape Observability (pre-cap, opt-in)*.
 
+##### Reading a budget back off a recorded shape (added 2026-11-17)
+
+`scripts/analyze_sessions.py` gained a `HISTORY-SHAPE CAP SIMULATION` section
+that replays the production rule over recorded shapes at 16,384 / 32,768 /
+65,536 / 98,304 and 131,072 cap-eligible tokens: reserve `last_user_group` and
+spend its `cap_eligible_tokens` first, walk `groups` newest-first skipping
+system groups and the reserved ordinal, and stop at the first group that does not
+fit. It is analysis in a script - no cap is selected, enabled or configured, and
+neither `cap_history` nor `summarize_history_shape` was touched. Because the
+detail a shape records is bounded, a result is reported as exact only where the
+totals prove no cap would run, the recorded prefix proves where it stops, or the
+eligible-token partition together with the omitted-message and system-message
+counts proves that everything left out is system text the cap keeps regardless -
+the case where a summary is short only because an old system message fell past
+the bound, which is a settled transcript and not an unknown one. Both partition
+fields are now required of a measured summary and a
+disagreement classifies as malformed rather than being clamped. The rest are
+counted `indeterminate` and kept out of every percentile.
+`tests/scripts/test_analyze_sessions_history_shape.py` pins the equivalence
+against `cap_history` itself, with and without that bound forced down.
+
+Measured over every JSONL in the repository (117 files, 86 of them session logs,
+5,440 records): 1,001 usable `history-shape-v2` measurements, all of them in
+`logs/cline_sessions.jsonl`, and the analyzer still runs cleanly over the 4,439
+records that predate the knob. Every one of those 1,001 is exact at every
+candidate budget - 963 would have capped at 16,384, falling to 637 at 131,072 -
+with no `unavailable`, unknown-schema or malformed shape, no orphan call or
+result, and no record whose protected group alone reached a candidate budget.
+That is 1 of roughly 86 session logs in the repository carrying measurements,
+because the knob is still off in every tracked configuration: what an ordinary
+budget does to traffic this gateway has not yet seen stays a live observation
+this repository has not made, and no cap is chosen or recommended here. See
+`docs/live-gateway-runbook.md`, *Simulating a budget offline from a recorded
+shape*.
+
 ### ProviderStage
 
 Builds the provider payload from `NormalizedRequest`, swaps `model` to

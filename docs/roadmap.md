@@ -1178,7 +1178,18 @@ Still open after 2026-11-14, not authorized:
   What that decision needed - the shape of the message list the cap actually receives -
   is now recordable rather than guessed at: `APP_HISTORY_SHAPE_LOG_ENABLED` summarizes
   it into `history.shape`, off by default, deciding nothing (runbook, *History-Shape
-  Observability (pre-cap, opt-in)*).
+  Observability (pre-cap, opt-in)*). The other half is now in place too: the session
+  analyzer replays `cap_history`'s own rule over those recorded shapes offline at
+  16,384/32,768/65,536/98,304/131,072 cap-eligible tokens, keeping the protected group
+  whole, spending its reservation first, treating system groups as free, stopping at the
+  first group that does not fit, and separating what a truncated detail settles from what
+  it cannot (runbook, *Simulating a budget offline from a recorded shape*). Measured over
+  every JSONL in the repository, that is 1,001 usable measurements in one of its 86
+  session logs - 963 would cap at 16,384, 637 at 131,072, all of them exact, none with an
+  orphan or a protected group at or over a candidate budget - and the other 4,439 records
+  predate the knob. One file of real traffic is not the corpus a budget is chosen from,
+  so the decision stays open and the observation stays live: the knob has to be turned on
+  where the requests actually come from. No budget is selected or enabled by this.
 - Closed, and listed here only because this list used to write it as open: a message
   carrying task text and an envelope together is selected whole, markup included.
   Extraction from that shape was measured and declined at `945e2bb` (runbook, *Task
