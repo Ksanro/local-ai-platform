@@ -672,6 +672,31 @@ class TestQuestionSentencesInCollision:
             text = f"{opener} add a retry field and explain it?"
             assert Intent.detect([text]) == Intent.IMPLEMENT, text
 
+    def test_file_name_in_question_does_not_end_the_sentence(self):
+        """The dot in 'registry.py' is not a sentence end, so the '?' still closes it."""
+        for text in (
+            "Where do we add providers in registry.py? Explain briefly.",
+            "Why do we create the index in main.py? Explain.",
+            "What should I fix in packages/planning/intent.py first? Explain.",
+        ):
+            match = Intent.detect_match([text])
+            assert match.intent == Intent.EXPLAIN, text
+            assert match.keyword == "explain", text
+
+    def test_file_name_in_request_question_still_counts_as_the_action(self):
+        """A request opener before a file name keeps the question actionable."""
+        match = Intent.detect_match(["Can you add a retry field to config.py and explain it?"])
+
+        assert match.intent == Intent.IMPLEMENT
+        assert match.keyword == "add"
+
+    def test_file_name_in_statement_is_still_the_action(self):
+        """An instruction naming a file is still an instruction."""
+        match = Intent.detect_match(["Add a retry field to config.py. Explain the change."])
+
+        assert match.intent == Intent.IMPLEMENT
+        assert match.keyword == "add"
+
     def test_question_with_no_explain_keyword_is_untouched(self):
         """The boundary of this rule, pinned as documentation.
 

@@ -227,8 +227,12 @@ class Intent:
         (r"\bfix\b", DEBUG, "fix"),
     )
 
-    # Sentence terminators, used to find the sentence an action verb sits in.
-    _SENTENCE_TERMINATORS: tuple[str, str, str] = (".", "?", "!")
+    # A sentence terminator, used to find the sentence an action verb sits in. A
+    # mark counts only when whitespace or the end of the text follows it, so the dot
+    # in a file name ("registry.py", "main.py") does not end the sentence early and
+    # hide the "?" that closes it. An abbreviation followed by a space ("e.g. a")
+    # still reads as a sentence end; telling those apart would need a word list.
+    _SENTENCE_END_RE: re.Pattern[str] = re.compile(r"[.?!](?=\s|$)")
 
     # The openings that make a question sentence a request. Such a sentence
     # addresses the reader and asks them to do the work, so its verb counts even
@@ -433,14 +437,15 @@ class Intent:
             after the verb is treated as an instruction, so every statement this
             rule already decided is decided exactly as before.
         """
-        ends = [combined.find(mark, start) for mark in cls._SENTENCE_TERMINATORS]
-        found = [offset for offset in ends if offset >= 0]
-        if not found:
+        following = cls._SENTENCE_END_RE.search(combined, start)
+        if following is None:
             return True
-        end = min(found)
+        end = following.start()
         if combined[end] != "?":
             return True
-        begin = max(combined.rfind(mark, 0, start) for mark in cls._SENTENCE_TERMINATORS) + 1
+        begin = 0
+        for previous in cls._SENTENCE_END_RE.finditer(combined, 0, start):
+            begin = previous.end()
         return combined[begin:end].lstrip().startswith(cls._QUESTION_OPENERS)
 
     @classmethod
