@@ -4108,6 +4108,93 @@ that it helps, and they are demonstrated in tests.
 `build\{turn_question,reach,probe_stage_question}.out`,
 `build\full_{pre,post}.out`, `build\gate_live_question.log`.
 
+### Real Cline: through the gateway vs straight to the backend, 2026-11-21
+
+The question was whether Cline does better through the gateway than pointed directly
+at vLLM. The single-shot harness cannot answer it: `57/66` with context against `3/66`
+without measures a model that cannot look anything up, and Cline can. This run used
+the actual Cline CLI (3.0.75) on the 25 `PROBES`, once per arm, at `35b1e80`:
+
+- `gateway`: provider `openai-compatible`, base URL `http://127.0.0.1:8001/v1`,
+  model `qwen38-27b` (the gateway as it was already running, live `.env`);
+- `direct`: same provider, `http://100.106.236.88:18300/v1`, model `qwen3.8-flash-next`.
+
+`scripts/cline_ab.py` runs each probe as `cline --plan --json`. Each arm gets its own
+`--config` and `--data-dir` under the work directory, so `~/.cline` is untouched, and
+its own detached worktree at `HEAD`. Every tracked path containing `quality_harness`
+or `probe_replay` is deleted from both worktrees so Cline cannot grep the answer key.
+Arms are interleaved, four runs at a time, so they share backend load. Answers are
+scored with `quality_harness.score_answer`. A multi-turn probe's canned history is
+folded into the single CLI prompt.
+
+```powershell
+.\uv.exe run python scripts\cline_ab.py --out build\cline_ab\<run>.jsonl
+.\uv.exe run python scripts\cline_ab.py --summarize build\cline_ab\<run>.jsonl
+```
+
+Results, one run per arm, 50 runs all `completed`, no errors or timeouts:
+
+| | gateway | direct | change |
+|---|---|---|---|
+| facts | 65/66 | 62/66 | +3 |
+| probes at full score | 24 | 23 | +1 |
+| iterations (total / median) | 103 / 4 | 166 / 6 | -38% |
+| tool calls | 110 | 201 | -45% |
+| `run_commands` calls | 33 | 86 | -62% |
+| input tokens (total) | 1,824,294 | 3,707,285 | -51% |
+| duration (total / median) | 3,539 s / 114 s | 4,865 s / 131 s | -27% |
+
+What the numbers show:
+
+- **Less exploration.** Through the gateway, focused probes usually finish in 2-3
+  iterations where direct takes 6-17. Examples: `test_history_group_capping_guard`
+  (8 iterations, 119k input tokens vs 17, 480k) and
+  `explain_changed_files_repository_index` (4, 107k vs 13, 482k). Cline resends its
+  system prompt and whole history every iteration, so each avoided iteration saves
+  far more than the ~2k tokens of injected context it costs.
+- **One outright failure avoided.** On `debug_vllm_stream_prefix` the direct arm
+  returned an **empty** answer (0/3), while the gateway arm scored 3/3 in 2 iterations.
+  `packages/providers/vllm.py` line 22 holds a literal `<think>...</think>` pattern.
+  Read raw into a prompt, it is very likely the Phase H1 control-token cut: the backend
+  tokenizer parses the tag and the answer stops. The gateway escapes it in the context it
+  injects (H2). It does not escape Cline's own tool results (Phase H, *Still open*).
+- **Not uniform.** 6 of 25 probes cost more through the gateway. The largest:
+  `refactor_repository_context` (8 iterations, 177k vs 5, 98k) and
+  `refactor_changed_files_signal` (74k vs 20k). REFACTOR and multi-turn probes gain
+  least.
+- Both arms miss `_looks_like_cline_tool_result_message` on
+  `explain_changed_files_history_cap`.
+
+An earlier run the same day used a minimal OpenAI tool loop instead of Cline (three
+read-only tools, same probes, same arms). It measured 61/66 vs 63/66 facts, -34% tool
+calls, -13% prompt tokens and no wall-time saving. The gain is larger with Cline
+because its per-iteration prompt is larger.
+
+Caveats:
+
+- **One run per arm.** The same probe has taken 2 iterations in one run and 5 in
+  another, so read the 65 vs 62 fact gap as noise. Only the cost differences are large
+  enough to stand on one run.
+- **Possible answer leak on the gateway side.** The worktrees lack the answer key, but
+  the gateway indexes the checkout it was started on, where `scripts/quality_harness.py`
+  exists, so its injected context may carry expected facts. A clean rerun should start
+  the gateway on a worktree without those files.
+- **Read-only questions only.** Plan mode, so these are lookups, not edits. Plan mode
+  does not block shell commands: with the CLI's default auto-approve, Cline ran
+  `git grep` and `Select-String`. The worktrees are what keep runs off the checkout, and
+  the script warns if a worktree changed beyond the answer-key deletions.
+- **CLI quirks.**
+  - The script calls `node <npm>\node_modules\cline\bin\cline` directly: through
+    `cline.cmd`, cmd.exe would read `<` and `>` in a prompt as redirections.
+  - Cline's own `--worktree` flag leaves a worktree under the config directory after
+    every run, which is why the script manages its own.
+- **Session log.** Every gateway-arm request is in the live session log, wherever `.env`
+  points `APP_SESSION_LOG_PATH`. Exclude 2026-11-21 when analysing native Cline traffic.
+
+**Artifacts (Git-ignored):** `build\cline_ab\run_20261121_35b1e80.jsonl` (the 50 runs
+above), `build\cline_ab\smoke_20261121.jsonl` (one-probe check of the committed
+script).
+
 ## Interpreting long runs, timeouts, and failed execution
 
 Three independent timeout layers can each produce a failure report. Identify
